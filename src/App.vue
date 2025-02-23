@@ -133,13 +133,11 @@ class App extends Vue {
             return 'jp';
         } else if (this.currentLang == 'zh-CN'){
             return 'cn';
-        } else {
-            return 'ph';
         }
     }
     created(){
         //eslint-disable-next-line
-        console.log("Nanora!");
+        console.log("Um?");
         this.$i18n.locale = localStorage.getItem("lang") || this.$i18n.locale;
     }
     chlang(v){
@@ -153,9 +151,9 @@ class App extends Vue {
         })
 
         //eslint-disable-next-line
-        console.log("Thank you too ルーナ姫 for being an inspiration. I would've not done this without your smile and joy inspiring me every stream!");
+        console.log("Thank you to the community for being supportive and helpful!");
         //eslint-disable-next-line
-        console.log("ルーナちゃんありがちゅ！");
+        console.log("Thank you to the community for being supportive and helpful!");
     }
 }
 

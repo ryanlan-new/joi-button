@@ -2,7 +2,7 @@
 
 [![Last Commit](https://img.shields.io/github/last-commit/ryanlan-new/joi-button)]()
 
-![Joi-Button Cover](https://github.com/ryanlan-new/joi-button/blob/master/minijoi.png)
+![Joi-Button Cover](public/resources/embed/minijoi.png)
 
 A Voice Button Website dedicated to VirtuaReal VTuber Joi.
 

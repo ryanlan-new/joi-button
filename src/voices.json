@@ -10,7 +10,7 @@
       "voiceList": [
         {
           "name": "Ei?",
-          "path": "CuteHummings_Ei.mp3",
+          "path": "CHS_Ei.mp3",
           "description": {
             "ja-JP": "え？",
             "en-US": "Ei?",
@@ -29,11 +29,11 @@
       "voiceList": [
         {
           "name": "It's time for steaming",
-          "path": "Alarms_it's time for streaming",
+          "path": "Alarms_it's time for streaming.mp3",
           "description": {
             "ja-JP": "起きて！配信の時間です！",
             "en-US": "Wakeup! It's time for streaming!",
-            "zh-CN": "该直播了 该直播了 到点儿了"
+            "zh-CN": "该直播了该直播了到点儿了"
           }
         }
       ]
@@ -61,7 +61,7 @@
           "description": {
             "ja-JP": "近づくないてください... (ちょうどびっくりした)",
             "en-US": "Arctic Eggs_don't approach me (scared ver.)",
-            "zh-CN": "煎G蛋-嗯哼哼 别过来...."
+            "zh-CN": "煎G蛋-嗯哼哼别过来...."
           }
         },
         {
@@ -97,7 +97,7 @@
           "description": {
             "ja-JP": "もう限界...助けてください...",
             "en-US": "Arctic Eggs_I can't bear it (premium ver.)",
-            "zh-CN": "煎G蛋-我受不了 救命 我看不得这些..."
+            "zh-CN": "煎G蛋-我受不了...救命...我看不得这些..."
           }
         },
         {

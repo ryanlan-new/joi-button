@@ -65,11 +65,11 @@
                   }
               },
               {
-                  "name": "Arctic Eggs_nonononono..-",
+                  "name": "Arctic Eggs_nonononono",
                   "path": "Arctic Eggs_nonononono..-.mp3",
                   "description": {
                       "ja-JP": "ややややややめなさい...",
-                      "en-US": "Arctic Eggs - nonononono..",
+                      "en-US": "Arctic Eggs - nonononono...",
                       "zh-CN": "煎G蛋-别别别别别别..."
                   }
               },
@@ -92,7 +92,7 @@
                   }
               },
               {
-                  "name": "Arctic Eggs_don't approach me (scared ver.)",
+                  "name": "Arctic Eggs_don't approach me scared ver",
                   "path": "Arctic Eggs_don't approach me (scared ver.).mp3",
                   "description": {
                       "ja-JP": "近づかないでください... (ちょうどびっくりした)",
@@ -101,7 +101,7 @@
                   }
               },
               {
-                  "name": "Arctic Eggs_don't approach me...(extremly scared ver.)",
+                  "name": "Arctic Eggs_don't approach me extremly scared ver",
                   "path": "Arctic Eggs_don't approach me..-.mp3",
                   "description": {
                       "ja-JP": "近づかないで...(すごくびっくりした)",
@@ -110,7 +110,7 @@
                   }
               },
               {
-                  "name": "Arctic Eggs_I can't achieve it.......",
+                  "name": "Arctic Eggs_I can't achieve it",
                   "path": "Arctic Eggs_I can't achieve it.......-.mp3",
                   "description": {
                       "ja-JP": "もう限界...",
@@ -119,7 +119,7 @@
                   }
               },
               {
-                  "name": "Arctic Eggs_I can't bear it (cute ver.)",
+                  "name": "Arctic Eggs_I can't bear it cute ver",
                   "path": "Arctic Eggs_I can't bear it (cute ver.).mp3",
                   "description": {
                       "ja-JP": "もう限界...",
@@ -128,7 +128,7 @@
                   }
               },
               {
-                  "name": "Arctic Eggs_I can't bear it (premium ver.)",
+                  "name": "Arctic Eggs_I can't bear it premium ver",
                   "path": "Arctic Eggs_I can't bear it (premium ver.).mp3",
                   "description": {
                       "ja-JP": "もう限界...助けてください...",

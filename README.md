@@ -2,9 +2,9 @@
 
 [![Last Commit](https://img.shields.io/github/last-commit/ryanlan-new/joi-button)]()
 
-![Joi-Button Cover](public/resources/embed/minijoi.png)
-
 [[简体中文](/README_zh-hans.md) | [English](README.md)]
+
+![Joi-Button Cover](public/resources/embed/minijoi.png)
 
 A Voice Button Website dedicated to VirtuaReal Liver Joi.
 

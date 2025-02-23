@@ -2,9 +2,9 @@
 
 [![Last Commit](https://img.shields.io/github/last-commit/ryanlan-new/joi-button)]()
 
-![Joi-Button Cover](public/resources/embed/minijoi.png)
-
 [[简体中文](/README_zh-hans.md) | [English](README.md)]
+
+![Joi-Button Cover](public/resources/embed/minijoi.png)
 
 一个为 VirtuaReal Liver @轴伊Joi_Channel 制作的语音按钮网站。
 

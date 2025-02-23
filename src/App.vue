@@ -133,6 +133,8 @@ class App extends Vue {
             return 'jp';
         } else if (this.currentLang == 'zh-CN'){
             return 'cn';
+        } else {
+            return 'ph';
         }
     }
     created(){

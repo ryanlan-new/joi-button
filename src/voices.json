@@ -28,7 +28,7 @@
       },
       "voiceList": [
         {
-          "name": "It's time for steaming",
+          "name": "Time for steaming",
           "path": "Alarms_it's time for streaming.mp3",
           "description": {
             "ja-JP": "起きて！配信の時間です！",
@@ -61,7 +61,7 @@
           "description": {
             "ja-JP": "近づくないてください... (ちょうどびっくりした)",
             "en-US": "Arctic Eggs_don't approach me (scared ver.)",
-            "zh-CN": "煎G蛋-嗯哼哼别过来...."
+            "zh-CN": "煎G蛋-别过来...."
           }
         },
         {

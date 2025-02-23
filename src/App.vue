@@ -52,7 +52,7 @@
 @import url('https://fonts.googleapis.com/css2?family=Mina&family=Open+Sans:wght@600&family=PT+Sans&family=Source+Sans+Pro&family=M+PLUS+Rounded+1c:wght@700&display=swap');
 body{
     padding-top: 70px;
-    background-image: url('/resources/body_bg.svg');
+    background-image: url('~@/resources/body_bg.svg');
     font-family: 'Aptos', sans-serif;
     background-color: #fedcae;
 }

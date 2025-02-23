@@ -3,7 +3,7 @@
     "short_name": "",
     "icons": [
         {
-            "src": "resources/favicon/favicon.png",
+            "src": "/joi-button/resources/favicon/favicon.png",
             "sizes": "144x144",
             "type": "image/png"
         }

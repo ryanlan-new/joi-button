@@ -4,7 +4,9 @@
 
 ![Joi-Button Cover](public/resources/embed/minijoi.png)
 
-A Voice Button Website dedicated to VirtuaReal VTuber Joi.
+[[简体中文](/README_zh-hans.md) | [English](README.md)]
+
+A Voice Button Website dedicated to VirtuaReal Liver Joi.
 
 [Click here to visit https://space.bilibili.com/61639371](https://space.bilibili.com/61639371)
 

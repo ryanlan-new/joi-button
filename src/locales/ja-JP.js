@@ -3,7 +3,7 @@ const ja_JP = {
         title: "ジョイボタン",
         info: "お知らせ",
         null: "空",
-        tlHelpers: "翻訳ヘルパー: ",
+        tlHelpers: "翻訳ヘルパー: こーでー, Uchan, Admiy02",
         toGithub: "Githubで翻訳に参加、音声を追加または提案をしてください。",
         notOfficial: "このサイトはファン作品であり、公式とは関係ありません。",
         overlapTips: "多重再生モードは手動で停止できません。再読み込みで停止して下さい。",

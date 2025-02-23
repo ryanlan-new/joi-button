@@ -1,0 +1,23 @@
+{
+  "voices": [
+    {
+      "categoryName": "Cute Hummings",
+      "categoryDescription": {
+        "ja-JP": "かわいいうめき声",
+        "en-US": "Cute Hummings",
+        "zh-CN": "可爱小动静"
+      },
+      "voiceList": [
+        {
+          "name": "Sample",
+          "path": "CuteHummings_Ei.mp3",
+          "description": {
+            "ja-JP": "え？",
+            "en-US": "Ei?",
+            "zh-CN": "欸？"
+          }
+        }
+      ]
+    }
+  ]
+}

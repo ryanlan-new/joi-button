@@ -1,6 +1,6 @@
 const ja_JP = {
     info: {
-        title: "ジョイボタン",
+        title: "Joiボタン",
         info: "お知らせ",
         null: "空",
         tlHelpers: "翻訳ヘルパー: こーでー, Uchan, Admiy02",

@@ -9,5 +9,6 @@ module.exports = {
             'window.jQuery': 'jquery'
       })
     ]
-  }
+  },
+  publicPath: process.env.NODE_ENV === 'production' ? '/joi-button/' : '/'
 }

@@ -56,6 +56,42 @@
           }
         },
         {
+          "name": "Arctic Eggs_its on my hand",
+          "path": "CHS_egG_its on my hand.mp3",
+          "description": {
+            "ja-JP": "私の手が...",
+            "en-US": "Arctic Eggs_its on my hand",
+            "zh-CN": "煎G蛋-掉 手 上 了 "
+          }
+        },
+        {
+          "name": "Arctic Eggs_its on my hand",
+          "path": "CHS_egG_nonononono..-.mp3",
+          "description": {
+            "ja-JP": "ややややややめなさい...",
+            "en-US": "Arctic Eggs_nonononono..",
+            "zh-CN": "煎G蛋-别别别别别别..."
+          }
+        },
+        {
+          "name": "Arctic Eggs_Why do we have to feed them",
+          "path": "CHS_egG_Why do we have to feed them.mp3",
+          "description": {
+            "ja-JP": "彼ら二人に料理を作らなければならないの?",
+            "en-US": "Arctic Eggs_Why do we have to feed them",
+            "zh-CN": "煎G蛋-我一定要给他们俩做饭吗？"
+          }
+        },
+        {
+          "name": "Arctic Eggs_why",
+          "path": "CHS_egG_why.mp3",
+          "description": {
+            "ja-JP": "なぜ？",
+            "en-US": "Arctic Eggs_why",
+            "zh-CN": "煎G蛋-为什么？"
+          }
+        },
+        {
           "name": "Arctic Eggs_don't approach me (scared ver.)",
           "path": "CHS_egG_don't approach me (scared ver.).mp3",
           "description": {
@@ -98,42 +134,6 @@
             "ja-JP": "もう限界...助けてください...",
             "en-US": "Arctic Eggs_I can't bear it (premium ver.)",
             "zh-CN": "煎G蛋-我受不了...救命...我看不得这些..."
-          }
-        },
-        {
-          "name": "Arctic Eggs_its on my hand",
-          "path": "CHS_egG_its on my hand.mp3",
-          "description": {
-            "ja-JP": "私の手が...",
-            "en-US": "Arctic Eggs_its on my hand",
-            "zh-CN": "煎G蛋-掉 手 上 了 "
-          }
-        },
-        {
-          "name": "Arctic Eggs_its on my hand",
-          "path": "CHS_egG_nonononono..-.mp3",
-          "description": {
-            "ja-JP": "ややややややめなさい...",
-            "en-US": "Arctic Eggs_nonononono..",
-            "zh-CN": "煎G蛋-别别别别别别..."
-          }
-        },
-        {
-          "name": "Arctic Eggs_Why do we have to feed them",
-          "path": "CHS_egG_Why do we have to feed them.mp3",
-          "description": {
-            "ja-JP": "彼ら二人に料理を作らなければならないの?",
-            "en-US": "Arctic Eggs_Why do we have to feed them",
-            "zh-CN": "煎G蛋-我一定要给他们俩做饭吗？"
-          }
-        },
-        {
-          "name": "Arctic Eggs_why",
-          "path": "CHS_egG_why.mp3",
-          "description": {
-            "ja-JP": "なぜ？",
-            "en-US": "Arctic Eggs_why",
-            "zh-CN": "煎G蛋-为什么？"
           }
         }
       ]

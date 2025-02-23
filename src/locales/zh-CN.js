@@ -4,7 +4,7 @@ const zh_CN = {
         info: "信息",
         null: "空",
         audioStaff: "音频剪辑: ",
-        toGithub: "请在Github参与翻译、增补音频或提出建议",
+        toGithub: "请在Github参与翻译、增补音频或提出建议，或直接发送音声mp3文件到邮箱ryan.lan_home@outlook.com",
         notOfficial: "本站为爱好者作品，和VirtuaReal/Nijisanji (Anycolor) 官方没有关联",
         overlapTips: "重叠播放无法暂停，而且会创建大量线程，玩够了最好刷新一下"
     },

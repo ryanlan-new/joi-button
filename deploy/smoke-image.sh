@@ -148,11 +148,33 @@ check  "missing hashed asset is 404"          "404"                             
 refute "a 404 carries no immutable label"     "immutable"                       "$(hdr /js/absent.12345678.js)"
 check  "dotfile path is 404"                  "404"                             "$(code /.git/config)"
 
-echo "--- legacy /joi-button/ prefix still resolves"
-# src/App.vue and public/site.webmanifest hardcode this GitHub Pages prefix; the
-# nginx rewrite is what keeps the background image and the PWA icon working when
-# the site is served from the domain root.
-check  "legacy prefixed asset resolves"       "200"                             "$(code /joi-button/resources/body_bg.svg)"
+echo "--- no build output hardcodes the GitHub Pages prefix (INC-002)"
+# This assertion replaced "the legacy /joi-button/ rewrite still resolves". That
+# rewrite was a MITIGATION for two files that hardcoded the prefix; INC-002 fixed
+# the cause — the background moved into webpack's asset pipeline and the web
+# manifest's icon became relative to the manifest URL — so the correct guard is
+# now that nothing in the served output reintroduces it. The nginx rewrite block
+# stays until STORY-046 retires it; it simply has nothing left to catch.
+CSS_HREF="$(body / | sed -n 's/.*href="\([^"]*app\.[^"]*\.css\)".*/\1/p' | head -1)"
+[ -n "$CSS_HREF" ] || { echo "NO_APP_STYLESHEET_IN_INDEX"; exit 92; }
+refute "index.html has no /joi-button/ asset path" "/joi-button/"              "$(body / | tr '"' '\n' | grep -E '^/joi-button/')"
+refute "stylesheet has no /joi-button/ asset path" "/joi-button/"              "$(body "$CSS_HREF")"
+# Extract first, assert the extraction succeeded, THEN request it. Passing an
+# empty path to code() would request "/" and return 200 — a check that cannot go
+# red for the thing it claims to check.
+# webpack emits this as `url(../img/body_bg.<hash>.svg)` — relative to the
+# stylesheet's own location, which is why it survives any publicPath. Normalise
+# the leading ../ (and any quoting) to an absolute request path.
+BG_URL="$(body "$CSS_HREF" \
+  | grep -o 'url([^)]*body_bg[^)]*)' | head -1 \
+  | sed -e 's|^url(||' -e 's|)$||' -e "s|^[\"']||" -e "s|[\"']$||" \
+        -e 's|^\.\./|/|' -e 's|^\([^/]\)|/\1|')"
+check  "background image URL was found in the CSS" "img/body_bg."               "${BG_URL:-<none>}"
+if [ -n "$BG_URL" ]; then
+  check "background image is a hashed asset"       "200"                        "$(code "/${BG_URL#/}")"
+else
+  printf '  FAIL  %s\n' "background image is a hashed asset (no URL to request)"; FAIL=$((FAIL+1))
+fi
 
 echo "--- security headers"
 check  "nosniff on /"                         "x-content-type-options: nosniff" "$(hdr /)"

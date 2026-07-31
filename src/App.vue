@@ -40,7 +40,6 @@
                     <div class="text-right"><a href="https://github.com/ryanlan-new/joi-button" target="_blank">{{$t("info.toGithub")}} <img src="https://img.shields.io/github/stars/monoai/luna-button.svg?style=social"/></a></div>
                     <div class="text-right">{{$t("info.notOfficial")}}</div>
                 </div>
-                <div>{{$t("info.tlHelpers")}}</div>
                 <!--<div><p>Me testing out something</p></div>-->
             </div>
         </footer>
@@ -52,7 +51,12 @@
 @import url('https://fonts.googleapis.com/css2?family=Mina&family=Open+Sans:wght@600&family=PT+Sans&family=Source+Sans+Pro&family=M+PLUS+Rounded+1c:wght@700&display=swap');
 body{
     padding-top: 70px;
-    background-image: url('/joi-button/resources/body_bg.svg');
+    /* Resolved by webpack, so the emitted URL follows publicPath instead of
+       hardcoding the GitHub Pages subpath. The file moved out of public/ for
+       exactly this reason: files copied verbatim from public/ cannot be
+       rewritten, and a root-relative url() in a .vue style block is left
+       untouched by css-loader. */
+    background-image: url('~@/assets/body_bg.svg');
     font-family: 'Aptos', sans-serif;
     background-color: #fedcae;
 }
@@ -150,17 +154,6 @@ class App extends Vue {
     chlang(v){
         this.$i18n.locale = v;
         localStorage.setItem("lang", v);
-    }
-    linkClick(){
-        // NOTE: Consider using Vuex instead of an event bus.
-        this.$gConst.globalbus.$emit('play', {
-            src: "voices/GR_OniiChan.mp3",
-        })
-
-        //eslint-disable-next-line
-        console.log("Thank you to the community for being supportive and helpful!");
-        //eslint-disable-next-line
-        console.log("Thank you to the community for being supportive and helpful!");
     }
 }
 

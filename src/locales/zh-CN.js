@@ -6,7 +6,11 @@ const zh_CN = {
         audioStaff: "音频剪辑: ",
         toGithub: "请在Github参与翻译、增补音频或提出建议，或直接发送音声mp3文件到邮箱ryan.lan_home@outlook.com",
         notOfficial: "本站为爱好者作品，和VirtuaReal/Nijisanji (Anycolor) 官方没有关联",
-        overlapTips: "重叠播放无法暂停，而且会创建大量线程，玩够了最好刷新一下"
+        overlapTips: "重叠播放无法暂停，而且会创建大量线程，玩够了最好刷新一下",
+        tlHelpers: "翻译协力: こーでー, Uchan, Admiy02",
+        loopTips: "会一直循环播放你选中的那一条，反正它不会自己停下来，所以另外两个功能就用不上了，关掉循环才能再用",
+        yt_channel: "轴伊的频道",
+        lang: "语言: "
     },
     action: {
         toggleNavbar: "切换导航栏",
@@ -18,7 +22,9 @@ const zh_CN = {
         overlap: "允许声音重叠",
         autoplay: "播放不要停下来",
         playing: "正在播放：",
-        noplay: "暂无播放"
+        noplay: "暂无播放",
+        loop: "单曲循环",
+        volume: "音量: "
     },
     lang: {
         'zh-CN': "简体中文",

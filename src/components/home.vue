@@ -28,7 +28,6 @@
             <div class="cate-body">
                 <span>{{ voice.name ? $t("action.playing") + $t("voice." + voice.name ) : $t("action.noplay") }}</span>
             </div>
-            <audio ref="player" id="player" @ended="voiceEnd(false)"></audio>
         </div>
         <div v-for="category in voices" v-bind:key="category.categoryName">
             <div class="cate-header">{{ $t("voicecategory." + category.categoryName) }}</div>
@@ -98,7 +97,7 @@ import VoiceList from '../voices.json'
 @Component({
     watch: {
         currentVolume: function (value) {
-            this.$refs.player.volume = value / 100;
+            this.$gConst.globalbus.$emit('player:volume', value / 100);
         }
     }
 })
@@ -115,15 +114,14 @@ class HomePage extends Vue {
         return  this.currentVolume / 100
     }
     mounted() {
-        this.handlePlay = ({ src }) => {
-            this.$refs.player.src = src
-            this.$refs.player.play()
-        }
-
-        this.$gConst.globalbus.$on('play', this.handlePlay)
+        // The media element now lives in App.vue and outlives this route; what
+        // this page still owns is what a clip ENDING should mean — chain to a
+        // random clip, repeat, or clear the now-playing label.
+        this.handleEnded = () => this.voiceEnd(false);
+        this.$gConst.globalbus.$on('player:ended', this.handleEnded);
     }
     beforeDestroy() {
-        this.$gConst.globalbus.$off('play', this.handlePlay)
+        this.$gConst.globalbus.$off('player:ended', this.handleEnded);
     }
     play(item){
         if (this.overlapCheck) {
@@ -133,21 +131,23 @@ class HomePage extends Vue {
             audio.play()
         } else {
             this.stopPlay();
-            this.$refs.player.src = "voices/" + item.path;
             this.voice = item;
             this.currVoice = item;
-            this.$refs.player.play();
+            this.$gConst.globalbus.$emit('player:play', {
+                src: "voices/" + item.path,
+                volume: this.currentAudioVolume,
+            });
         }
     }
     stopPlay(){
-        this.$refs.player.pause();
+        this.$gConst.globalbus.$emit('player:stop');
         this.voiceEnd(true);
     }
     voiceEnd(flag) {
         if(flag !== true && this.autoCheck) {
             this.random();
         } else if(flag !== true && this.loopCheck) {
-            this.$refs.player.play();
+            this.$gConst.globalbus.$emit('player:replay');
         } else {
             this.voice = {};
         }

@@ -34,6 +34,14 @@
         <div class="container-fluid main-content">
             <router-view></router-view>
         </div>
+        <!-- The player lives here, OUTSIDE <router-view>, on purpose. It used to
+             be inside home.vue, where a second route would destroy it: the audio
+             element goes with the component, so navigating away cut playback mid
+             clip and reset volume/loop/overlap. There is no <keep-alive> in this
+             app and adding one would only have hidden the coupling. An app-level
+             player is also what lets a future page (the review desk) preview a
+             clip without owning a second one. -->
+        <audio ref="player" id="player" @ended="onPlayerEnded"></audio>
         <footer class="footer">
             <div class="container-fluid footer-content">
                 <div class="pull-right">
@@ -301,6 +309,38 @@ class App extends Vue {
     chlang(v){
         this.$i18n.locale = v;
         localStorage.setItem("lang", v);
+    }
+    mounted(){
+        // A tiny protocol rather than a shared ref: pages decide WHAT to play and
+        // when a clip ending should chain into the next one; this component owns
+        // only the media element.
+        const bus = this.$gConst.globalbus;
+        this._onPlay = ({ src, volume }) => {
+            const p = this.$refs.player;
+            if (typeof volume === 'number') p.volume = volume;
+            p.src = src;
+            p.play();
+        };
+        this._onStop = () => { this.$refs.player.pause(); };
+        this._onReplay = () => { this.$refs.player.play(); };
+        this._onVolume = (v) => { this.$refs.player.volume = v; };
+        bus.$on('player:play', this._onPlay);
+        bus.$on('player:stop', this._onStop);
+        bus.$on('player:replay', this._onReplay);
+        bus.$on('player:volume', this._onVolume);
+        // Kept for compatibility with the original 'play' event name.
+        bus.$on('play', this._onPlay);
+    }
+    beforeDestroy(){
+        const bus = this.$gConst.globalbus;
+        bus.$off('player:play', this._onPlay);
+        bus.$off('player:stop', this._onStop);
+        bus.$off('player:replay', this._onReplay);
+        bus.$off('player:volume', this._onVolume);
+        bus.$off('play', this._onPlay);
+    }
+    onPlayerEnded(){
+        this.$gConst.globalbus.$emit('player:ended');
     }
 }
 

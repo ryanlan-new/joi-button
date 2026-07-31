@@ -54,10 +54,15 @@ test('two waiters arriving at once open ONE socket', async () => {
 
   const first = source.acquire()
   const second = source.acquire()
+
+  // Counted here rather than after the await. Without the deduplication the
+  // second transport.start() clears the first one's pending timer, so the first
+  // acquire never settles and awaiting both would hang until the test timeout —
+  // a red that takes twenty seconds to say nothing in particular.
+  assert.equal(source.control.startCount(), 1, 'the in-flight start was not deduplicated')
+
   await clock.advance(10)
   await Promise.all([first, second])
-
-  assert.equal(source.control.startCount(), 1, 'the in-flight start was not deduplicated')
   assert.equal(source.status().waiters, 2)
 })
 

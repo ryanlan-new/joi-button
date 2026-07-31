@@ -537,16 +537,30 @@ test('a refuse-severity bypass running in development raises the stronger banner
 })
 
 test('no banner string carries vue-i18n syntax, because the frontend renders every one of them through $t', () => {
-  const { report } = clearedConfig(
+  const { report: refusing } = clearedConfig(
     { danmaku: { mode: 'development' }, turnstile: { mode: 'development', switch: 'off' } },
     { env: { DEV_BYPASS_DANMAKU: '1', DEV_BYPASS_TURNSTILE: '1' } },
   )
+  // Both banners, because buildBanner picks a different headline and detail for
+  // each severity and a test that only ever builds one of them leaves the other
+  // pair unread.
+  const degraded = assertSafeConfig(makeProductionConfig({ turnstile: { switch: 'off' } }), {
+    nodeEnv: 'production',
+    instanceMode: 'production',
+    env: NO_ENV,
+  })
+
   const strings = [
-    report.banner.headline,
-    report.banner.detail,
-    ...report.banner.flags.map((f) => f.effect),
+    refusing.banner.headline,
+    refusing.banner.detail,
+    ...refusing.banner.flags.map((f) => f.effect),
+    degraded.banner.headline,
+    degraded.banner.detail,
+    ...degraded.banner.flags.map((f) => f.effect),
   ]
-  assert.ok(strings.length >= 6)
+  assert.equal(refusing.banner.severity, 'bypass')
+  assert.equal(degraded.banner.severity, 'degraded')
+  assert.ok(strings.length >= 9)
   for (const text of strings) {
     assert.doesNotMatch(text, /[{}|]/, `banner string contains an interpolation slot or a plural separator: ${text}`)
     assert.doesNotMatch(text, /@(?:\.[A-Za-z]+)?:/, `banner string contains a linked message: ${text}`)

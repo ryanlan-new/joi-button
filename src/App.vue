@@ -76,6 +76,12 @@
     --plum-900:   #3f1c45;  /* ink on --lilac 5.21:1                       */
     --cocoa-700:  #4a2e00;  /* ink on --amber 6.41:1 / on --amber-deep 6.57*/
     --cocoa-900:  #3d2600;  /* focus ring                                  */
+    --candy-red-line: #ff546d;  /* the header's lighter outline            */
+    --surface:    #ffffff;  /* card / button fill                          */
+    --surface-alt:#f5f5f5;  /* menu hover fill                             */
+    --track:      #d3d3d3;  /* slider track (decorative, see the gate)     */
+    /* --content-bg is intentionally UNSET: the default is transparent so the
+       page background shows through, and the theme editor sets it opaque. */
 }
 body{
     padding-top: 70px;
@@ -127,7 +133,7 @@ body{
 .dropdown-menu > li > a:hover,
 .dropdown-menu > li > a:focus{
     color: var(--cocoa-700);
-    background-color: #f5f5f5;          /* 11.45:1 */
+    background-color: var(--surface-alt);   /* 11.45:1 */
 }
 .navbar {
     min-height: 55px;
@@ -161,6 +167,99 @@ body{
     outline: 3px solid var(--cocoa-900);
     outline-offset: 2px;
 }
+
+/* ---- shared component idioms -------------------------------------------
+   Lifted out of home.vue's SCOPED block so every page can use them. They are
+   the site's whole vocabulary: a red section header, a centred row, and a
+   pill button with five measured states. */
+.cate-header{
+    background-color: var(--candy-red);
+    color: white;
+    /* The old #FF0000 glow measured 1.15:1 against its own fill — a blur in a
+       colour indistinguishable from the background, softening the glyph edge.
+       White on --candy-red is 4.62:1, the thinnest pass on the site, and that
+       figure assumes a crisp edge. */
+    border: 2px solid var(--candy-red-line);
+    border-radius: 10px;
+    text-align: center;
+    font-size: 20px;
+    margin-bottom: 12px;
+}
+.cate-body{
+    margin-bottom: 12px;
+    text-align: center;
+}
+.cate-body button.btn-info,
+.btn-new{
+    background-color: var(--surface);
+    background-repeat: repeat-x;
+    background-size: contain;
+    color: var(--plum-700);             /* 8.99:1 on white, was #bf8ac2 at 2.75 */
+    border: 3px solid var(--candy-red);
+    border-radius: 20px;
+    transition-duration: 0.4s;
+    margin: 5px;
+}
+.btn-new {
+    max-width: 100%;
+    word-wrap: break-word !important;
+    word-break: break-all !important;
+    white-space: normal !important;
+}
+/* The pastels moved from ink to FILL. Each state now owns a colour, and each
+   pairing is measured: nothing here is decorative-only.
+     hover   pink  fill + plum ink   5.40:1
+     focus   blue  fill + plum ink   5.65:1  + a real 3px ring
+     on      lilac fill + plum-900   5.21:1
+     active/playing  red fill + white 4.62:1                                   */
+.cate-body button:hover{
+    background-color: var(--pink);
+    color: var(--plum-700);
+    text-shadow: none;
+}
+/* A mouse click used to leave the button stuck in the focus colour until you
+   clicked elsewhere. :focus-visible keeps the ring for keyboards only. */
+.cate-body button:focus:not(:focus-visible){
+    background-color: white;
+    color: var(--plum-700);
+    outline: none;
+}
+.cate-body button:focus-visible{
+    background-color: var(--blue);
+    color: var(--plum-700);
+    text-shadow: none;
+    /* outline-offset is load-bearing: at 0 the ring sits on the 3px red border
+       and its contrast against it drops below 3:1. Do not "tidy" it away. */
+    outline: 3px solid var(--cocoa-900);
+    outline-offset: 2px;
+}
+.cate-body button.is-on{
+    background-color: var(--lilac);
+    color: var(--plum-900);
+}
+.cate-body button:active,
+.cate-body button.is-playing{
+    background-color: var(--candy-red);
+    color: white;
+}
+/* Bootstrap's stock .disabled is opacity .65, which composites to 3.82:1. These
+   three are not actually inactive — they stay focusable and clickable and the
+   handler early-returns — so the WCAG exemption for inactive components does not
+   apply to them. */
+.cate-body button.disabled{
+    opacity: .8;
+}
+
+/* ---- content backing ----------------------------------------------------
+   Text must never depend on a background image for its contrast. Today the
+   backing is transparent, so the confetti shows through exactly as before and
+   this block is a no-op; when a custom wallpaper can be set, the theme sets
+   --content-bg to an opaque colour and every ratio above stays a property of
+   the tokens rather than of somebody's photograph. */
+.main-content{
+    background-color: var(--content-bg, transparent);
+}
+
 .text-right{
     text-align: right;
 }

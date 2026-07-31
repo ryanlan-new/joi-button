@@ -42,83 +42,11 @@
 </template>
 
 <style lang="scss" scoped>
-.cate-header{
-    background-color: var(--candy-red);
-    color: white;
-    /* The old #FF0000 glow measured 1.15:1 against its own fill — a blur in a
-       colour indistinguishable from the background, softening the glyph edge.
-       White on --candy-red is 4.62:1, the thinnest pass on the site, and that
-       figure assumes a crisp edge. */
-    border: 2px solid #ff546d;
-    border-radius: 10px;
-    text-align: center;
-    font-size: 20px;
-    margin-bottom: 12px;
-}
-.cate-body{
-    margin-bottom: 12px;
-    text-align: center;
-}
-.cate-body button.btn-info,
-.btn-new{
-    background-color: white;
-    background-repeat: repeat-x;
-    background-size: contain;
-    color: var(--plum-700);             /* 8.99:1 on white, was #bf8ac2 at 2.75 */
-    border: 3px solid var(--candy-red);
-    border-radius: 20px;
-    transition-duration: 0.4s;
-    margin: 5px;
-}
-.btn-new {
-    max-width: 100%;
-    word-wrap: break-word !important;
-    word-break: break-all !important;
-    white-space: normal !important;
-}
-/* The pastels moved from ink to FILL. Each state now owns a colour, and each
-   pairing is measured: nothing here is decorative-only.
-     hover   pink  fill + plum ink   5.40:1
-     focus   blue  fill + plum ink   5.65:1  + a real 3px ring
-     on      lilac fill + plum-900   5.21:1
-     active/playing  red fill + white 4.62:1                                   */
-.cate-body button:hover{
-    background-color: var(--pink);
-    color: var(--plum-700);
-    text-shadow: none;
-}
-/* A mouse click used to leave the button stuck in the focus colour until you
-   clicked elsewhere. :focus-visible keeps the ring for keyboards only. */
-.cate-body button:focus:not(:focus-visible){
-    background-color: white;
-    color: var(--plum-700);
-    outline: none;
-}
-.cate-body button:focus-visible{
-    background-color: var(--blue);
-    color: var(--plum-700);
-    text-shadow: none;
-    /* outline-offset is load-bearing: at 0 the ring sits on the 3px red border
-       and its contrast against it drops below 3:1. Do not "tidy" it away. */
-    outline: 3px solid var(--cocoa-900);
-    outline-offset: 2px;
-}
-.cate-body button.is-on{
-    background-color: var(--lilac);
-    color: var(--plum-900);
-}
-.cate-body button:active,
-.cate-body button.is-playing{
-    background-color: var(--candy-red);
-    color: white;
-}
-/* Bootstrap's stock .disabled is opacity .65, which composites to 3.82:1. These
-   three are not actually inactive — they stay focusable and clickable and the
-   handler early-returns — so the WCAG exemption for inactive components does not
-   apply to them. */
-.cate-body button.disabled{
-    opacity: .8;
-}
+/* Page-local only. The shared component idioms (.cate-header, .cate-body,
+   .btn-new and their states) moved into App.vue's GLOBAL block: a scoped style
+   compiles to `[data-v-hash]`, so nothing outside this component could ever have
+   reused them — which would have left every new page rendering as stock
+   Bootstrap. What stays here is genuinely specific to the player controls. */
 .checkbox {
     display: inline-block;
     vertical-align: middle;
@@ -131,7 +59,7 @@
     display: inline-block;
     width: auto; /* Full-width */
     height: 5px; /* Specified height */
-    background: #d3d3d3; /* Grey background */
+    background: var(--track);
     outline: none; /* Remove outline */
     /* opacity:.7 removed: it composited the thumb down to 3.15:1 against the
        track while the stylesheet claimed the thumb's own colour. */

@@ -254,7 +254,10 @@ body{
    three are not actually inactive — they stay focusable and clickable and the
    handler early-returns — so the WCAG exemption for inactive components does not
    apply to them. */
-.cate-body button.disabled{
+/* A real `disabled` attribute now, not a class: the handlers used to early-return
+   while the button stayed focusable and clickable, so WCAG's exemption for
+   inactive components did not apply and the control lied about its own state. */
+.cate-body button[disabled]{
     opacity: .8;
 }
 

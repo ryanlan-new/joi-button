@@ -5,23 +5,23 @@
             <div class="cate-body">
                 <button class="btn btn-info" @click="random">{{ $t("action.randomplay") }}</button>
                 <button class="btn btn-info" @click="stopPlay">{{$t("action.stopvoice") }}</button>
-                <button class="btn btn-info" :class="{ 'disabled': autoCheck || loopCheck, 'is-on': overlapCheck }" :aria-pressed="String(overlapCheck)" @click="overlap" :title="$t('info.overlapTips')">
-                    <input class="checkbox" type="checkbox" onchange="this.checked = this.parentNode.disabled" v-model="overlapCheck">
+                <button class="btn btn-info" type="button" :class="{ 'is-on': overlapCheck }" :disabled="autoCheck || loopCheck" :aria-pressed="String(overlapCheck)" @click="overlap" :title="$t('info.overlapTips')">
+                    <span class="checkbox-mark" :class="{ 'is-checked': overlapCheck }" aria-hidden="true"></span>
                     <span>{{ $t("action.overlap") }}</span>
                 </button>
-                <button class="btn btn-info" :class="{ 'disabled': overlapCheck || loopCheck, 'is-on': autoCheck }" :aria-pressed="String(autoCheck)" @click="autoPlay">
-                    <input class="checkbox" type="checkbox" onchange="this.checked = this.parentNode.disabled" v-model="autoCheck">
+                <button class="btn btn-info" type="button" :class="{ 'is-on': autoCheck }" :disabled="overlapCheck || loopCheck" :aria-pressed="String(autoCheck)" @click="autoPlay">
+                    <span class="checkbox-mark" :class="{ 'is-checked': autoCheck }" aria-hidden="true"></span>
                     <span>{{ $t("action.autoplay") }}</span>
                 </button>
-                <button class="btn btn-info" :class="{ 'disabled': autoCheck || overlapCheck, 'is-on': loopCheck }" :aria-pressed="String(loopCheck)" @click="loop" :title="$t('info.loopTips')">
-                    <input class="checkbox" type="checkbox" onchange="this.checked = this.parentNode.disabled" v-model="loopCheck">
+                <button class="btn btn-info" type="button" :class="{ 'is-on': loopCheck }" :disabled="autoCheck || overlapCheck" :aria-pressed="String(loopCheck)" @click="loop" :title="$t('info.loopTips')">
+                    <span class="checkbox-mark" :class="{ 'is-checked': loopCheck }" aria-hidden="true"></span>
                     <span>{{ $t("action.loop") }}</span>
                 </button>
                 <div class="visible-md visible-lg">
-                  <button class="btn btn-info">
+                  <label class="btn btn-info volume-control" for="volSlider">
                     <span>{{ $t("action.volume") }}</span>
                     <input ref="volSlider" class="slidecontainer slider" type="range" min="0" max="100" id="volSlider" v-model="currentVolume">
-                  </button>
+                  </label>
                   <p>{{ $t("action.volume") }}<span id="volOut">{{ currentVolume }}</span></p>
                 </div>
             </div>
@@ -46,10 +46,35 @@
    compiles to `[data-v-hash]`, so nothing outside this component could ever have
    reused them — which would have left every new page rendering as stock
    Bootstrap. What stays here is genuinely specific to the player controls. */
-.checkbox {
+/* Was an <input type="checkbox"> nested inside the <button>. Interactive content
+   inside a button is invalid HTML and makes keyboard operation unreliable — and
+   this one carried an inline onchange that forced its checked state from the
+   button's `disabled` DOM property, which was never set, because only a CLASS
+   was being toggled. The button itself is the control now and says so with
+   aria-pressed; this is just the tick, and it cannot be focused. */
+.checkbox-mark {
     display: inline-block;
     vertical-align: middle;
     margin: 0 5px 3px 0;
+    width: 13px;
+    height: 13px;
+    border: 1px solid currentColor;
+    border-radius: 2px;
+    position: relative;
+}
+.checkbox-mark.is-checked::after {
+    content: "";
+    position: absolute;
+    left: 3px; top: 0;
+    width: 4px; height: 8px;
+    border: solid currentColor;
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+}
+/* The slider is no longer wrapped in a <button> either. A <label> is a valid
+   container for a form control and associates the text with it. */
+.volume-control {
+    cursor: default;
 }
 /*Slider CSS modified from w3schools*/
 .slider {

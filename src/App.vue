@@ -59,7 +59,13 @@ body{
 .navbar-brand {
     font-family: 'Aptos', sans-serif;
 }
-.nav.navbar-nav li a, .navbar-default .navbar-brand{
+/* `> li > a`, never a descendant selector: the language dropdown's items are
+   `.dropdown-menu > li > a` INSIDE `ul.nav.navbar-nav`, so `.nav.navbar-nav li a`
+   also painted them white — on a white panel, i.e. 1.00:1 and unreadable at
+   desktop widths. The `.navbar-default` prefix is load-bearing too: without it
+   this rule is (0,1,2) and loses to Bootstrap's own
+   `.navbar-default .navbar-nav > li > a { color:#777 }` at (0,2,2). */
+.navbar-default .navbar-nav > li > a, .navbar-default .navbar-brand{
     color: white;
     text-shadow: -1px 1px 0 #000,
                   1px 1px 0 #000,
@@ -72,15 +78,14 @@ body{
 .navbar-default .navbar-brand:focus{
     color: #f7ac67;
 }
-.nav.navbar-nav li a:hover{
+.navbar-default .navbar-nav > li > a:hover{
     color: #c07e04;
 }
-.nav.navbar-nav li a:active,
-.nav.navbar-nav li a:focus,
-.nav.navbar-nav.navbar-right li a:focus{
+.navbar-default .navbar-nav > li > a:active,
+.navbar-default .navbar-nav > li > a:focus{
     color: #ffa654;
 }
-.nav a:hover{
+.navbar-default .navbar-nav > li > a:hover{
     border-bottom: 2px solid #998ede;
 }
 .navbar {

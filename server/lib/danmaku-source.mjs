@@ -100,6 +100,17 @@
 //     side blamed for a shutdown that worked. (Without the stop latency knob
 //     the two writes always land in the harmless order, and this guard could
 //     never be observed doing anything, which is why the knob exists.)
+//   * Delete the `generation += 1` in start() — the mirror of the guard above,
+//     and the one that fails in the visitor's favour rather than ours. Red
+//     input: stopLatencyMs 10, acquire, release (the close begins and takes
+//     10ms), acquire again INSIDE that window, then advance past both the new
+//     start and the close. Without the bump the in-flight stop still holds the
+//     current generation, so its finally lands last and writes 'stopped' over a
+//     start that had already succeeded: status().listening reads false, and
+//     control.isListening() reads true, with a waiter holding a lease. Note the
+//     advance has to clear the CLOSE, not just the new start — stopping short
+//     of it passes with the defect in place, because the overwrite has not
+//     landed yet.
 //   * Delete the startAbort() call in stop() — red input: startBehaviour
 //     'hang', `const p = acquire()`, then `await stop({ force: true })`. p stays
 //     pending until the clock is advanced by the full startTimeoutMs, waiting on
@@ -126,6 +137,7 @@ import { randomUUID } from 'node:crypto'
 // costs nothing and touches no disk. Moving it to lib/ would buy a shorter
 // import path at the price of separating the rule from the file it describes.
 import { toCanonicalTimestamp } from '../db/migrate.mjs'
+import { createBiliTransport } from './bili-transport.mjs'
 import { isConfigValidated } from './env-guard.mjs'
 import { escapeForI18n } from './text-safety.mjs'
 
@@ -714,13 +726,19 @@ export function createDanmakuSource(config = {}) {
 // ---------------------------------------------------------------------------
 // transports
 
-function createProductionTransport() {
-  throw new Error(
-    'danmaku source: the production Bilibili Open Platform transport is not implemented — ' +
-      'see STORY-010. This throws at construction on purpose: an API that starts and only ' +
-      'discovers at the first visitor that it cannot verify anyone fails in front of someone ' +
-      'who did nothing wrong.',
-  )
+// STORY-010 landed, and the reason this used to throw did not go away with it —
+// it moved. createBiliTransport() refuses at construction when any Open Platform
+// credential is missing or invalid, so `mode: 'production'` still fails at boot
+// rather than at the first visitor. What changed is only which sentence you get:
+// "not implemented" became "these credentials are missing".
+//
+// The wire protocol itself is deliberately not here. This file is the lifecycle
+// — reference counting, the start race, the verdict a waiting visitor is
+// allowed to be told — and none of that should have to be read past a packet
+// decoder to be understood. See lib/bili-transport.mjs, whose header records
+// which document or reference implementation every protocol detail came from.
+function createProductionTransport(config) {
+  return createBiliTransport(config)
 }
 
 /**

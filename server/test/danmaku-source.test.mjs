@@ -20,7 +20,17 @@ import { VISITOR_VERDICTS, createDanmakuSource, normalizeDanmaku } from '../lib/
 import { settledState } from './helpers/clock.mjs'
 import { collect, devDanmakuSource } from './helpers/dev-source.mjs'
 
-/** Start a session and let the transport become ready. */
+/**
+ * Start a session and let the transport become ready.
+ *
+ * The advance() is not a convenience and the default of 0 does not make it one.
+ * This clock fires nothing on its own, and the development transport reports
+ * readiness from inside a timer even at zero latency — so `await
+ * source.acquire()` on its own parks forever with simulated time still on the
+ * start line, and every later step of the test is unreachable. That failure
+ * looks exactly like a lifecycle hang and is not one, which is why acquiring
+ * goes through here.
+ */
 async function listening(source, clock, ms = 0) {
   const pending = source.acquire()
   await clock.advance(ms)
@@ -184,6 +194,100 @@ test('a stop that loses a generation race does not re-mark a cleanly stopped sou
 
   assert.equal(source.status().state, 'stopped')
   assert.equal(source.status().visitor.verdict, VISITOR_VERDICTS.NOT_LISTENING)
+})
+
+test('a visitor arriving inside a close window is served by a fresh start, and the close does not write its ending over it', async () => {
+  // A slow close is the whole point: with an instantly resolved transport.stop()
+  // no visitor can get between the call and its finally, so the generation guard
+  // in start() would sit green forever having never been evaluated in a world
+  // where it could be false.
+  const { source, clock } = devDanmakuSource({ development: { stopLatencyMs: 50 } })
+  const first = await listening(source, clock)
+
+  source.release(first.leaseId)
+  assert.equal(source.status().state, 'stopping', 'the close window is the world this case is about')
+  assert.equal(source.control.stopCount(), 1)
+
+  const second = source.acquire()
+  assert.equal(
+    source.status().state,
+    'starting',
+    'a visitor inside the close window must be told we are starting, not that we are already listening',
+  )
+  assert.equal(source.status().visitor.verdict, VISITOR_VERDICTS.STARTING)
+
+  // Past the new start AND past the close still in flight. An advance that
+  // stops short of the close passes with the defect in place: the overwrite has
+  // not landed yet, so the window this case exists for is the one after 50ms.
+  await clock.advance(100)
+  assert.equal(await settledState(second), 'resolved', 'the visitor who arrived during the close was never served')
+  const lease = await second
+
+  assert.equal(source.control.isListening(), true, 'the transport is the authority on whether we are listening')
+  assert.equal(
+    source.status().state,
+    'listening',
+    'the close that was already in flight wrote its ending over a start that had succeeded inside its window',
+  )
+  assert.equal(
+    source.status().listening,
+    true,
+    'the visitor was told the room was unreachable while the transport was demonstrably listening',
+  )
+  assert.equal(source.status().visitor.verdict, VISITOR_VERDICTS.LISTENING)
+  assert.equal(lease.status.listening, true, 'the lease was handed out with a status that did not claim a live socket')
+  assert.equal(source.status().waiters, 1)
+
+  source.release(lease.leaseId)
+  await clock.advance(100)
+})
+
+test('two visitors arriving inside one close window are both served without waiting out the start timeout', async () => {
+  const { source, clock } = devDanmakuSource({ development: { stopLatencyMs: 50 } })
+  const first = await listening(source, clock)
+  const closeBeganAtMs = clock.nowMs()
+
+  source.release(first.leaseId)
+  assert.equal(source.status().state, 'stopping')
+
+  const a = source.acquire()
+  const b = source.acquire()
+
+  // Deliberately far short of startTimeoutMs. Advancing past it would settle a
+  // stranded waiter by timing it out, and this case would then pass with the
+  // defect in place — being released by the start timeout is the defect, not
+  // the fix. The bound below pins this advance so the case cannot later be made
+  // vacuous by widening it.
+  await clock.advance(100)
+
+  // Asserted BEFORE the socket count, and with settledState rather than await.
+  // Being left waiting is the failure this case is named for, so it has to be
+  // the assertion that fires: a socket-count check placed first goes red on the
+  // same defect and reports it as a bookkeeping discrepancy instead of as a
+  // visitor stuck on "preparing". And a bare `await a` here would hang the whole
+  // run rather than fail this one case, because node --test has no default
+  // per-test timeout.
+  assert.equal(await settledState(a), 'resolved', 'the first visitor to arrive during the close was left waiting')
+  assert.equal(await settledState(b), 'resolved', 'the second visitor to arrive during the close was left waiting')
+  assert.ok(
+    clock.nowMs() - closeBeganAtMs < 10_000,
+    'the waiters were only released by the start timeout, which is the defect and not the fix',
+  )
+
+  const [leaseA, leaseB] = await Promise.all([a, b])
+  assert.notEqual(leaseA.leaseId, leaseB.leaseId)
+  assert.equal(source.status().waiters, 2)
+  assert.equal(source.status().state, 'listening')
+  assert.equal(source.control.isListening(), true)
+  assert.equal(
+    source.control.startCount(),
+    2,
+    'the two visitors inside the close window opened a socket each instead of sharing the new one',
+  )
+
+  source.release(leaseA.leaseId)
+  source.release(leaseB.leaseId)
+  await clock.advance(100)
 })
 
 test('a start that fails is reported as ours, with the transport error kept', async () => {
@@ -406,10 +510,14 @@ test('normalizeDanmaku refuses a frame that could push an unbounded string into 
 // ---------------------------------------------------------------------------
 // Which implementation you can get
 
-test('the production transport is not implemented and says so at construction, not at the first visitor', () => {
+test('the production transport refuses at construction, naming what is missing, not at the first visitor', () => {
+  // The message moved when the real transport landed: "not implemented" became
+  // "these credentials are missing". What must not move is WHEN it is said —
+  // a source that only fails once someone is waiting for a code turns an
+  // operator's configuration mistake into a visitor's dead end.
   assert.throws(
     () => createDanmakuSource({ mode: 'production' }),
-    /the production Bilibili Open Platform transport is not implemented/,
+    /cannot be built without every Open Platform credential/,
   )
 })
 

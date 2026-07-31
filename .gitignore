@@ -5,6 +5,10 @@ node_modules
 .env.local
 .env.*.local
 
+# site-specific deployment values (hostnames, addresses). deploy.env.example is
+# the committed template; the filled-in copy must never be published.
+deploy/deploy.env
+
 # Log files
 npm-debug.log*
 yarn-debug.log*

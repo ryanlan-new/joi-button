@@ -2,16 +2,26 @@
 
 # joi-button on k3s — operator notes
 
-Four manifests that publish the built site as a read-only nginx pod on the
-single-node k3s cluster on host `tcrn-platform-dev`, reachable on the LAN at
-`http://joi.tcrn.lan`.
+Four manifests that publish the built site as a read-only nginx pod on a
+single-node k3s cluster reached over ssh.
 
-| File                  | Object                                                        |
-| --------------------- | ------------------------------------------------------------- |
-| `namespace.yaml`      | Namespace `joi-button`                                        |
-| `web-service.yaml`    | Service `joi-button-web` — ClusterIP, port 80 → 8080          |
-| `web-deployment.yaml` | Deployment `joi-button-web` — 1 replica, nginx, read-only root |
-| `ingress.yaml`        | Ingress `joi-button-public` — traefik, host `joi.tcrn.lan`     |
+**This repository is public and states no cluster's identity.** The node, the
+hostname the Ingress serves and the load-balancer address are yours, not the
+repository's: put them in `deploy/deploy.env` (git-ignored; copy
+`deploy/deploy.env.example`). Below, `$REMOTE`, `$APP_HOST` and `$LB_ADDRESS`
+refer to those values.
+
+| File                  | Object                                                          |
+| --------------------- | --------------------------------------------------------------- |
+| `namespace.yaml`      | Namespace `joi-button`                                          |
+| `web-service.yaml`    | Service `joi-button-web` — ClusterIP, port 80 → 8080            |
+| `web-deployment.yaml` | Deployment `joi-button-web` — 1 replica, nginx, read-only root   |
+| `ingress.yaml`        | Ingress `joi-button-public` — traefik, host `replace-me.invalid` |
+
+Two placeholders are substituted on the way in and never edited on disk: the
+image tag `replace-me`, and the Ingress host `replace-me.invalid` (RFC 2606's
+reserved TLD, so an unsubstituted placeholder fails loudly rather than resolving
+somewhere unintended).
 
 These manifests are the whole deployment surface. They do **not** contain the
 nginx config, the cache headers or the `/healthz` endpoint — those live in the
@@ -81,7 +91,7 @@ docker buildx build --platform linux/amd64 --provenance=false \
   -t "ghcr.io/ryanlan-new/joi-button/web:${TAG}" --build-arg PUBLIC_PATH=/ --load .
 deploy/smoke-image.sh "ghcr.io/ryanlan-new/joi-button/web:${TAG}"
 docker save "ghcr.io/ryanlan-new/joi-button/web:${TAG}" \
-  | ssh tcrn-platform-dev 'sudo k3s ctr images import -'
+  | ssh "$REMOTE" 'sudo k3s ctr images import -'
 ```
 
 The result is a **node-local** image: it exists in that node's containerd and in
@@ -90,7 +100,7 @@ no registry. Fine on one node; a landmine the day a second node joins.
 ## Apply by hand
 
 Prefer `deploy/deploy-k3s.sh apply`, which does all of this plus the assertions.
-Note that `tcrn-platform-dev` has no standalone `kubectl`: it is reached as
+Note that a stock k3s node has no standalone `kubectl`: it is reached as
 `sudo k3s kubectl`, so run these over ssh or substitute accordingly.
 
 Substitute the tag on the way in; nothing here is templated by Helm or Kustomize.
@@ -116,23 +126,33 @@ kubectl -n joi-button get deploy joi-button-web \
   -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
 ```
 
-## Verify from the LAN
+## Verify
 
-The `Host:` header form tests routing without depending on DNS — use it first, so
-a resolver problem cannot look like a deployment problem.
+Resolving the name yourself tests routing without depending on DNS — use it
+first, so a resolver problem cannot look like a deployment problem. `$APP_HOST`
+and `$LB_ADDRESS` come from `deploy/deploy.env`.
 
 ```bash
-LB=192.168.51.249
+R="--resolve ${APP_HOST}:80:${LB_ADDRESS}"
 
-curl -sS -o /dev/null -w '%{http_code}\n' -H 'Host: joi.tcrn.lan' "http://${LB}/healthz"
-curl -sSI -H 'Host: joi.tcrn.lan' "http://${LB}/"          # expect Cache-Control: no-cache
-curl -sS  -H 'Host: joi.tcrn.lan' "http://${LB}/nope/deep" | head -c 80   # expect the app shell
+curl -sS $R -o /dev/null -w '%{http_code}\n' "http://${APP_HOST}/healthz"
+curl -sSI $R "http://${APP_HOST}/"                        # expect Cache-Control: no-cache
+curl -sS  $R "http://${APP_HOST}/nope/deep" | head -c 80  # expect the app shell
 ```
 
 Then the real thing, which additionally proves the client resolves the name:
 
 ```bash
-curl -sSI http://joi.tcrn.lan/
+curl -sSI "http://${APP_HOST}/"
+```
+
+With no DNS record and no hosts entry, forward the Service port instead and
+browse it — this bypasses the Ingress, so no Host header is involved:
+
+```bash
+ssh -L 8080:127.0.0.1:18080 "$REMOTE" \
+  "sudo k3s kubectl -n joi-button port-forward --address 127.0.0.1 svc/joi-button-web 18080:80"
+# then open http://localhost:8080/
 ```
 
 Cache contract, checked in both directions by `deploy/smoke-image.sh` and worth a
@@ -178,12 +198,13 @@ somebody signed off.
   private GHCR package will fail to pull.
 - **No NetworkPolicy, no ResourceQuota, no LimitRange, no metrics or
   ServiceMonitor.** Observability is `kubectl logs` and nginx's access log.
-- **Nothing verifies the LAN DNS record.** `joi.tcrn.lan` has to resolve by some
-  means outside these files. Measured 2026-07-31 from the operator's laptop:
-  `api-docs.tcrn.lan` and `grafana.tcrn.lan` do **not** resolve there either, yet
-  both answer through the load balancer when the `Host:` header is supplied — so
-  browsing by name needs a `/etc/hosts` entry (`192.168.51.249 joi.tcrn.lan`) or a
-  LAN DNS record. Adding the hosts entry needs root and is the owner's call.
+- **Nothing verifies the DNS record.** `$APP_HOST` has to resolve by some means
+  outside these files. Do not assume it does: an ingress can be perfectly healthy
+  while the name resolves nowhere on the machine you are testing from, and the two
+  failures look identical in a browser. Browsing by name needs a LAN DNS record or
+  a hosts entry (`$LB_ADDRESS $APP_HOST`); adding a hosts entry needs root and is
+  the operator's call. The `curl --resolve` and port-forward recipes above are the
+  DNS-independent ways to confirm the deployment itself.
 - **This does not replace GitHub Pages.** The Pages workflow
   (`.github/workflows/deploy.yml`, publishing `dist/` on push to `main`) is
   untouched. The two deployments are not the same build: the container build

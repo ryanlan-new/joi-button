@@ -1,25 +1,29 @@
 # SPDX-License-Identifier: MIT
 #
-# joi-button — LAN ingress, published through the cluster's traefik.
+# joi-button — ingress, published through the cluster's traefik.
 #
-# NO TLS BLOCK, on purpose: this matches the other plain port-80 LAN ingresses on
-# this cluster (api-docs, grafana) as described in the deployment brief for this
-# story. That is the brief's statement, not something verified from this working
-# copy — check with `kubectl get ingress -A` before treating it as current.
+# THE HOST IS A PLACEHOLDER. `replace-me.invalid` is substituted on the way in by
+# deploy/deploy-k3s.sh from APP_HOST (see deploy/deploy.env.example); the file on
+# disk keeps the placeholder. `.invalid` is the RFC 2606 reserved TLD, so a
+# placeholder that escaped substitution can never resolve to a real host — it
+# fails visibly instead of routing somewhere unintended.
 #
-# What "LAN" does and does not mean here. Reachability is limited by where the
-# ingress controller's address lives (a private 192.168.51.0/24 address) and by
-# `joi.tcrn.lan` resolving only on that network. Neither is an access control:
-# anything that can open port 80 on the ingress address and send
-# `Host: joi.tcrn.lan` gets the site. There is no auth layer and nothing here
-# adds one. For this workload that is fine — the same site is already public on
-# GitHub Pages — but it must not be reused as a pattern for anything private.
+# NO TLS BLOCK, on purpose: this is a plain port-80 ingress for a private-network
+# deployment. Adding TLS means adding a `tls:` block and a certificate secret.
 #
-# No annotations are set. If the cluster's existing LAN ingresses carry a traefik
+# What that does and does not mean. Reachability is limited by where the ingress
+# controller's address lives and by the hostname resolving only on that network.
+# Neither is an access control: anything that can open port 80 on the ingress
+# address and send the right Host header gets the site. There is no auth layer and
+# nothing here adds one. For this workload that is fine — the same site is already
+# public on GitHub Pages — but it must not be reused as a pattern for anything
+# private.
+#
+# No annotations are set. If the target cluster's other ingresses carry a traefik
 # entrypoint or middleware annotation, this one needs the same, and that is a
 # follow-up rather than a guess made here.
 #
-# The client also has to resolve `joi.tcrn.lan` (LAN DNS or a hosts entry).
+# The client also has to resolve the hostname (LAN DNS, or a hosts entry).
 # Nothing in this manifest arranges that; ./README.md gives a curl that verifies
 # routing without depending on it.
 apiVersion: networking.k8s.io/v1
@@ -33,7 +37,7 @@ metadata:
 spec:
   ingressClassName: traefik
   rules:
-    - host: joi.tcrn.lan
+    - host: replace-me.invalid
       http:
         paths:
           - path: /

@@ -3,9 +3,9 @@
 # joi-button — the static site workload: nginx serving the vue-cli `dist/` build
 # that was baked into the image.
 #
-# The securityContext, revisionHistoryLimit, probe and resource shape mirror
-# TCRN-TMS `infra/k8s/deployments/api.yaml`. The SIZING deliberately does not:
-# that is a Node API server with a database behind it, this is nginx reading a
+# The securityContext, revisionHistoryLimit, probe and resource shape mirror the
+# operator's house style for API workloads. The SIZING deliberately does not:
+# those are Node servers with a database behind them, this is nginx reading a
 # 4.4MB tree off local disk and doing no work per request.
 #
 # `imagePullPolicy: IfNotPresent` is load-bearing, not a default left in place.

@@ -2,7 +2,7 @@
 #
 # joi-button — dedicated namespace for the static site workload.
 #
-# Shape follows TCRN-TMS `infra/k8s/namespace.yaml`. The SPDX line names this
+# Shape follows the operator's house style for k8s manifests. The SPDX line names this
 # repository's own licence (MIT, see ./LICENSE), not the TMS one.
 #
 # Nothing else is attached here: no ResourceQuota, no LimitRange, no

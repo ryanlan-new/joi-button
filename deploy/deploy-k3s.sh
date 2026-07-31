@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 #
-# joi-button operator entrypoint for the single-node k3s cluster on tcrn-platform-dev.
-# Chain story JOI-BUTTON-STORY-009.
+# joi-button operator entrypoint for a single-node k3s cluster reached over ssh.
 #
 #   Usage:  deploy/deploy-k3s.sh [import|apply|all]
 #
@@ -13,10 +12,22 @@
 #              the rollout
 #     all      import, then apply  (this is also the default when no argument is given)
 #
-#   Environment (all optional):
+#   SITE-SPECIFIC VALUES LIVE OUTSIDE THIS REPOSITORY.
+#   This is a public repository, so it carries no hostnames, no addresses and no
+#   cluster identity of its own. Copy deploy/deploy.env.example to
+#   deploy/deploy.env (git-ignored) and fill it in, or export the same names in
+#   your shell. Nothing here has a fallback that would quietly point at somebody
+#   else's cluster: the two values that identify a deployment are REQUIRED.
+#
+#   Required (no default — the script refuses to guess):
+#     REMOTE                 ssh host alias of the k3s node          (import, apply)
+#     APP_HOST               hostname the Ingress serves             (apply)
+#
+#   Optional:
+#     LB_ADDRESS             ingress load-balancer address, used only to print a
+#                            DNS-independent curl at the end
 #     IMAGE_REPO             default ghcr.io/ryanlan-new/joi-button/web
 #     TAG                    default dev-<short git sha of HEAD>
-#     REMOTE                 default tcrn-platform-dev            (an ssh host alias)
 #     NAMESPACE              default joi-button
 #     KUBECTL                default "sudo k3s kubectl"           (see the note below)
 #     MANIFEST_DIR           default deploy/k8s
@@ -24,6 +35,7 @@
 #     RESTART_IF_UNCHANGED   default 1                            (see the note below)
 #     SMOKE                  default 1     run deploy/smoke-image.sh before shipping
 #     ALLOW_REGISTRY_PULL    default 0     permit applying a tag absent from the node
+#     ENV_FILE               default deploy/deploy.env
 #
 #   TAGS: this script builds and deploys `dev-<short7-sha>` (plus `-dirty` when the
 #   working tree is not clean). CI publishes bare `<short7-sha>` to GHCR. The two
@@ -31,16 +43,18 @@
 #   deploying a CI image means naming it:
 #     ALLOW_REGISTRY_PULL=1 TAG=<short7-sha> deploy/deploy-k3s.sh apply
 #
-#   ASSUMPTION, stated so it can be checked rather than believed: tcrn-platform-dev has
+#   ASSUMPTION, stated so it can be checked rather than believed: a stock k3s node has
 #   no standalone kubectl binary -- kubectl is reached as a k3s subcommand, and reading
 #   /etc/rancher/k3s/k3s.yaml needs root. Hence the KUBECTL default is "sudo k3s kubectl".
-#   If that host ever grows a real kubectl with a readable kubeconfig, override it:
+#   If your node has a real kubectl with a readable kubeconfig, override it:
 #     KUBECTL=kubectl deploy/deploy-k3s.sh apply
 #   Import also needs passwordless sudo on the remote, because the image tar arrives on
 #   stdin and a sudo password prompt has nowhere to read from. That is preflighted.
 #
-#   The repository must stay clean: the manifests keep their 'replace-me' placeholder and
-#   are never edited in place. Substitution happens on a pipe.
+#   The repository must stay clean: the manifests keep their 'replace-me' placeholders —
+#   the image tag, and the Ingress host `replace-me.invalid` — and are never edited in
+#   place. Substitution happens on a pipe. `.invalid` is the RFC 2606 reserved TLD, so a
+#   placeholder that somehow escapes substitution can never resolve to a real host.
 #
 #   RESTART_IF_UNCHANGED: with imagePullPolicy IfNotPresent, re-importing new bytes under
 #   an already-deployed tag leaves the Deployment spec byte-identical, so the apply is a
@@ -53,16 +67,31 @@ set -euo pipefail
 DEFAULT_IMAGE_REPO="ghcr.io/ryanlan-new/joi-button/web"
 DEFAULT_NAMESPACE="joi-button"
 PLACEHOLDER_IMAGE="${DEFAULT_IMAGE_REPO}:replace-me"
+PLACEHOLDER_HOST="replace-me.invalid"
 
 DEPLOYMENT_NAME="joi-button-web"
-APP_HOST="joi.tcrn.lan"
-LB_ADDRESS="192.168.51.249"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+# Site-specific values come from a git-ignored file, so this repository states no
+# cluster's identity. Already-exported variables win: the file only fills gaps.
+ENV_FILE="${ENV_FILE:-${SCRIPT_DIR}/deploy.env}"
+if [[ -f "${ENV_FILE}" ]]; then
+  _pre_remote="${REMOTE:-}"; _pre_host="${APP_HOST:-}"; _pre_lb="${LB_ADDRESS:-}"
+  set -a
+  # shellcheck disable=SC1090
+  . "${ENV_FILE}"
+  set +a
+  [[ -n "${_pre_remote}" ]] && REMOTE="${_pre_remote}"
+  [[ -n "${_pre_host}" ]] && APP_HOST="${_pre_host}"
+  [[ -n "${_pre_lb}" ]] && LB_ADDRESS="${_pre_lb}"
+fi
+
 IMAGE_REPO="${IMAGE_REPO:-${DEFAULT_IMAGE_REPO}}"
-REMOTE="${REMOTE:-tcrn-platform-dev}"
+REMOTE="${REMOTE:-}"
+APP_HOST="${APP_HOST:-}"
+LB_ADDRESS="${LB_ADDRESS:-}"
 NAMESPACE="${NAMESPACE:-${DEFAULT_NAMESPACE}}"
 KUBECTL="${KUBECTL:-sudo k3s kubectl}"
 MANIFEST_DIR="${MANIFEST_DIR:-deploy/k8s}"
@@ -110,6 +139,19 @@ esac
 cd "${REPO_ROOT}"
 
 require_cmd git ssh
+
+# Refuse to guess who you are deploying to or as what. A default here would be a
+# hostname from somebody else's network baked into a public repository.
+missing_config() {
+  fail "$1 is not set. Copy deploy/deploy.env.example to deploy/deploy.env and fill it in, or export $1 for this invocation. This repository deliberately ships no cluster addresses of its own."
+}
+[[ -n "${REMOTE}" ]] || missing_config REMOTE
+if [[ "${MODE}" != "import" ]]; then
+  [[ -n "${APP_HOST}" ]] || missing_config APP_HOST
+  case "${APP_HOST}" in
+    *.invalid) fail "APP_HOST is '${APP_HOST}', which is the placeholder, not a hostname. Set a real one." ;;
+  esac
+fi
 
 if [[ -z "${TAG:-}" ]]; then
   # --short=7, not bare --short: the bare form honours core.abbrev and can return
@@ -242,7 +284,7 @@ SED_ARGS=()
 
 set_sed_args_for() {
   local file="$1"
-  SED_ARGS=(-e "s|${PLACEHOLDER_IMAGE}|${IMAGE_REF}|g")
+  SED_ARGS=(-e "s|${PLACEHOLDER_IMAGE}|${IMAGE_REF}|g" -e "s|${PLACEHOLDER_HOST}|${APP_HOST}|g")
   # Renaming the namespace is only attempted when the operator actually asked for a
   # different one; the default path touches the image tag and nothing else.
   if [[ "${NAMESPACE}" != "${DEFAULT_NAMESPACE}" ]]; then
@@ -270,7 +312,7 @@ assert_no_placeholder() {
   local label="$1" stream="$2"
   case "${stream}" in
     *replace-me*)
-      fail "rendered ${label} still contains 'replace-me'; refusing to apply an unpinned image reference."
+      fail "rendered ${label} still contains 'replace-me'; refusing to apply an unpinned image reference or an unresolved Ingress host."
       ;;
   esac
 }
@@ -286,6 +328,8 @@ do_apply() {
   # the apply would ship whatever literal is in the files. Refuse instead.
   grep -R -F -q -- "${PLACEHOLDER_IMAGE}" "${MANIFEST_DIR}" ||
     fail "no manifest under ${MANIFEST_DIR} (relative to ${REPO_ROOT}) contains the placeholder '${PLACEHOLDER_IMAGE}'; nothing would be pinned to ${TAG}."
+  grep -R -F -q -- "${PLACEHOLDER_HOST}" "${MANIFEST_DIR}" ||
+    fail "no manifest under ${MANIFEST_DIR} contains the Ingress host placeholder '${PLACEHOLDER_HOST}'; the applied Ingress would carry whatever hostname is literally in the file, not ${APP_HOST}."
 
   log "Preflighting ${KUBECTL} on ${REMOTE} ..."
   ssh -n "${REMOTE}" "${KUBECTL} get nodes -o name" >/dev/null ||
@@ -407,9 +451,24 @@ Check the site (LAN):
 
 Check the health endpoint:
   curl -sS -i http://${APP_HOST}/healthz
+EOF
+  if [[ -n "${LB_ADDRESS}" ]]; then
+    cat <<EOF
 
 If ${APP_HOST} does not resolve on this machine, address the ingress load balancer directly:
   curl -sS -i --resolve ${APP_HOST}:80:${LB_ADDRESS} http://${APP_HOST}/healthz
+EOF
+  else
+    cat <<EOF
+
+If ${APP_HOST} does not resolve on this machine, set LB_ADDRESS in ${ENV_FILE} to the
+ingress load balancer address and re-run, or browse without DNS by forwarding the
+service port:
+  ssh -L 8080:127.0.0.1:18080 ${REMOTE} "${KUBECTL} -n ${NAMESPACE} port-forward --address 127.0.0.1 svc/${DEPLOYMENT_NAME} 18080:80"
+  # then open http://localhost:8080/
+EOF
+  fi
+  cat <<EOF
 
 See pod status:
   ssh ${REMOTE} "${KUBECTL} -n ${NAMESPACE} get pods -l app.kubernetes.io/name=${DEPLOYMENT_NAME} -o wide"

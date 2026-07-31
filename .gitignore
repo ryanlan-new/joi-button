@@ -8,6 +8,10 @@ node_modules
 # site-specific deployment values (hostnames, addresses). deploy.env.example is
 # the committed template; the filled-in copy must never be published.
 deploy/deploy.env
+deploy/runtime.env
+
+# API working directory: database, staged uploads, published media
+server/.data/
 
 # Log files
 npm-debug.log*

@@ -1,0 +1,18 @@
+{
+  "name": "joi-button-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Submission, review and catalogue API for joi-button",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "migrate": "node bin/migrate.mjs",
+    "test": "node --test",
+    "dev": "node --watch server.mjs"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.11.1"
+  }
+}

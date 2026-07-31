@@ -10,5 +10,7 @@ module.exports = {
       })
     ]
   },
-  publicPath: process.env.NODE_ENV === 'production' ? '/joi-button/' : '/'
+  // GitHub Pages serves this site from the repository subpath, so the production
+  // default must stay '/joi-button/'. Container builds pass PUBLIC_PATH=/ instead.
+  publicPath: process.env.PUBLIC_PATH || (process.env.NODE_ENV === 'production' ? '/joi-button/' : '/')
 }

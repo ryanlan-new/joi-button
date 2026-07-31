@@ -1,0 +1,197 @@
+name: Build and publish container image
+
+# Triggers are deliberately narrow.
+#
+# WHY THERE IS NO `branches: [ "**" ]` HERE, AND WHY YOU SHOULD NOT ADD ONE:
+# pushing to GHCR is an outward publish — it creates/moves a package that lives
+# outside this repository. The platform's delivery convention keeps the outward
+# publish at the merge point, so the automatic trigger is `push` to `main` only.
+# A push to a feature branch must never create a public package as a side effect.
+# If you need an image from a branch, dispatch this workflow manually against
+# that ref (workflow_dispatch, below) — that is a deliberate human act, and it
+# will still not move `:latest` (see the tag computation step).
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Optional extra tag to publish in addition to the short SHA (e.g. v2.5.0). Allowed characters: A-Z a-z 0-9 . _ -'
+        required: false
+        type: string
+  push:
+    branches: [ "main" ]
+
+# Least privilege: read the source, write packages. Nothing else.
+# `packages: write` scopes the built-in GITHUB_TOKEN for GHCR; no PAT secret is
+# involved, so there is no long-lived credential to rotate or leak.
+permissions:
+  contents: read
+  packages: write
+
+# Two publishes of the same ref must not race each other, but an in-flight
+# publish is NOT cancelled — cancelling mid-push can leave a partially pushed
+# manifest behind.
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      # NOTE ON ACTION PINNING (stated rather than left silent):
+      # every third-party action below is pinned to a major version tag, which
+      # is mutable — the tag owner can move it to new code. The stricter option
+      # is to pin each action to a full commit SHA. That has deliberately NOT
+      # been done yet: it costs a maintenance loop (Dependabot or manual bumps)
+      # that this repo does not have set up. Treat this as known, accepted risk,
+      # not as an oversight.
+      - uses: actions/checkout@v4
+
+      # Buildx gives us the `--platform` and `--build-arg` plumbing used below.
+      # setup-qemu-action is intentionally absent: the target cluster is amd64
+      # and ubuntu-latest runners are amd64, so nothing needs emulating.
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image reference and tags
+        id: meta
+        env:
+          # Interpolated into env, not into the script body: the dispatch input
+          # is caller-controlled text, and pasting it straight into a shell line
+          # would be a script-injection hole.
+          OWNER: ${{ github.repository_owner }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+
+          # GHCR rejects uppercase characters in an image path. The owner is
+          # `ryanlan-new` today, which is already lowercase — but lowercasing is
+          # computed instead of hand-waved, so a future rename or transfer to a
+          # mixed-case account cannot turn this into a confusing push failure.
+          owner="$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')"
+          image="ghcr.io/${owner}/joi-button/web"
+
+          short_sha="$(git rev-parse --short=7 HEAD)"
+
+          if [ -n "${INPUT_TAG:-}" ]; then
+            # Reject anything that is not a legal, boring tag rather than letting
+            # the registry fail late with an opaque error.
+            case "$INPUT_TAG" in
+              *[!A-Za-z0-9._-]*)
+                echo "::error::Refusing tag '$INPUT_TAG': only A-Z a-z 0-9 . _ - are allowed."
+                exit 1
+                ;;
+            esac
+          fi
+
+          {
+            echo "image=${image}"
+            echo "short_sha=${short_sha}"
+            echo "primary=${image}:${short_sha}"
+            echo "tags<<TAGS_EOF"
+            echo "${image}:${short_sha}"
+            # `:latest` is only moved from the merge point. A manual dispatch
+            # against a feature ref still gets an immutable :<short-sha> image,
+            # but must not silently redefine what "latest" means for operators.
+            if [ "$REF" = "refs/heads/main" ]; then
+              echo "${image}:latest"
+            fi
+            if [ -n "${INPUT_TAG:-}" ]; then
+              echo "${image}:${INPUT_TAG}"
+            fi
+            echo "TAGS_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # Build once into the local daemon and SMOKE IT BEFORE PUBLISHING.
+      # An image that is pushed before it has ever been started is a package
+      # whose first real evaluation happens in the cluster; the runtime contract
+      # (read-only root filesystem, the two writable mounts, the cache split,
+      # honest 404s) is exactly what a started container can check and a build
+      # cannot. The push step below re-runs the same build, which is a cache hit.
+      - name: Build for smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ steps.meta.outputs.primary }}
+          build-args: |
+            PUBLIC_PATH=/
+          provenance: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test the image as the cluster runs it
+        env:
+          PRIMARY: ${{ steps.meta.outputs.primary }}
+        run: deploy/smoke-image.sh "$PRIMARY"
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          # The Dockerfile lives at the repository root. Stated explicitly so a
+          # move shows up as a workflow edit rather than a mystery build failure.
+          file: ./Dockerfile
+          # amd64 ONLY. The target cluster is a single amd64 node; a multi-arch
+          # manifest would roughly double build time and produce an arm64 layer
+          # set nothing pulls.
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            PUBLIC_PATH=/
+          # Keep the pushed artifact a plain single-platform manifest. With
+          # provenance on (buildx default when pushing) the result becomes an
+          # OCI index carrying an extra `unknown/unknown` attestation manifest,
+          # which older containerd/ctr tooling handles poorly — and the first
+          # verification path for this image is `k3s ctr images import`.
+          provenance: false
+          cache-from: type=gha
+
+      - name: Publish tag in job summary
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          PRIMARY: ${{ steps.meta.outputs.primary }}
+          SHORT_SHA: ${{ steps.meta.outputs.short_sha }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Container image published"
+            echo
+            echo "Deploy this exact image with the repository's own entrypoint —"
+            echo "\`TAG=\` is required, because the script's own default (\`dev-<sha>\`)"
+            echo "names a LOCALLY built image, not this one:"
+            echo
+            echo '```bash'
+            echo "ALLOW_REGISTRY_PULL=1 TAG=${SHORT_SHA} deploy/deploy-k3s.sh apply"
+            echo '```'
+            echo
+            echo "Or paste it into the k8s Deployment (\`joi-button-web\`) over the \`replace-me\` placeholder:"
+            echo
+            echo '```yaml'
+            echo "        image: ${PRIMARY}"
+            echo '```'
+            echo
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| repository | \`${IMAGE}\` |"
+            echo "| platform | \`linux/amd64\` |"
+            echo "| digest | \`${DIGEST}\` |"
+            echo
+            echo "All tags pushed by this run:"
+            echo
+            printf '%s\n' "$TAGS" | sed 's/^/- `/; s/$/`/'
+          } >> "$GITHUB_STEP_SUMMARY"

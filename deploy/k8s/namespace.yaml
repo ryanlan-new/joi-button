@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: MIT
+#
+# joi-button — dedicated namespace for the static site workload.
+#
+# Shape follows TCRN-TMS `infra/k8s/namespace.yaml`. The SPDX line names this
+# repository's own licence (MIT, see ./LICENSE), not the TMS one.
+#
+# Nothing else is attached here: no ResourceQuota, no LimitRange, no
+# NetworkPolicy. Every pod in this namespace declares its own requests and
+# limits, and there is exactly one workload.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: joi-button
+  labels:
+    app.kubernetes.io/name: joi-button-web
+    app.kubernetes.io/part-of: joi-button

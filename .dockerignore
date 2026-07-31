@@ -1,0 +1,52 @@
+# Keep the build context small and keep secrets/docs out of every image layer.
+#
+# DO NOT add the build's own config files here.  `vue-cli-service build` needs
+# vue.config.js, babel.config.js, postcss.config.js, tsconfig.json,
+# .browserslistrc (browser targets for babel + autoprefixer) and .eslintrc.js
+# (@vue/cli-plugin-eslint wires eslint-loader into the build and fails when no
+# ESLint config is found).  Excluding any of them breaks or silently changes
+# the bundle.
+
+# installed deps and previous build output — both are produced inside the image
+node_modules
+**/node_modules
+dist
+
+# version control and CI
+.git
+.gitignore
+.gitattributes
+.github
+.travis.yml
+
+# encrypted Travis deploy key: must never reach a build context or image layer
+id_rsa.enc
+
+# documentation (docs/ also carries uncommitted local work)
+docs
+*.md
+
+# container plumbing: the Dockerfile is passed to the builder out of band, and
+# only nginx.conf is COPYed, so exclude the rest of deploy/ but re-admit it.
+Dockerfile
+.dockerignore
+deploy/*
+!deploy/nginx.conf
+
+# editor / OS noise
+.DS_Store
+**/.DS_Store
+.idea
+.vscode
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw*
+
+# logs and local env files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.env.local
+.env.*.local

@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: MIT
+#
+# joi-button — LAN ingress, published through the cluster's traefik.
+#
+# NO TLS BLOCK, on purpose: this matches the other plain port-80 LAN ingresses on
+# this cluster (api-docs, grafana) as described in the deployment brief for this
+# story. That is the brief's statement, not something verified from this working
+# copy — check with `kubectl get ingress -A` before treating it as current.
+#
+# What "LAN" does and does not mean here. Reachability is limited by where the
+# ingress controller's address lives (a private 192.168.51.0/24 address) and by
+# `joi.tcrn.lan` resolving only on that network. Neither is an access control:
+# anything that can open port 80 on the ingress address and send
+# `Host: joi.tcrn.lan` gets the site. There is no auth layer and nothing here
+# adds one. For this workload that is fine — the same site is already public on
+# GitHub Pages — but it must not be reused as a pattern for anything private.
+#
+# No annotations are set. If the cluster's existing LAN ingresses carry a traefik
+# entrypoint or middleware annotation, this one needs the same, and that is a
+# follow-up rather than a guess made here.
+#
+# The client also has to resolve `joi.tcrn.lan` (LAN DNS or a hosts entry).
+# Nothing in this manifest arranges that; ./README.md gives a curl that verifies
+# routing without depending on it.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: joi-button-public
+  namespace: joi-button
+  labels:
+    app.kubernetes.io/name: joi-button-web
+    app.kubernetes.io/part-of: joi-button
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: joi.tcrn.lan
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: joi-button-web
+                port:
+                  number: 80

@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: MIT
+#
+# joi-button — ClusterIP service in front of the static site pod.
+#
+# Port 80 on the service, 8080 in the container: the container runs unprivileged
+# (uid 101) and cannot bind a low port, while callers — the ingress, and anyone
+# port-forwarding — get the conventional HTTP port. The container port is also
+# named `http`, which is what the probes address.
+apiVersion: v1
+kind: Service
+metadata:
+  name: joi-button-web
+  namespace: joi-button
+  labels:
+    app.kubernetes.io/name: joi-button-web
+    app.kubernetes.io/part-of: joi-button
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: joi-button-web
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 8080

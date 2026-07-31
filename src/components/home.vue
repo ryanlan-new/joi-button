@@ -5,15 +5,15 @@
             <div class="cate-body">
                 <button class="btn btn-info" @click="random">{{ $t("action.randomplay") }}</button>
                 <button class="btn btn-info" @click="stopPlay">{{$t("action.stopvoice") }}</button>
-                <button class="btn btn-info" :class="{ 'disabled': autoCheck || loopCheck}" @click="overlap" :title="$t('info.overlapTips')">
+                <button class="btn btn-info" :class="{ 'disabled': autoCheck || loopCheck, 'is-on': overlapCheck }" :aria-pressed="String(overlapCheck)" @click="overlap" :title="$t('info.overlapTips')">
                     <input class="checkbox" type="checkbox" onchange="this.checked = this.parentNode.disabled" v-model="overlapCheck">
                     <span>{{ $t("action.overlap") }}</span>
                 </button>
-                <button class="btn btn-info" :class="{ 'disabled': overlapCheck || loopCheck }" @click="autoPlay">
+                <button class="btn btn-info" :class="{ 'disabled': overlapCheck || loopCheck, 'is-on': autoCheck }" :aria-pressed="String(autoCheck)" @click="autoPlay">
                     <input class="checkbox" type="checkbox" onchange="this.checked = this.parentNode.disabled" v-model="autoCheck">
                     <span>{{ $t("action.autoplay") }}</span>
                 </button>
-                <button class="btn btn-info" :class="{ 'disabled': autoCheck || overlapCheck }" @click="loop" :title="$t('info.loopTips')">
+                <button class="btn btn-info" :class="{ 'disabled': autoCheck || overlapCheck, 'is-on': loopCheck }" :aria-pressed="String(loopCheck)" @click="loop" :title="$t('info.loopTips')">
                     <input class="checkbox" type="checkbox" onchange="this.checked = this.parentNode.disabled" v-model="loopCheck">
                     <span>{{ $t("action.loop") }}</span>
                 </button>
@@ -33,7 +33,7 @@
         <div v-for="category in voices" v-bind:key="category.categoryName">
             <div class="cate-header">{{ $t("voicecategory." + category.categoryName) }}</div>
             <div class="cate-body">
-                <button class="btn btn-new" v-for="voiceItem in category.voiceList" v-bind:key="voiceItem.name" @click="play(voiceItem)">
+                <button class="btn btn-new" :class="{ 'is-playing': voice.name === voiceItem.name }" v-for="voiceItem in category.voiceList" v-bind:key="voiceItem.name" @click="play(voiceItem)">
                     {{ $t("voice." + voiceItem.name )}}
                 </button>
             </div>
@@ -43,9 +43,12 @@
 
 <style lang="scss" scoped>
 .cate-header{
-    background-color: #dd2e44;
+    background-color: var(--candy-red);
     color: white;
-    text-shadow: 0 0 3px #FF0000, 0 0 1px #FF0000;
+    /* The old #FF0000 glow measured 1.15:1 against its own fill — a blur in a
+       colour indistinguishable from the background, softening the glyph edge.
+       White on --candy-red is 4.62:1, the thinnest pass on the site, and that
+       figure assumes a crisp edge. */
     border: 2px solid #ff546d;
     border-radius: 10px;
     text-align: center;
@@ -61,12 +64,8 @@
     background-color: white;
     background-repeat: repeat-x;
     background-size: contain;
-    color: #bf8ac2;
-    //text-shadow: -1px 1px 1px #666381,
-    //              1px 1px 0px #666381,
-    //              1px -1px 0 #666381,
-    //              -1px -1px 0 #666381;
-    border: 3px solid #dd2e44;
+    color: var(--plum-700);             /* 8.99:1 on white, was #bf8ac2 at 2.75 */
+    border: 3px solid var(--candy-red);
     border-radius: 20px;
     transition-duration: 0.4s;
     margin: 5px;
@@ -77,13 +76,48 @@
     word-break: break-all !important;
     white-space: normal !important;
 }
+/* The pastels moved from ink to FILL. Each state now owns a colour, and each
+   pairing is measured: nothing here is decorative-only.
+     hover   pink  fill + plum ink   5.40:1
+     focus   blue  fill + plum ink   5.65:1  + a real 3px ring
+     on      lilac fill + plum-900   5.21:1
+     active/playing  red fill + white 4.62:1                                   */
 .cate-body button:hover{
-    color: #fdb3d8;
-    text-shadow: -1px 0 1px #a358a8, 0 1px #a358a8, 1px 0 #a358a8, 0 -1px #a358a8;
+    background-color: var(--pink);
+    color: var(--plum-700);
+    text-shadow: none;
 }
-.cate-body button:focus{
-    color: #91d7f1;
-    text-shadow: -1px 0 1px #666381, 0 1px #666381, 1px 0 #666381, 0 -1px #666381;
+/* A mouse click used to leave the button stuck in the focus colour until you
+   clicked elsewhere. :focus-visible keeps the ring for keyboards only. */
+.cate-body button:focus:not(:focus-visible){
+    background-color: white;
+    color: var(--plum-700);
+    outline: none;
+}
+.cate-body button:focus-visible{
+    background-color: var(--blue);
+    color: var(--plum-700);
+    text-shadow: none;
+    /* outline-offset is load-bearing: at 0 the ring sits on the 3px red border
+       and its contrast against it drops below 3:1. Do not "tidy" it away. */
+    outline: 3px solid var(--cocoa-900);
+    outline-offset: 2px;
+}
+.cate-body button.is-on{
+    background-color: var(--lilac);
+    color: var(--plum-900);
+}
+.cate-body button:active,
+.cate-body button.is-playing{
+    background-color: var(--candy-red);
+    color: white;
+}
+/* Bootstrap's stock .disabled is opacity .65, which composites to 3.82:1. These
+   three are not actually inactive — they stay focusable and clickable and the
+   handler early-returns — so the WCAG exemption for inactive components does not
+   apply to them. */
+.cate-body button.disabled{
+    opacity: .8;
 }
 .checkbox {
     display: inline-block;
@@ -99,8 +133,9 @@
     height: 5px; /* Specified height */
     background: #d3d3d3; /* Grey background */
     outline: none; /* Remove outline */
-    opacity: 0.7; /* Set transparency (for mouse-over effects on hover) */
-    -webkit-transition: .2s; /* 0.2 seconds transition on hover */
+    /* opacity:.7 removed: it composited the thumb down to 3.15:1 against the
+       track while the stylesheet claimed the thumb's own colour. */
+    -webkit-transition: .2s;
     transition: opacity .2s;
 }
 
@@ -115,14 +150,14 @@
     appearance: none;
     width: 15px; /* Set a specific slider handle width */
     height: 15px; /* Slider handle height */
-    background: #4CAF50; /* Green background */
+    background: var(--plum-700);
     cursor: pointer; /* Cursor on hover */
 }
 
 .slider::-moz-range-thumb {
     width: 15px; /* Set a specific slider handle width */
     height: 15px; /* Slider handle height */
-    background: #4CAF50; /* Green background */
+    background: var(--plum-700);
     cursor: pointer; /* Cursor on hover */
 }
 </style>

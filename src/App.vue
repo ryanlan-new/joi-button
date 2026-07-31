@@ -49,6 +49,34 @@
 <style lang="scss">
 @import "../node_modules/bootstrap/dist/css/bootstrap.css";
 @import url('https://fonts.googleapis.com/css2?family=Mina&family=Open+Sans:wght@600&family=PT+Sans&family=Source+Sans+Pro&family=M+PLUS+Rounded+1c:wght@700&display=swap');
+
+/* Palette. The five hues the site has always had are unchanged; what changed is
+   which ROLE each one plays. The pastels used to be text colours on white, where
+   they measured 2.75:1 (every voice button at rest), 1.66:1 (hover) and 1.59:1
+   (focus) — perceived as "purple-ish" rather than read. They are now FILLS, with
+   two new dark values, same hues, carrying the text.
+
+   Every ratio below is measured against the surface the colour actually sits on.
+   Nothing on this site qualifies for WCAG's large-text 3:1 allowance: Bootstrap's
+   .btn is 14px normal, .navbar-brand 18px normal, .cate-header 20px normal. So
+   text is held to 4.5:1 and non-text UI (borders, focus rings) to 3:1.
+
+   --candy-red is pinned at #dd2e44 and must not be darkened "for margin": at
+   #cf2338 the focus ring's contrast against the button border drops 3.08 -> 2.68
+   and fails. It is the value that makes the whole system close. */
+:root{
+    --cream:      #fedcae;  /* page fill                                   */
+    --amber:      #ffa703;  /* navbar fill                                 */
+    --amber-deep: #f7ac67;  /* footer fill                                 */
+    --candy-red:  #dd2e44;  /* borders, section headers, pressed/playing   */
+    --pink:       #fdb3d8;  /* hover FILL      (was hover ink)             */
+    --blue:       #91d7f1;  /* focus FILL      (was focus ink)             */
+    --lilac:      #bf8ac2;  /* mode-engaged FILL (was the resting ink)     */
+    --plum-700:   #6f2f74;  /* ink on white 8.99:1 — same hue as --lilac   */
+    --plum-900:   #3f1c45;  /* ink on --lilac 5.21:1                       */
+    --cocoa-700:  #4a2e00;  /* ink on --amber 6.41:1 / on --amber-deep 6.57*/
+    --cocoa-900:  #3d2600;  /* focus ring                                  */
+}
 body{
     padding-top: 70px;
     /* Resolved by webpack, so the emitted URL follows publicPath instead of
@@ -58,7 +86,7 @@ body{
        untouched by css-loader. */
     background-image: url('~@/assets/body_bg.svg');
     font-family: 'Aptos', sans-serif;
-    background-color: #fedcae;
+    background-color: var(--cream);
 }
 .navbar-brand {
     font-family: 'Aptos', sans-serif;
@@ -70,34 +98,43 @@ body{
    this rule is (0,1,2) and loses to Bootstrap's own
    `.navbar-default .navbar-nav > li > a { color:#777 }` at (0,2,2). */
 .navbar-default .navbar-nav > li > a, .navbar-default .navbar-brand{
-    color: white;
-    text-shadow: -1px 1px 0 #000,
-                  1px 1px 0 #000,
-                  1px -1px 0 #000,
-                  -1px -1px 0 #000;
+    /* Owner ruling: keep the orange, change the lettering. There is no amber
+       that carries both white and dark text — the crossover near #c07e04 gives
+       white 3.37 and cocoa 3.70, both failing — so white-with-a-black-outline
+       was not rescuable. WCAG gives a 1px outline no credit anyway, and on CJK
+       glyphs the four shadows clog the counters. */
+    color: var(--cocoa-700);            /* 6.41:1 on --amber */
+    text-shadow: none;
 }
-.navbar-default .navbar-brand:hover{
-    color: #fedcae;
-}
-.navbar-default .navbar-brand:focus{
-    color: #f7ac67;
-}
+.navbar-default .navbar-brand:hover,
 .navbar-default .navbar-nav > li > a:hover{
-    color: #c07e04;
+    color: var(--cocoa-700);
+    background-color: var(--cream);     /* 9.55:1 */
+    border-bottom: 2px solid var(--plum-700);
 }
-.navbar-default .navbar-nav > li > a:active,
+.navbar-default .navbar-brand:focus,
 .navbar-default .navbar-nav > li > a:focus{
-    color: #ffa654;
+    color: var(--cocoa-700);
+    background-color: var(--cream);
+    outline: 3px solid var(--cocoa-900);
+    outline-offset: 2px;
 }
-.navbar-default .navbar-nav > li > a:hover{
-    border-bottom: 2px solid #998ede;
+/* Bootstrap's own .dropdown-menu rules are (0,2,2) and would silently take over
+   these states; declared here so the language menu is designed, not inherited. */
+.dropdown-menu > li > a{
+    color: var(--cocoa-700);            /* 12.49:1 on white */
+}
+.dropdown-menu > li > a:hover,
+.dropdown-menu > li > a:focus{
+    color: var(--cocoa-700);
+    background-color: #f5f5f5;          /* 11.45:1 */
 }
 .navbar {
     min-height: 55px;
 }
 .navbar-inner{
     background-size: contain;
-    background-color: #ffa703;
+    background-color: var(--amber);
     background-repeat: repeat-x;
 }
 .main-content{
@@ -106,12 +143,23 @@ body{
 .footer {
     width: 100%;
     height: auto;
-    background-color: #f7ac67;
-    border-top: 3px solid #f7ac67;
+    background-color: var(--amber-deep);
+    border-top: 3px solid var(--amber-deep);
 }
 .footer-content {
     padding-top: 10px;
-    color: #666;
+    color: var(--cocoa-700);            /* 6.57:1 on --amber-deep, was #666 at 3.02 */
+}
+/* Bootstrap paints links #337ab7, which is 2.40:1 on the footer fill — the most
+   prominent thing down there and previously unreadable. */
+.footer-content a{
+    color: var(--cocoa-700);
+    text-decoration: underline;
+}
+.footer-content a:hover{ color: var(--plum-700); }   /* 4.73:1 */
+.footer-content a:focus{
+    outline: 3px solid var(--cocoa-900);
+    outline-offset: 2px;
 }
 .text-right{
     text-align: right;

@@ -414,6 +414,14 @@ export function createDanmakuSource(config = {}) {
     if (startPromise) return startPromise
 
     cancelLinger()
+    // start() bumps too, not just stop(). Without this, a stop already in flight
+    // still holds the current generation, so when its `finally` lands it writes
+    // 'stopped' over a start that succeeded during the close window — and a
+    // visitor who arrived just then is told the room is unreachable while the
+    // transport is demonstrably listening. That is the false report this module
+    // exists to prevent, inverted. Bumping here makes the in-flight stop's
+    // captured generation stale, so its finally correctly declines to write.
+    generation += 1
     const gen = generation
     setState('starting')
     startedAt = toCanonicalTimestamp(clock.now())

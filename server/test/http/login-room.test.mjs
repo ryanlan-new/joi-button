@@ -1,0 +1,253 @@
+// SPDX-License-Identifier: MIT
+//
+// The room session, over HTTP: when a code may exist at all, what a visitor is
+// told when our side cannot hear the room, and who keeps the socket open.
+//
+// The development transport is DRIVEN here — slow, hung, failing, dropping
+// mid-wait. Every one of those knobs exists because some guard in the real
+// implementation is unfalsifiable without it: "the code is not shown before the
+// socket is listening" cannot fail against a source that is listening before you
+// finish asking, and "never tell a visitor who did everything right that they
+// did not send it" cannot fail against a source that never drops.
+
+import assert from 'node:assert/strict'
+import test from 'node:test'
+
+import { LOGIN_STATES } from '../../routes/public.mjs'
+import { VISITOR, boot, cookieOf, get } from './harness.mjs'
+
+// ---------------------------------------------------------------------------
+// A code cannot exist while we are deaf
+
+test('no code exists — on the wire or in the database — until the room session is really listening', async (t) => {
+  const { app, db, clock, danmaku } = await boot(t)
+  danmaku.control.setStartLatencyMs(3000)
+
+  const started = await app.inject({ method: 'POST', url: '/api/login/start' })
+  const cookie = cookieOf(started)
+  const token = started.json().pollToken
+  assert.equal(started.json().code, undefined)
+
+  // Sampled across the whole opening window rather than at one convenient
+  // instant. The claim is an INVARIANT — "a code is visible only while we are
+  // listening" — so it is asserted at every observation, not at one.
+  const observations = []
+  for (let i = 0; i < 16; i += 1) {
+    const body = (await get(app, `/api/login/status?token=${token}`, { cookie })).json()
+    observations.push({
+      listening: danmaku.status().listening,
+      hasCode: typeof body.code === 'string',
+      codeRows: db.prepare("SELECT count(*) AS n FROM verify_codes").get().n,
+      state: body.state,
+    })
+    await clock.advance(250)
+  }
+
+  for (const [i, seen] of observations.entries()) {
+    assert.equal(
+      seen.hasCode && !seen.listening,
+      false,
+      `observation ${i}: a code was on the wire while the socket was not listening`,
+    )
+    assert.equal(
+      seen.codeRows > 0 && !seen.listening && seen.state === LOGIN_STATES.PREPARING,
+      false,
+      `observation ${i}: a verify_codes row existed before the socket was listening`,
+    )
+  }
+  // The two halves of the vacuity guard: without them this passes against a
+  // source that never becomes ready AND against one that is ready instantly.
+  assert.ok(
+    observations.some((seen) => !seen.listening && !seen.hasCode && seen.state === LOGIN_STATES.PREPARING),
+    'the window in which the guard could have been false was never entered',
+  )
+  assert.ok(observations.some((seen) => seen.hasCode && seen.listening), 'no code was ever issued at all')
+})
+
+test('a start that never becomes ready issues no code and ends as room-unreachable, not as waiting', async (t) => {
+  const { app, db, clock, danmaku } = await boot(t)
+  // The transport never settles; the lifecycle's own startTimeoutMs (10s) is
+  // what ends it. Without the injected clock this case would cost ten real
+  // seconds and get skipped.
+  danmaku.control.setStartBehaviour('hang')
+
+  const started = await app.inject({ method: 'POST', url: '/api/login/start' })
+  const cookie = cookieOf(started)
+  const token = started.json().pollToken
+
+  for (const step of [1000, 4000, 4000]) {
+    await clock.advance(step)
+    const body = (await get(app, `/api/login/status?token=${token}`, { cookie })).json()
+    assert.equal(body.state, LOGIN_STATES.PREPARING)
+    assert.equal(body.code, undefined)
+  }
+
+  await clock.advance(2000) // past startTimeoutMs
+  const dead = (await get(app, `/api/login/status?token=${token}`, { cookie })).json()
+  assert.equal(dead.state, LOGIN_STATES.ROOM_UNREACHABLE)
+  assert.equal(dead.code, undefined)
+  assert.equal(dead.canAssertNotSeen, undefined, 'a deaf socket claimed it would have seen the danmaku')
+  // Never our own error text: it is ours and can carry internals a visitor has
+  // no business reading.
+  assert.equal(dead.lastError, undefined)
+  assert.equal(db.prepare('SELECT count(*) AS n FROM verify_codes').get().n, 0)
+})
+
+// ---------------------------------------------------------------------------
+// room-unreachable is its own state
+
+test('every way our side can be deaf is reported as room-unreachable, never as "you have not sent it yet"', async (t) => {
+  const { app, clock, danmaku } = await boot(t)
+
+  // (a) the room could not be reached at all: no code was ever issued.
+  danmaku.control.setStartBehaviour('fail')
+  const failed = await app.inject({ method: 'POST', url: '/api/login/start' })
+  const failedCookie = cookieOf(failed)
+  await clock.advance(1)
+  const unreachable = (
+    await get(app, `/api/login/status?token=${failed.json().pollToken}`, { cookie: failedCookie })
+  ).json()
+  assert.equal(unreachable.state, LOGIN_STATES.ROOM_UNREACHABLE)
+  assert.equal(unreachable.canAssertNotSeen, undefined)
+  assert.equal(unreachable.detail, 'unreachable')
+
+  // (b) a code IS live and the socket drops underneath it.
+  danmaku.control.setStartBehaviour('ready')
+  const started = await app.inject({ method: 'POST', url: '/api/login/start' })
+  const cookie = cookieOf(started)
+  await clock.advance(1)
+  const read = async () => (await get(app, '/api/login/status', { cookie })).json()
+
+  const live = await read()
+  assert.equal(live.state, LOGIN_STATES.WAITING)
+  assert.equal(live.canAssertNotSeen, true)
+  const code = live.code
+
+  danmaku.control.disconnect({ reason: 'simulated' })
+  const down = await read()
+  assert.equal(down.state, LOGIN_STATES.ROOM_UNREACHABLE, 'a deaf socket was reported as waiting')
+  assert.equal(down.detail, 'reconnecting')
+  assert.equal(down.canAssertNotSeen, undefined)
+  // The code is NOT withdrawn: it is still valid, and taking it off the screen
+  // makes the UI flicker for a reason that has nothing to do with the visitor.
+  assert.equal(down.code, code)
+
+  // (c) the reconnect itself fails: still deaf, still its own state.
+  danmaku.control.setStartBehaviour('fail')
+  await clock.advance(2000)
+  const stillDown = await read()
+  assert.equal(stillDown.state, LOGIN_STATES.ROOM_UNREACHABLE)
+  assert.equal(stillDown.detail, 'source_failed')
+  assert.equal(stillDown.canAssertNotSeen, undefined)
+
+  // (d) recovered — and this is the case a UI most easily gets wrong. We ARE
+  // listening now, and there was a window since the code was issued in which we
+  // were not, so a danmaku sent during it is simply gone. That is not
+  // room-unreachable and it is emphatically not "you have not sent it yet".
+  danmaku.control.setStartBehaviour('ready')
+  await clock.advance(2000)
+  const recovered = await read()
+  assert.equal(recovered.state, LOGIN_STATES.WAITING)
+  assert.equal(recovered.canAssertNotSeen, false, 'a gap in our listening was reported as continuous')
+  assert.equal(recovered.resend, true)
+  assert.equal(recovered.code, code)
+
+  // And the code still works, which is what makes `resend` an invitation rather
+  // than a dead end.
+  danmaku.control.emitDanmaku({ openId: VISITOR.openId, displayName: 'Viewer', text: code })
+  assert.equal((await read()).state, LOGIN_STATES.VERIFIED)
+})
+
+// ---------------------------------------------------------------------------
+// who keeps the socket open
+
+test('two visitors share one socket: the first finishing does not tear it down, and the one who walked away lets it stop', async (t) => {
+  const { app, db, clock, danmaku } = await boot(t)
+
+  const first = await app.inject({ method: 'POST', url: '/api/login/start' })
+  const second = await app.inject({ method: 'POST', url: '/api/login/start' })
+  const cookieOne = cookieOf(first)
+  const cookieTwo = cookieOf(second)
+  assert.notEqual(cookieOne, cookieTwo, 'the second visitor was handed the first one\'s session')
+
+  await clock.advance(1)
+  const liveOne = (await get(app, '/api/login/status', { cookie: cookieOne })).json()
+  const liveTwo = (await get(app, '/api/login/status', { cookie: cookieTwo })).json()
+  assert.equal(liveOne.state, LOGIN_STATES.WAITING)
+  assert.equal(liveTwo.state, LOGIN_STATES.WAITING)
+  assert.notEqual(liveOne.code, liveTwo.code)
+
+  // Two waiters, ONE socket. The source deduplicates the connection, not the
+  // reference — and it is the reference count that decides the lifetime.
+  assert.equal(danmaku.status().waiters, 2)
+  assert.equal(danmaku.control.startCount(), 1, 'two visitors opened two sockets')
+  assert.equal(danmaku.control.stopCount(), 0)
+
+  // A third visitor arriving five minutes into an already-open socket gets their
+  // OWN ten minutes: inheriting `listeningSince` would hand them five, and would
+  // make the continuity answer read as true for a window they were never in.
+  await clock.advance(5 * 60 * 1000)
+  const third = await app.inject({ method: 'POST', url: '/api/login/start' })
+  const cookieThree = cookieOf(third)
+  await clock.advance(1)
+  const liveThree = (await get(app, '/api/login/status', { cookie: cookieThree })).json()
+  assert.equal(
+    Date.parse(liveThree.issuedAt) - Date.parse(liveOne.issuedAt),
+    5 * 60 * 1000,
+    'a later visitor inherited an earlier visitor\'s clock',
+  )
+  assert.equal(liveThree.canAssertNotSeen, true)
+  assert.equal(danmaku.status().waiters, 3)
+  assert.equal(danmaku.control.startCount(), 1)
+
+  // The first one finishes. Its lease goes back; the other two hold the socket.
+  danmaku.control.emitDanmaku({ openId: 'open-one', displayName: 'One', text: liveOne.code })
+  await clock.advance(1)
+  assert.equal(
+    (await get(app, '/api/login/status', { cookie: cookieOne })).json().state,
+    LOGIN_STATES.VERIFIED,
+  )
+  assert.equal(danmaku.status().waiters, 2, 'a completed verification took more than its own lease')
+  assert.equal(danmaku.status().listening, true, 'the socket closed while two visitors were still waiting')
+  assert.equal(danmaku.control.stopCount(), 0)
+  assert.equal(danmaku.control.isListening(), true)
+
+  // The second one is still waiting, and nothing about the first one's success
+  // shows up as a gap in their window.
+  const stillWaiting = (await get(app, '/api/login/status', { cookie: cookieTwo })).json()
+  assert.equal(stillWaiting.state, LOGIN_STATES.WAITING)
+  assert.equal(stillWaiting.canAssertNotSeen, true)
+
+  // Both remaining visitors walk away — no cancel, no logout, just a closed tab.
+  // The ruled ten minutes are what bound this: a lease cannot outlive the code
+  // it was taken for.
+  await clock.advance(11 * 60 * 1000)
+  assert.equal(danmaku.status().waiters, 0, 'a lease nobody released pinned the room session')
+  assert.equal(danmaku.status().listening, false)
+  assert.equal(danmaku.control.isListening(), false)
+  assert.equal(danmaku.control.stopCount(), 1)
+
+  const expired = (await get(app, '/api/login/status', { cookie: cookieTwo })).json()
+  assert.equal(expired.state, LOGIN_STATES.EXPIRED)
+  // v_room_demand is the derived reference count; a row left 'pending' would
+  // make the view claim demand that no longer exists.
+  assert.equal(db.prepare('SELECT count(*) AS n FROM v_room_demand').get().n, 0)
+})
+
+test('cancelling gives the socket back even while the start is still in flight', async (t) => {
+  const { app, clock, danmaku } = await boot(t)
+  danmaku.control.setStartLatencyMs(3000)
+
+  const started = await app.inject({ method: 'POST', url: '/api/login/start' })
+  const cancelled = await app.inject({
+    method: 'POST',
+    url: '/api/login/cancel',
+    headers: { cookie: cookieOf(started) },
+  })
+  assert.equal(cancelled.json().cancelled, true)
+
+  await clock.advance(5000)
+  // Without the abandoned check in the acquire continuation this lease is never
+  // released and pins the room for its full TTL on behalf of nobody.
+  assert.equal(danmaku.status().waiters, 0)
+})

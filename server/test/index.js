@@ -25,6 +25,8 @@ const reachedByFileDiscovery = process.argv[1] === fileURLToPath(import.meta.url
 
 if (!reachedByFileDiscovery) {
   await Promise.all([
+    import('./admin.test.mjs'),
+    import('./catalog.test.mjs'),
     import('./danmaku-source.test.mjs'),
     import('./env-guard.test.mjs'),
     import('./schema-audit-log.test.mjs'),

@@ -646,9 +646,13 @@ function inviteError(code) {
 // A read that can refuse — a page size out of range, a malformed cursor, an item
 // id that names nothing. Nothing is audited: a read changes nothing, and a log
 // entry per GET would bury the entries that record a change.
-function answered(reply, run) {
+// `run` may be synchronous or async. Awaiting it means a rejected async read —
+// e.g. readBranding hitting a branding.json it cannot read — is caught here and
+// turned into the same error envelope a synchronous throw gets, instead of
+// escaping as an unhandled rejection that fastify answers with a bare 500.
+async function answered(reply, run) {
   try {
-    return run()
+    return await run()
   } catch (error) {
     return replyForError(reply, error)
   }
@@ -1773,13 +1777,33 @@ export function restoreClip(db, paths, clipId, { actor, now = () => new Date() }
 // catalogue write happens after, through publishCatalogue, which records its own
 // admin.catalog.write with the digest. `stampColumn`/`clearColumn` are a fixed
 // pair of column names chosen by the two callers above, never caller input.
+//
+// Ordering hazard, accepted deliberately: the state commits BEFORE the catalogue
+// is rewritten, so if publishCatalogue then throws (a referenced blob is missing,
+// or the write fails) the DB and catalog.json diverge until the next successful
+// publish — the same "stale-but-playable" tradeoff publishCatalogue documents,
+// and why a just-retired clip keeps playing rather than 404ing. Restore has one
+// gap the accepted window does not cover for free: it PUBLISHES this clip, so a
+// restore whose own blob is gone would commit and then fail the rewrite. We
+// check that one blob up front and refuse before the transaction, turning a
+// silent divergence into a clean 409.
 function setClipState(db, paths, clipId, { from, to, verb, stampColumn, clearColumn, refusal, actor, now }) {
   requireActor(actor)
   const at = toCanonicalTimestamp(now())
-  const clip = db.prepare('SELECT id, state FROM clips WHERE id = ?').get(clipId)
+  const clip = db.prepare('SELECT id, state, media_sha256 FROM clips WHERE id = ?').get(clipId)
   if (!clip) throw new AdminError(`no clip ${clipId}`, { code: 'not_found', status: 404 })
   if (clip.state !== from) {
     throw new AdminError(refusal(clip.state), { code: 'conflict', status: 409, details: { state: clip.state } })
+  }
+  if (to === 'published') {
+    const problems = checkMedia(db, { mediaDir: paths.mediaDir }, [clip.media_sha256])
+    if (problems.length > 0) {
+      throw new AdminError(`clip ${clipId} cannot be restored: its media file is missing from storage`, {
+        code: 'conflict',
+        status: 409,
+        details: { problems },
+      })
+    }
   }
 
   const apply = db.transaction(() => {
@@ -2180,7 +2204,7 @@ async function readSingleFileUpload(request, noun = 'file') {
       await finished(part.file)
     }
   } catch (error) {
-    throw mapUploadRefusal(error)
+    throw mapUploadRefusal(error, noun)
   }
 
   if (found === null) {
@@ -2200,7 +2224,7 @@ async function readSingleFileUpload(request, noun = 'file') {
  * reaches fastify as a 500 rather than being reported as a refusal of something
  * the owner did.
  */
-function mapUploadRefusal(error) {
+function mapUploadRefusal(error, noun = 'file') {
   switch (error?.code) {
     case 'FST_REQ_FILE_TOO_LARGE':
       return new AdminError('That image is larger than this server accepts as one upload.', {
@@ -2209,9 +2233,9 @@ function mapUploadRefusal(error) {
       })
     case 'FST_FILES_LIMIT':
     case 'FST_PARTS_LIMIT':
-      return new AdminError('Send one wallpaper at a time.', { code: 'too_many_files', status: 413 })
+      return new AdminError(`Send one ${noun} at a time.`, { code: 'too_many_files', status: 413 })
     case 'FST_INVALID_MULTIPART_CONTENT_TYPE':
-      return new AdminError('Send the wallpaper as a multipart form with one file part named "file".', {
+      return new AdminError(`Send the ${noun} as a multipart form with one file part named "file".`, {
         code: 'not_multipart',
         status: 415,
       })

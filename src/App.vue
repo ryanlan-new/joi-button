@@ -534,6 +534,11 @@ class App extends Vue {
         // undefined. The player's handlers below are assigned for the same
         // reason — none of this wants to be reactive.
         this._identityTicket = 0;
+        // The <title> the bundle shipped (index.html's trilingual default),
+        // captured before any branding is applied. applyBranding restores it when
+        // the current language has no custom docTitle, so switching to a language
+        // with an empty docTitle cannot strand the previous language's title.
+        this._defaultDocTitle = (typeof document !== 'undefined') ? document.title : '';
         if (API_ENABLED) this.refreshIdentity();
         this.loadBranding();
     }
@@ -562,7 +567,11 @@ class App extends Vue {
         const b = this.branding;
         if (!b) return;
         const dt = b.docTitle && b.docTitle[this.currentLang];
+        // Empty for this language means "use the bundle default", so put the
+        // captured default back rather than leaving whatever a previous language
+        // set — otherwise zh→en with only zh filled keeps the zh title in the tab.
         if (typeof dt === 'string' && dt !== '') document.title = dt;
+        else if (this._defaultDocTitle) document.title = this._defaultDocTitle;
         if (b.faviconPath) {
             const href = '/branding/' + b.faviconPath;
             const links = document.querySelectorAll(

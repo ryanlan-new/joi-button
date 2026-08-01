@@ -284,7 +284,8 @@ export default {
         faviconHint: '同时用作浏览器标签图标和标题前的小图标。支持 PNG 或 ICO，最大 256 KB。',
         faviconNone: '还没有自定义图标，用的是自带的。',
         save: '保存',
-        saved: '已保存，刷新页面即可看到。'
+        saved: '已保存，刷新页面即可看到。',
+        faviconSaved: '图标已更新，刷新页面即可看到。（标题等未保存的改动仍保留在框里）'
       },
       theme: {
         title: '主题',
@@ -594,7 +595,8 @@ export default {
         faviconHint: 'Used both as the browser-tab icon and the little mark before the title. PNG or ICO, up to 256 KB.',
         faviconNone: 'No custom icon yet; the built-in one is in use.',
         save: 'Save',
-        saved: 'Saved. Reload a page to see it.'
+        saved: 'Saved. Reload a page to see it.',
+        faviconSaved: 'Icon updated. Reload a page to see it. (Any unsaved text edits are still in the boxes.)'
       },
       theme: {
         title: 'Theme',
@@ -904,7 +906,8 @@ export default {
         faviconHint: 'タブのアイコンと、見出し前の小さなマークの両方に使います。PNG または ICO、最大 256 KB。',
         faviconNone: 'カスタムアイコンはまだなく、既定のものを使用中です。',
         save: '保存',
-        saved: '保存しました。ページを再読み込みすると反映されます。'
+        saved: '保存しました。ページを再読み込みすると反映されます。',
+        faviconSaved: 'アイコンを更新しました。ページを再読み込みすると反映されます。（未保存のテキスト編集は入力欄に残っています）'
       },
       theme: {
         title: 'テーマ',

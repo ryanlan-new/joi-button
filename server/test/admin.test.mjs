@@ -24,6 +24,8 @@ import adminRoutes, {
   readAuditPage,
   readItem,
   readQueue,
+  restoreClip,
+  retireClip,
   reviewItem,
 } from '../routes/admin.mjs'
 import { listByActor, record } from '../lib/audit.mjs'
@@ -866,6 +868,59 @@ test('a dry run promotes nothing, writes nothing and is not logged as a change',
 })
 
 // ---------------------------------------------------------------------------
+// retire / restore (STORY-065, STORY-075)
+
+// Take one clip all the way to published-and-on-the-page, so retire/restore have
+// something real to move. Returns the same handles readyToPublish does.
+function published(t) {
+  const ready = readyToPublish(t)
+  publishCatalogue(ready.db, ready.paths, { actor: ADMIN, now: at })
+  assert.equal(ready.db.prepare('SELECT state FROM clips WHERE id = ?').get(ready.clipId).state, 'published')
+  return ready
+}
+
+test('retire drops a clip from the catalogue and restore puts it back', (t) => {
+  const { db, clipId, paths } = published(t)
+
+  retireClip(db, paths, clipId, { actor: ADMIN, now: at })
+  assert.equal(db.prepare('SELECT state FROM clips WHERE id = ?').get(clipId).state, 'retired')
+  assert.deepEqual(JSON.parse(readFileSync(paths.catalogFile, 'utf8')).clips, [])
+
+  restoreClip(db, paths, clipId, { actor: ADMIN, now: at })
+  assert.equal(db.prepare('SELECT state FROM clips WHERE id = ?').get(clipId).state, 'published')
+  assert.deepEqual(
+    JSON.parse(readFileSync(paths.catalogFile, 'utf8')).clips.map((c) => c.id),
+    [clipId],
+  )
+})
+
+test('restore refuses BEFORE committing when the clip\'s own media file is gone, leaving it retired', (t) => {
+  const { db, media, clipId, paths } = published(t)
+  retireClip(db, paths, clipId, { actor: ADMIN, now: at })
+  const catalogAfterRetire = readFileSync(paths.catalogFile, 'utf8')
+
+  // The blob a restore would republish is missing from the volume. Without the
+  // up-front check the state would commit to 'published' and only then would the
+  // catalogue rewrite throw, stranding the DB one publish ahead of the file.
+  rmSync(join(paths.mediaDir, media.storagePath))
+
+  assert.throws(
+    () => restoreClip(db, paths, clipId, { actor: ADMIN, now: at }),
+    (error) => {
+      assert.equal(error.status, 409)
+      assert.equal(error.code, 'conflict')
+      return true
+    },
+  )
+
+  // The transition never happened: state, catalogue and audit are exactly as the
+  // retire left them — no half-applied 'published' row, no divergence.
+  assert.equal(db.prepare('SELECT state FROM clips WHERE id = ?').get(clipId).state, 'retired')
+  assert.equal(readFileSync(paths.catalogFile, 'utf8'), catalogAfterRetire)
+  assert.equal(db.prepare("SELECT count(*) AS n FROM audit_log WHERE action = 'admin.clip.restore'").get().n, 0)
+})
+
+// ---------------------------------------------------------------------------
 // the log
 
 function threeEntries(db) {
@@ -987,6 +1042,30 @@ test('a route that refuses answers with the refusal, not with a 500, and an admi
   assert.equal(JSON.parse(entry.detail).succeeded, false)
   assert.equal(db.prepare('SELECT state FROM batch_items WHERE id = ?').get(itemId).state, 'pending')
   assert.equal(ids.batch, db.prepare('SELECT batch_id FROM batch_items WHERE id = ?').get(itemId).batch_id)
+})
+
+test('GET /api/admin/branding turns an unreadable file into the error envelope, not a bare 500', async (t) => {
+  // The guard for the async-answered() fix: readBranding is async and rejects on
+  // an unreadable branding.json. A SYNCHRONOUS answered() cannot catch that
+  // rejection — it escapes to fastify as a generic 500 — so the handler must
+  // await. Reverting answered() to `return run()` makes the await below throw,
+  // failing this test; the direct readBranding unit test cannot see that because
+  // it never goes through answered().
+  const { db } = pendingFixture(t)
+  const paths = workspace(t)
+  // branding.json derives from catalog.json's directory. A DIRECTORY where the
+  // file is expected raises EISDIR on read — the shape a wrong-owner volume's
+  // EACCES has in production, and the one readBranding turns into read_failed.
+  mkdirSync(join(paths.dir, 'branding.json'))
+  const fastify = fakeFastify()
+  await adminRoutes(fastify, { db, adminOpenIds: [ADMIN.openId], paths, now: at })
+  const handler = fastify.routes.find((r) => r.method === 'GET' && r.url === '/api/admin/branding').handler
+
+  const reply = fakeReply()
+  // Must RESOLVE, not reject: a rejection here is exactly the bare-500 regression.
+  await handler({ adminIdentity: ADMIN }, reply)
+  assert.equal(reply.state.status, 500)
+  assert.equal(reply.state.body.error, 'read_failed')
 })
 
 test('an error only becomes an HTTP answer when this module knows what it means', () => {

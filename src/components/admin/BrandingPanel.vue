@@ -12,6 +12,7 @@
 
         <p v-if="callError" class="adm-note adm-note-bad">{{ callError }}</p>
         <p v-if="saved" class="adm-note adm-note-ok">{{ $t("admin.branding.saved") }}</p>
+        <p v-if="faviconSaved" class="adm-note adm-note-ok">{{ $t("admin.branding.faviconSaved") }}</p>
 
         <template v-if="form">
             <fieldset class="adm-fieldset">
@@ -105,6 +106,7 @@ class BrandingPanel extends Vue {
     uploading = false
     callError = ''
     saved = false
+    faviconSaved = false
 
     created() {
         this.reload()
@@ -118,6 +120,7 @@ class BrandingPanel extends Vue {
         this.busy = true
         this.callError = ''
         this.saved = false
+        this.faviconSaved = false
         try {
             const response = await this.adminApi.get('/api/admin/branding')
             this.form = this.normalise(response.branding)
@@ -150,6 +153,7 @@ class BrandingPanel extends Vue {
         this.saving = true
         this.callError = ''
         this.saved = false
+        this.faviconSaved = false
         try {
             const response = await this.adminApi.post('/api/admin/branding', this.form)
             this.form = this.normalise(response.branding)
@@ -170,6 +174,7 @@ class BrandingPanel extends Vue {
         this.uploading = true
         this.callError = ''
         this.saved = false
+        this.faviconSaved = false
         try {
             // Multipart, so a direct fetch rather than the JSON client. The route
             // stores the favicon AND persists it onto branding.json in one call,
@@ -186,8 +191,15 @@ class BrandingPanel extends Vue {
             if (!res.ok) {
                 throw new Error((payload && payload.message) || ('HTTP ' + res.status))
             }
-            this.form = this.normalise(payload.branding)
-            this.saved = true
+            // Only the favicon changed on the server. Keep the operator's
+            // in-flight text edits — this upload did not carry them, and the
+            // route merged the icon onto the ON-DISK document — and adopt just
+            // the new path. Replacing the whole form here (the old behaviour)
+            // silently discarded a title typed but not yet Saved.
+            const next = payload && payload.branding ? payload.branding.faviconPath : null
+            if (this.form) this.form.faviconPath = (typeof next === 'string') ? next : null
+            else this.form = this.normalise(payload && payload.branding)
+            this.faviconSaved = true
         } catch (error) {
             this.callError = error.message
         } finally {

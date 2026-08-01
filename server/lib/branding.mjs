@@ -13,7 +13,7 @@
 // changes in place at a stable name and is served no-cache, like theme.css.
 
 import { createHash } from 'node:crypto'
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 
 export class BrandingError extends Error {
@@ -35,6 +35,12 @@ const FAVICON_MAX_BYTES = 256 * 1024
 
 export const FAVICON_URL_PREFIX = '/branding/'
 const FAVICON_NAME_PATTERN = /^[0-9a-f]{64}\.(?:png|ico)$/
+
+// Temp files during the atomic writes below carry a LEADING dot so the web pod's
+// dotfile guard (nginx `location ~ /\.` inside `^~ /branding/`) refuses to serve
+// a crash-leftover — the same joint lib/wallpaper.mjs's TEMP_NAME_PREFIX guards.
+// Both writeBranding and storeFavicon build their temp names from this.
+export const BRANDING_TEMP_PREFIX = '.branding-'
 
 // The empty shape. Every field blank means "use the bundle's default", so a
 // fresh install and a cleared field render identically.
@@ -76,9 +82,18 @@ export async function readBranding(brandingFile) {
 export async function writeBranding(brandingFile, input) {
   const branding = validateBranding(input)
   await mkdir(dirname(brandingFile), { recursive: true })
-  const tmp = `${brandingFile}.tmp.${process.pid}`
-  await writeFile(tmp, JSON.stringify(branding), { mode: 0o644 })
-  await rename(tmp, brandingFile)
+  // Leading-dot temp name, and unlink it if the write or rename fails: the web
+  // pod's dotfile guard (nginx `location ~ /\.`) refuses to serve a leading-dot
+  // file, so a crash mid-write cannot leave a half-written temp publicly
+  // fetchable — the convention lib/wallpaper.mjs set and storeFavicon shares.
+  const tmp = join(dirname(brandingFile), `${BRANDING_TEMP_PREFIX}write-${process.pid}`)
+  try {
+    await writeFile(tmp, JSON.stringify(branding), { mode: 0o644 })
+    await rename(tmp, brandingFile)
+  } catch (error) {
+    await unlink(tmp).catch(() => {})
+    throw error
+  }
   return branding
 }
 
@@ -210,9 +225,18 @@ export async function storeFavicon(buffer, { faviconDir } = {}) {
   const name = `${sha}.${ext}`
   await mkdir(faviconDir, { recursive: true })
   const target = join(faviconDir, name)
-  const tmp = `${target}.tmp.${process.pid}`
-  await writeFile(tmp, buffer, { mode: 0o644 })
-  await rename(tmp, target)
+  // Leading dot so the /branding/ dotfile guard hides this temp. A suffix name
+  // like `<sha>.png.tmp.<pid>` has no `/.` in its URL and would be served 200
+  // with a one-year immutable cache if a crash orphaned it; a leading-dot name
+  // is refused. Unlink on any failure so a rename error leaves nothing behind.
+  const tmp = join(faviconDir, `${BRANDING_TEMP_PREFIX}tmp-${process.pid}-${name}`)
+  try {
+    await writeFile(tmp, buffer, { mode: 0o644 })
+    await rename(tmp, target)
+  } catch (error) {
+    await unlink(tmp).catch(() => {})
+    throw error
+  }
   return { path: name, bytes: buffer.length, format: ext }
 }
 

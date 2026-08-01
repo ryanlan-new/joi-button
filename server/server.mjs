@@ -57,6 +57,7 @@ import { CONFIG_EXTRA_REQUIREMENTS, ENV_SOURCES, loadConfig } from './config.mjs
 import { applyConnectionPragmas, migrate } from './db/migrate.mjs'
 import { assertSafeConfig } from './lib/env-guard.mjs'
 import { createDanmakuSource } from './lib/danmaku-source.mjs'
+import { createLoudnessNormalizer } from './lib/loudness.mjs'
 import { createTurnstile } from './lib/turnstile.mjs'
 
 /**
@@ -127,6 +128,16 @@ async function main() {
   const danmaku = createDanmakuSource(config.danmaku)
   const turnstile = createTurnstile(config.turnstile)
 
+  // --- 6b. the loudness normalizer -----------------------------------------
+  // Probed HERE, not at first upload. The probe failing at boot names ffmpeg
+  // and how to install it; the same absence discovered at first submission
+  // would surface as every clip rejected with audio_processing_failed, which
+  // reads as "submitters keep sending broken files" until somebody tails the
+  // log. Same philosophy as env-guard: a process that cannot do its job
+  // refuses to start, in words.
+  const normalizer = createLoudnessNormalizer()
+  await normalizer.probe()
+
   // --- 7. the app ----------------------------------------------------------
   const app = createApp({
     config,
@@ -144,7 +155,7 @@ async function main() {
     routes: [
       {
         plugin: publicRoutes,
-        options: { db, config, danmakuSource: danmaku, turnstile },
+        options: { db, config, danmakuSource: danmaku, turnstile, normalizer },
       },
       {
         plugin: adminRoutes,

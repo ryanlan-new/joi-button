@@ -72,6 +72,7 @@ import { join } from 'node:path'
 
 import { createApp } from '../../app.mjs'
 import { createDanmakuSource } from '../../lib/danmaku-source.mjs'
+import { createLoudnessNormalizer } from '../../lib/loudness.mjs'
 import { createTurnstile } from '../../lib/turnstile.mjs'
 import adminRoutes from '../../routes/admin.mjs'
 import publicRoutes, { LOGIN_STATES } from '../../routes/public.mjs'
@@ -319,6 +320,11 @@ export async function boot(t, {
   //    is per instance, so a second one would silently make every replay pass.
   const danmaku = createDanmakuSource(config.danmaku)
   const turnstile = createTurnstile(config.turnstile)
+  // The real normalizer, same as production: the http harness exercises the
+  // submission route end to end, so a stand-in here would prove less than the
+  // process it stands for. ffmpeg is present in the API image and on a dev
+  // machine that can run this suite at all.
+  const normalizer = createLoudnessNormalizer()
 
   const app = createApp({
     config: whole,
@@ -330,7 +336,7 @@ export async function boot(t, {
     routes: [
       {
         plugin: publicRoutes,
-        options: { db, config: whole, danmakuSource: danmaku, turnstile, now: clock.now },
+        options: { db, config: whole, danmakuSource: danmaku, turnstile, normalizer, now: clock.now },
       },
       {
         // No cookieName, deliberately — see the header.

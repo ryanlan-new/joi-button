@@ -186,7 +186,7 @@
 
 import { createHash, randomBytes, randomInt, randomUUID } from 'node:crypto'
 import { createWriteStream } from 'node:fs'
-import { mkdir, rename, rm, stat } from 'node:fs/promises'
+import { mkdir, open, rename, rm, stat } from 'node:fs/promises'
 import { extname, join } from 'node:path'
 import { finished } from 'node:stream/promises'
 
@@ -271,6 +271,8 @@ export const PUBLIC_REASONS = Object.freeze({
     'This is not one of the audio formats this site accepts.',
   unreadable_duration:
     'The length of this audio could not be determined, so it cannot be published.',
+  audio_processing_failed:
+    'This clip could not be processed for volume normalization. Re-export it and try again.',
   duplicate_in_batch: 'The same file appears twice in this submission.',
   already_published: 'This exact audio is already on the site.',
   invalid_name: 'This name cannot be used.',
@@ -401,6 +403,10 @@ export default async function publicRoutes(fastify, options = {}) {
   const config = required(options.config, 'config')
   const source = required(options.danmakuSource, 'danmakuSource')
   const turnstile = required(options.turnstile, 'turnstile')
+  // Required, no fallback: a registration that forgot it would otherwise accept
+  // uploads at whatever level they arrive, and the wall's one loudness would
+  // quietly become many. lib/loudness.mjs owns the target and the reasons.
+  const normalizer = required(options.normalizer, 'normalizer')
 
   // The app's own session-cookie service when there is one, and a local
   // equivalent when there is not.
@@ -1249,11 +1255,27 @@ export default async function publicRoutes(fastify, options = {}) {
     const audio = await inspectAudio(upload)
     if (!audio.ok) return audio
 
-    if (seenSha.has(audio.value.sha256)) return { ok: false, code: 'duplicate_in_batch' }
+    // Loudness normalization — the intake step that replaced the README's "run
+    // MP3Gain yourself before submitting". It re-encodes, so EVERYTHING
+    // identity-shaped about the blob (sha256, bytes, duration) is recomputed
+    // from the OUTPUT below; the numbers measured from the upload describe a
+    // file that no longer proceeds. Dedupe still works because the re-encode is
+    // deterministic (-bitexact): same original in, same bytes out.
+    let media
+    try {
+      media = await normalizeStagedUpload(normalizer, upload, audio.value)
+    } catch (error) {
+      // The full story (ffmpeg stderr in error.cause) belongs in the log; the
+      // submitter gets the one fact they can act on.
+      fastify.log.warn({ err: error, key: item.key }, 'loudness normalization refused an upload')
+      return { ok: false, code: 'audio_processing_failed' }
+    }
+
+    if (seenSha.has(media.sha256)) return { ok: false, code: 'duplicate_in_batch' }
     // clips.media_sha256 is UNIQUE, so this blob could never become a second
     // clip. Refusing now beats accepting something whose rejection is already
     // determined.
-    if (q.clipByMedia.get(audio.value.sha256) !== undefined) {
+    if (q.clipByMedia.get(media.sha256) !== undefined) {
       return { ok: false, code: 'already_published' }
     }
 
@@ -1265,13 +1287,13 @@ export default async function publicRoutes(fastify, options = {}) {
       value: {
         item,
         sourcePath: upload.path,
-        targetPath: join(mediaDir, storagePath(audio.value.sha256, audio.value.ext)),
+        targetPath: join(mediaDir, storagePath(media.sha256, audio.value.ext)),
         media: {
-          sha256: audio.value.sha256,
+          sha256: media.sha256,
           ext: audio.value.ext,
           content_type: audio.value.contentType,
-          bytes: upload.bytes,
-          duration_seconds: audio.value.duration,
+          bytes: media.bytes,
+          duration_seconds: media.duration,
           uploaded_at: at,
         },
         proposed_label: text.value.label,
@@ -1591,6 +1613,87 @@ function classifyAudio(format, head) {
 /** media.storage_path is GENERATED as exactly this; the two must not drift. */
 function storagePath(sha256, ext) {
   return `${sha256.slice(0, 2)}/${sha256.slice(2, 4)}/${sha256}.${ext}`
+}
+
+/**
+ * Run the normalizer over a staged upload and make its OUTPUT the upload.
+ *
+ * The output is re-sniffed with the same parser and the same classifier the
+ * input passed, not because ffmpeg is suspected of malice but because "our own
+ * encoder surely produced what we asked for" is exactly the kind of sentence
+ * this file refuses to build on — the input was only ever trusted after
+ * sniffing, and the output earns the same treatment. A mismatch here is a bug
+ * in ENCODERS, and it surfaces as a rejected item plus a logged error instead
+ * of a .mp3 path serving ogg bytes for a year from an immutable cache.
+ *
+ * On success the original staged file is gone and `upload.path` points at the
+ * normalized one, so the route's discard() — which cleans by upload.path —
+ * keeps cleaning the file that actually exists, whether the item is later
+ * accepted (placeMedia renames it away; rm force tolerates that) or rejected
+ * by a check downstream of here.
+ */
+async function normalizeStagedUpload(normalizer, upload, kind) {
+  const result = await normalizer.normalize(upload.path, kind)
+  try {
+    const { format } = await parseFile(result.path)
+    const head = await readHead(result.path, 16)
+    const rekind = classifyAudio(format, head)
+    if (rekind === null || rekind.ext !== kind.ext) {
+      throw new Error(
+        `normalized output classified as '${rekind?.ext ?? 'nothing'}' but the input was '${kind.ext}'`,
+      )
+    }
+    const duration = format.duration
+    if (!Number.isFinite(duration) || duration <= 0) {
+      throw new Error('normalized output has no measurable duration')
+    }
+    const { sha256, bytes } = await hashFile(result.path)
+    await rm(upload.path, { force: true })
+    upload.path = result.path
+    return { sha256, bytes, duration }
+  } catch (error) {
+    // The .norm file is ours; the caller only knows upload.path. Leaving it
+    // would strand one temp file per failed item until the staging sweep.
+    await rm(result.path, { force: true }).catch(() => {})
+    throw error
+  }
+}
+
+/** sha256 + size of a file on disk, streamed — uploads are capped, but 5 MB is
+ * still not a Buffer someone should readFileSync ten of. */
+async function hashFile(path) {
+  const handle = await open(path, 'r')
+  try {
+    const hash = createHash('sha256')
+    const buffer = Buffer.alloc(64 * 1024)
+    let bytes = 0
+    for (;;) {
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length)
+      if (bytesRead === 0) break
+      hash.update(buffer.subarray(0, bytesRead))
+      bytes += bytesRead
+    }
+    return { sha256: hash.digest('hex'), bytes }
+  } finally {
+    await handle.close()
+  }
+}
+
+/** First `length` bytes of a file — what classifyAudio's ftyp test reads. */
+async function readHead(path, length) {
+  const handle = await open(path, 'r')
+  try {
+    const buffer = Buffer.alloc(length)
+    let filled = 0
+    while (filled < length) {
+      const { bytesRead } = await handle.read(buffer, filled, length - filled)
+      if (bytesRead === 0) break
+      filled += bytesRead
+    }
+    return buffer.subarray(0, filled)
+  } finally {
+    await handle.close()
+  }
 }
 
 /**

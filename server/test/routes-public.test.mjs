@@ -25,14 +25,17 @@
 // them is checked to carry a human sentence beside the code.
 
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { execFile } from 'node:child_process'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
+import { promisify } from 'node:util'
 
 import Fastify from 'fastify'
 
 import { createDanmakuSource } from '../lib/danmaku-source.mjs'
+import { createLoudnessNormalizer } from '../lib/loudness.mjs'
 import { createTurnstile } from '../lib/turnstile.mjs'
 import publicRoutes, { LOGIN_STATES, PUBLIC_REASONS, readSubmitterNote } from '../routes/public.mjs'
 import { createTestClock } from './helpers/clock.mjs'
@@ -89,7 +92,31 @@ function mpeg({ layerBits, frames = 40 }) {
   return Buffer.concat(out)
 }
 
-const MP3 = mpeg({ layerBits: 0b01 })
+// A REAL mp3 for the should-succeed paths, encoded here by the same ffmpeg the
+// normalizer spawns. It used to be mpeg({ layerBits: 0b01 }) — crafted frames
+// with zeroed side info — which music-metadata's sniff accepts but no decoder
+// can play. The loudness step decodes every accepted upload, so those bytes
+// now land where they always belonged: rejected, as audio_processing_failed.
+// That is the pipeline getting STRICTER (a formerly publishable undecodable
+// blob no longer is), and the fixture for "a good mp3" has to actually be one.
+// -20 dB so the normalizer has real gain to apply rather than a no-op.
+const MP3 = await (async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'joi-mp3-fixture-'))
+  const path = join(dir, 'tone.mp3')
+  await promisify(execFile)('ffmpeg', [
+    '-hide_banner', '-nostats',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=44100:duration=0.4',
+    '-af', 'volume=-20dB',
+    '-c:a', 'libmp3lame', '-b:a', '128k', '-f', 'mp3',
+    path,
+  ])
+  const bytes = readFileSync(path)
+  rmSync(dir, { recursive: true, force: true })
+  return bytes
+})()
+// The Layer II stream STAYS crafted: its whole point is to be refused by
+// classifyAudio's Layer 3 test — upstream of any decoder — and crafted frames
+// are exactly good enough to reach that check.
 const MP2 = mpeg({ layerBits: 0b10 })
 const PNG = Buffer.concat([Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex'), Buffer.alloc(512, 7)])
 
@@ -176,6 +203,13 @@ async function boot(
     config,
     danmakuSource: source,
     turnstile: createTurnstile(config.turnstile),
+    // The REAL normalizer, not a stand-in: these tests upload real (synthetic)
+    // audio, and the pipeline's promise is that what lands in media/ is
+    // re-encoded at the wall's loudness. A fake here would green-light a suite
+    // whose sha/bytes/duration flow never met the code that computes them in
+    // production. Costs the suite a working ffmpeg — which the API image has by
+    // construction, and a dev machine gets with `brew install ffmpeg`.
+    normalizer: createLoudnessNormalizer(),
     now: clock.now,
     ...(maxPendingCodes === undefined ? {} : { maxPendingCodes }),
   })
@@ -925,7 +959,7 @@ async function assembled(t, { maxFileBytes = 5 * 1024 * 1024 } = {}) {
     logger: false,
     report: { production: false, banner: null },
     routes: [
-      { plugin: publicRoutes, options: { db, config: whole, danmakuSource: danmaku, turnstile: createTurnstile(config.turnstile), now: clock.now } },
+      { plugin: publicRoutes, options: { db, config: whole, danmakuSource: danmaku, turnstile: createTurnstile(config.turnstile), normalizer: createLoudnessNormalizer(), now: clock.now } },
     ],
   })
   await app.ready()

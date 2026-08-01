@@ -73,6 +73,17 @@ LABEL org.opencontainers.image.title="joi-button api" \
 
 WORKDIR /app
 
+# ffmpeg carries the submission pipeline's loudness normalization
+# (server/lib/loudness.mjs): every accepted clip is measured with the
+# replaygain filter and re-encoded to the wall's 80 dB before it is hashed and
+# stored. server.mjs probes for it at boot and refuses to start without it, so
+# removing this line does not produce a quieter image — it produces one that
+# will not run. Measured cost at adoption (Alpine ffmpeg 8.1.2): +127 MB, and
+# the replaygain filter, libmp3lame, aac and libvorbis were confirmed present
+# in that build. The runtime stage installs it rather than the deps stage: the
+# deps stage exists to compile node addons and its packages are deleted again.
+RUN apk add --no-cache ffmpeg
+
 # node_modules from the builder — including the compiled addon, which was built
 # against this exact base image's musl and Node ABI.
 COPY --from=deps /app/node_modules ./node_modules
@@ -82,6 +93,18 @@ COPY --from=deps /app/node_modules ./node_modules
 # deploy/runtime.env can never be baked into a layer. In the pod the same names
 # arrive through envFrom, and config.mjs treats the absent file as normal.
 COPY server/ ./
+
+# Verify the loudness pipeline IN THE IMAGE THAT SHIPS. This is the one place the
+# ogg/libvorbis and m4a/aac legs are genuinely exercised: a developer's ffmpeg
+# may lack libvorbis and test/loudness.test.mjs skips that leg there, announcing
+# it. Here every leg runs, so "the Alpine ffmpeg has the encoders this needs" is
+# an assertion that fails the build if it ever stops being true — not a comment
+# that quietly rots. Fast (~1 s of synthesized tones) and self-contained: the
+# test spawns the same ffmpeg the runtime does and needs no network. It runs as
+# root, BEFORE `USER 101`, only so it may write its temp fixtures to $TMPDIR; it
+# builds nothing that survives into a layer. Removing this line does not shrink
+# the image — it removes the only proof the shipped binary can do the job.
+RUN node --test test/loudness.test.mjs
 
 # 8080, matching config.mjs's DEFAULTS.port and the web container's port, so the
 # two workloads are described the same way in the manifests.

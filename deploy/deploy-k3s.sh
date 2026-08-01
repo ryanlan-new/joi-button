@@ -126,6 +126,15 @@ MANIFEST_DIR="${MANIFEST_DIR:-deploy/k8s}"
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-120s}"
 RESTART_IF_UNCHANGED="${RESTART_IF_UNCHANGED:-1}"
 
+# Where the images come from:
+#   local      build them here and stream into the node's containerd over ssh
+#              (the original two-machine model; needs REMOTE + Docker here).
+#   registry   they were built and pushed to a registry (GHCR) by CI; the node's
+#              kubelet pulls them. No Docker, no build, no import — and this is
+#              what makes a SINGLE-HOST deploy (bootstrap run ON the node, REMOTE
+#              empty) possible, because nothing here needs a builder anymore.
+IMAGE_SOURCE="${IMAGE_SOURCE:-local}"
+
 MODE="${1:-all}"
 
 log() { printf '[deploy-k3s] %s\n' "$*"; }
@@ -134,6 +143,13 @@ fail() {
   printf '[deploy-k3s] ERROR: %s\n' "$*" >&2
   exit 1
 }
+
+# Run a command "on the node": over ssh when REMOTE is set, in a local shell when
+# it is not. Every kubectl/ctr call in the apply path goes through these two, so
+# the SAME code drives a remote node and this machine. `-n` on the ssh form keeps
+# it from swallowing our stdin; the piping form deliberately lets stdin through.
+node_exec() { if [[ -n "${REMOTE}" ]]; then node_exec "$1"; else bash -c "$1"; fi; }
+node_pipe() { if [[ -n "${REMOTE}" ]]; then ssh    "${REMOTE}" "$1"; else bash -c "$1"; fi; }
 
 usage() {
   # Print this file's header comment block, minus the leading '#'. Anchored on the
@@ -166,14 +182,24 @@ esac
 # MANIFEST_DIR mean the same thing no matter where the operator invoked this from.
 cd "${REPO_ROOT}"
 
-require_cmd git ssh
+require_cmd git
+# ssh is only a dependency when there is a remote to reach. A single-host deploy
+# (REMOTE empty) drives the local node directly and needs no ssh at all.
+[[ -z "${REMOTE}" ]] || require_cmd ssh
 
 # Refuse to guess who you are deploying to or as what. A default here would be a
 # hostname from somebody else's network baked into a public repository.
 missing_config() {
   fail "$1 is not set. Copy deploy/deploy.env.example to deploy/deploy.env and fill it in, or export $1 for this invocation. This repository deliberately ships no cluster addresses of its own."
 }
-[[ -n "${REMOTE}" ]] || missing_config REMOTE
+# REMOTE is REQUIRED for the local-build path (it names the node to stream the
+# image into over ssh) but OPTIONAL for the registry path (the node is this
+# machine, and the kubelet pulls the image itself). An empty REMOTE therefore
+# only makes sense with IMAGE_SOURCE=registry; anything else is a misconfiguration
+# that would otherwise fail deep inside a build with a confusing message.
+if [[ -z "${REMOTE}" && "${IMAGE_SOURCE}" != "registry" ]]; then
+  fail "REMOTE is empty, which means a single-host deploy ON this node — but that only works with IMAGE_SOURCE=registry (there is no builder here to make the images). Set IMAGE_SOURCE=registry to pull them from the registry, or set REMOTE to build here and stream them to a node."
+fi
 if [[ "${MODE}" != "import" ]]; then
   [[ -n "${APP_HOST}" ]] || missing_config APP_HOST
   case "${APP_HOST}" in
@@ -186,19 +212,33 @@ if [[ -z "${TAG:-}" ]]; then
   # 8+ characters, which would silently disagree with the 7 that
   # .github/workflows/image.yml publishes.
   GIT_SHA="$(git rev-parse --short=7 HEAD 2>/dev/null || true)"
-  [[ -n "${GIT_SHA}" ]] ||
-    fail "cannot read the short git sha of HEAD in ${REPO_ROOT}; pass an explicit TAG=... instead."
-  # TWO TAG NAMESPACES, ON PURPOSE. CI publishes `<sha>`; this script builds
+  # TWO TAG NAMESPACES, ON PURPOSE. CI publishes `<sha>`; the local-build path uses
   # `dev-<sha>`. They must not collide: a locally built image carries the bytes of
-  # your working tree, and with `imagePullPolicy: IfNotPresent` a local build
-  # tagged `<sha>` would shadow the CI image of that commit on the node forever,
-  # with nothing to reveal the substitution. `-dirty` extends the same honesty to
-  # uncommitted edits. To deploy a CI-published image, pass its tag explicitly:
-  #   ALLOW_REGISTRY_PULL=1 TAG=<sha> deploy/deploy-k3s.sh apply
-  TAG="dev-${GIT_SHA}"
-  if [[ -n "$(git status --porcelain 2>/dev/null || true)" ]]; then
-    TAG="${TAG}-dirty"
-    warn "working tree is dirty; tagging ${TAG} so the tag cannot claim to be commit ${GIT_SHA}."
+  # your working tree, and with `imagePullPolicy: IfNotPresent` a local build tagged
+  # `<sha>` would shadow the CI image of that commit on the node forever.
+  if [[ "${IMAGE_SOURCE}" == "registry" ]]; then
+    # The registry path PULLS the image CI published — the BARE short sha — so match
+    # it exactly. But the code may have been synced here WITHOUT its .git (a tar or
+    # `git archive`), in which case there is no sha to read: fall back to :latest,
+    # which CI also publishes from main. :latest is not reproducible, so it is a
+    # fallback with a warning, not a default to reach for.
+    if [[ -n "${GIT_SHA}" ]]; then
+      TAG="${GIT_SHA}"
+      if [[ -n "$(git status --porcelain 2>/dev/null || true)" ]]; then
+        warn "working tree is dirty; the registry holds HEAD's image (${TAG}), which does NOT include your uncommitted changes. Commit and let CI publish, or pass an explicit TAG=."
+      fi
+    else
+      TAG="latest"
+      warn "no git checkout here (code was synced without .git), so pinning the registry image to :latest — published on main. For a reproducible, sha-pinned deploy, run from a git checkout or pass TAG=<sha>."
+    fi
+  else
+    [[ -n "${GIT_SHA}" ]] ||
+      fail "cannot read the short git sha of HEAD in ${REPO_ROOT}; the local-build path needs it. Pass an explicit TAG=..., or use IMAGE_SOURCE=registry to pull a published image instead of building."
+    TAG="dev-${GIT_SHA}"
+    if [[ -n "$(git status --porcelain 2>/dev/null || true)" ]]; then
+      TAG="${TAG}-dirty"
+      warn "working tree is dirty; tagging ${TAG} so the tag cannot claim to be commit ${GIT_SHA}."
+    fi
   fi
 fi
 
@@ -212,7 +252,8 @@ log "repo root:  ${REPO_ROOT}"
 log "mode:       ${MODE}"
 log "web image:  ${IMAGE_REF}"
 log "api image:  ${API_IMAGE_REF}"
-log "remote:     ${REMOTE}"
+log "remote:     ${REMOTE:-<none — single-host, this node>}"
+log "image src:  ${IMAGE_SOURCE}"
 log "namespace:  ${NAMESPACE}"
 log "kubectl:    ${KUBECTL}"
 
@@ -221,6 +262,14 @@ log "kubectl:    ${KUBECTL}"
 # ---------------------------------------------------------------------------
 
 do_import() {
+  # Registry path: nothing to build or stream. CI already published both images
+  # and the node's kubelet pulls them. Skipping here is what lets a single-host
+  # run (no Docker on the node) reach `apply`.
+  if [[ "${IMAGE_SOURCE}" == "registry" ]]; then
+    log "IMAGE_SOURCE=registry: skipping build/import; the kubelet pulls ${IMAGE_REF} and ${API_IMAGE_REF} from the registry."
+    return 0
+  fi
+
   require_cmd docker
   docker buildx version >/dev/null 2>&1 || fail "docker buildx is required (docker buildx version failed)."
 
@@ -228,8 +277,8 @@ do_import() {
   [[ -f Dockerfile.api ]] || fail "Dockerfile.api not found in ${REPO_ROOT}; the API image cannot be built."
 
   log "Preflighting ssh and passwordless sudo on ${REMOTE} ..."
-  ssh -n "${REMOTE}" 'true' || fail "cannot ssh to ${REMOTE}."
-  ssh -n "${REMOTE}" 'sudo -n true' ||
+  node_exec 'true' || fail "cannot ssh to ${REMOTE}."
+  node_exec 'sudo -n true' ||
     fail "passwordless sudo is not available on ${REMOTE}; 'sudo k3s ctr images import -' cannot prompt because stdin carries the image tar."
 
   log "Building ${IMAGE_REF} for linux/amd64 ..."
@@ -306,10 +355,10 @@ assert_amd64_then_import() {
 
   log "Streaming ${ref} into ${REMOTE}'s containerd (no registry involved) ..."
   # Remote side is single-quoted so nothing here is re-expanded by the remote shell.
-  docker save "${ref}" | ssh "${REMOTE}" 'sudo k3s ctr images import -'
+  docker save "${ref}" | node_pipe 'sudo k3s ctr images import -'
 
   log "Verifying with the cluster that ${ref} is present ..."
-  if ! matched="$(ssh -n "${REMOTE}" "sudo k3s ctr images ls -q | grep -F -- '${ref}'")"; then
+  if ! matched="$(node_exec "sudo k3s ctr images ls -q | grep -F -- '${ref}'")"; then
     fail "the cluster does not list ${ref} after import. Do not proceed to apply: with imagePullPolicy IfNotPresent the pods would fail to start."
   fi
   log "Cluster confirms: ${matched}"
@@ -396,7 +445,7 @@ assert_no_placeholder() {
 
 remote_generation() {
   local deployment="$1"
-  ssh -n "${REMOTE}" "${KUBECTL} -n '${NAMESPACE}' get deploy ${deployment} -o jsonpath='{.metadata.generation}' 2>/dev/null || true"
+  node_exec "${KUBECTL} -n '${NAMESPACE}' get deploy ${deployment} -o jsonpath='{.metadata.generation}' 2>/dev/null || true"
 }
 
 # Build the runtime Secret from deploy/runtime.env and apply it.
@@ -427,7 +476,7 @@ apply_runtime_secret() {
     fail "deploy/runtime-env-to-secret.mjs produced no output for ${RUNTIME_ENV_FILE}."
 
   # shellcheck disable=SC2029
-  printf '%s\n' "${rendered}" | ssh "${REMOTE}" \
+  printf '%s\n' "${rendered}" | node_pipe \
     "${KUBECTL} -n '${NAMESPACE}' create secret generic '${SECRET_NAME}' --from-env-file=/dev/stdin --dry-run=client -o yaml | ${KUBECTL} apply -f -"
 }
 
@@ -443,29 +492,35 @@ do_apply() {
   grep -R -F -q -- "${PLACEHOLDER_HOST}" "${MANIFEST_DIR}" ||
     fail "no manifest under ${MANIFEST_DIR} contains the Ingress host placeholder '${PLACEHOLDER_HOST}'; the applied Ingress would carry whatever hostname is literally in the file, not ${APP_HOST}."
 
-  log "Preflighting ${KUBECTL} on ${REMOTE} ..."
-  ssh -n "${REMOTE}" "${KUBECTL} get nodes -o name" >/dev/null ||
-    fail "'${KUBECTL}' failed on ${REMOTE}. Check ssh, sudo, and that k3s is running; override the command with KUBECTL=..."
+  local where="${REMOTE:-this node}"
+  log "Preflighting ${KUBECTL} on ${where} ..."
+  node_exec "${KUBECTL} get nodes -o name" >/dev/null ||
+    fail "'${KUBECTL}' failed on ${where}. Check ${REMOTE:+ssh, }sudo, and that k3s is running; override the command with KUBECTL=..."
 
   # imagePullPolicy is IfNotPresent, so a tag that never reached this node is a
   # rollout that will sit in ImagePullBackOff unless the registry happens to be
-  # reachable AND the GHCR package is readable without a pull secret (it is
-  # private by default, and no imagePullSecret exists in these manifests).
+  # reachable AND the package is readable (public, or via an imagePullSecret).
   #
-  # This is a STOP, not a note: the apply below replaces a working Deployment
-  # spec, so proceeding on a tag that resolves nowhere trades a serving site for
-  # ImagePullBackOff. Deploying a registry-hosted image is legitimate — it just
-  # has to be said out loud.
-  local ref
-  for ref in "${IMAGE_REF}" "${API_IMAGE_REF}"; do
-    if ! ssh -n "${REMOTE}" "sudo k3s ctr images ls -q | grep -F -- '${ref}'" >/dev/null 2>&1; then
-      if [[ "${ALLOW_REGISTRY_PULL:-0}" == "1" ]]; then
-        warn "${ref} is not on ${REMOTE}; proceeding because ALLOW_REGISTRY_PULL=1. The kubelet must be able to pull it (public GHCR package or an imagePullSecret)."
-      else
-        fail "${ref} is not in ${REMOTE}'s image store, and the running Deployment would be replaced by one that cannot start. Either run 'deploy/deploy-k3s.sh import' to build and stream this tag in, or re-run with ALLOW_REGISTRY_PULL=1 if the kubelet is meant to pull it from the registry."
+  # In the REGISTRY path this is expected: the image is NOT in the node's local
+  # store — the kubelet pulls it on first use — so checking the local store would
+  # always "fail" and is skipped. In the LOCAL-BUILD path the image was just
+  # streamed in, so its absence is a real STOP: the apply below replaces a working
+  # Deployment spec, and proceeding on a tag that resolves nowhere trades a serving
+  # site for ImagePullBackOff.
+  if [[ "${IMAGE_SOURCE}" == "registry" ]]; then
+    log "IMAGE_SOURCE=registry: the kubelet pulls ${IMAGE_REF} and ${API_IMAGE_REF} from the registry; not checking the node's local image store."
+  else
+    local ref
+    for ref in "${IMAGE_REF}" "${API_IMAGE_REF}"; do
+      if ! node_exec "sudo k3s ctr images ls -q | grep -F -- '${ref}'" >/dev/null 2>&1; then
+        if [[ "${ALLOW_REGISTRY_PULL:-0}" == "1" ]]; then
+          warn "${ref} is not on ${where}; proceeding because ALLOW_REGISTRY_PULL=1. The kubelet must be able to pull it (public package or an imagePullSecret)."
+        else
+          fail "${ref} is not in ${where}'s image store, and the running Deployment would be replaced by one that cannot start. Either run 'deploy/deploy-k3s.sh import' to build and stream this tag in, or re-run with IMAGE_SOURCE=registry (or ALLOW_REGISTRY_PULL=1) if the kubelet is meant to pull it from the registry."
+        fi
       fi
-    fi
-  done
+    done
+  fi
 
   local ns_stream="" rest_stream=""
   if [[ ${#MANIFESTS_NS[@]} -gt 0 ]]; then
@@ -489,10 +544,10 @@ do_apply() {
     # configuration. Their values are single-quoted where they land in the remote command,
     # so the remote shell re-expands nothing.
     # shellcheck disable=SC2029
-    printf '%s\n' "${ns_stream}" | ssh "${REMOTE}" "${KUBECTL} apply -f -"
+    printf '%s\n' "${ns_stream}" | node_pipe "${KUBECTL} apply -f -"
   else
     log "No Namespace manifest found; ensuring namespace ${NAMESPACE} exists ..."
-    ssh -n "${REMOTE}" "${KUBECTL} create namespace '${NAMESPACE}' --dry-run=client -o yaml | ${KUBECTL} apply -f -"
+    node_exec "${KUBECTL} create namespace '${NAMESPACE}' --dry-run=client -o yaml | ${KUBECTL} apply -f -"
   fi
 
   # Between the namespace and the workloads. See apply_runtime_secret.
@@ -501,7 +556,7 @@ do_apply() {
   if [[ -n "${rest_stream}" ]]; then
     log "Applying workload manifests to namespace ${NAMESPACE} ..."
     # shellcheck disable=SC2029
-    printf '%s\n' "${rest_stream}" | ssh "${REMOTE}" "${KUBECTL} apply -f -"
+    printf '%s\n' "${rest_stream}" | node_pipe "${KUBECTL} apply -f -"
   else
     # Legitimate when every object lives in one multi-document file that also carries the
     # Namespace: that file was already applied above. Piping an empty stream to kubectl
@@ -518,10 +573,10 @@ do_apply() {
   # rollout spends the rest of the timeout succeeding at serving a site whose API
   # is down.
   log "Waiting for the API rollout (timeout ${ROLLOUT_TIMEOUT}) ..."
-  ssh -n "${REMOTE}" "${KUBECTL} -n '${NAMESPACE}' rollout status deploy/${API_DEPLOYMENT_NAME} --timeout=${ROLLOUT_TIMEOUT}"
+  node_exec "${KUBECTL} -n '${NAMESPACE}' rollout status deploy/${API_DEPLOYMENT_NAME} --timeout=${ROLLOUT_TIMEOUT}"
 
   log "Waiting for the web rollout (timeout ${ROLLOUT_TIMEOUT}) ..."
-  ssh -n "${REMOTE}" "${KUBECTL} -n '${NAMESPACE}' rollout status deploy/${DEPLOYMENT_NAME} --timeout=${ROLLOUT_TIMEOUT}"
+  node_exec "${KUBECTL} -n '${NAMESPACE}' rollout status deploy/${DEPLOYMENT_NAME} --timeout=${ROLLOUT_TIMEOUT}"
 
   # A green rollout means the probes passed. /healthz is a filesystem-independent
   # `return 200`, so on its own it would also be green over an empty document
@@ -529,7 +584,7 @@ do_apply() {
   # this a success.
   log "Asserting the deployed pod actually serves the app ..."
   local served
-  served="$(ssh -n "${REMOTE}" "${KUBECTL} -n '${NAMESPACE}' exec deploy/${DEPLOYMENT_NAME} -- wget -qO- http://127.0.0.1:8080/" 2>/dev/null || true)"
+  served="$(node_exec "${KUBECTL} -n '${NAMESPACE}' exec deploy/${DEPLOYMENT_NAME} -- wget -qO- http://127.0.0.1:8080/" 2>/dev/null || true)"
   case "${served}" in
     *'<div id="app">'*) log "Served document contains the app root element." ;;
     *) fail "the pod is ready but GET / does not contain the app root element; the document root is empty or wrong." ;;
@@ -546,7 +601,7 @@ do_apply() {
   # It exits non-zero and prints nothing on the 503 that readyz answers with when
   # the database probe fails, so a failed probe reaches the case below as an
   # empty string and is refused there.
-  ready_body="$(ssh -n "${REMOTE}" "${KUBECTL} -n '${NAMESPACE}' exec deploy/${API_DEPLOYMENT_NAME} -- wget -qO- http://127.0.0.1:8080/api/readyz" 2>/dev/null || true)"
+  ready_body="$(node_exec "${KUBECTL} -n '${NAMESPACE}' exec deploy/${API_DEPLOYMENT_NAME} -- wget -qO- http://127.0.0.1:8080/api/readyz" 2>/dev/null || true)"
   # The DATABASE check specifically, not the envelope's own "status". readyz
   # returns `status: ok` only when the database probe did, so matching the
   # envelope would work — but it would also match if the readiness contract were
@@ -579,7 +634,7 @@ restart_if_spec_unchanged() {
 
   if [[ "${RESTART_IF_UNCHANGED}" == "1" ]]; then
     log "${deployment} spec unchanged (generation ${gen_after}); restarting the rollout so re-imported bytes for ${TAG} are actually picked up."
-    ssh -n "${REMOTE}" "${KUBECTL} -n '${NAMESPACE}' rollout restart deploy/${deployment}"
+    node_exec "${KUBECTL} -n '${NAMESPACE}' rollout restart deploy/${deployment}"
   else
     warn "${deployment} spec unchanged (generation ${gen_after}) and RESTART_IF_UNCHANGED=0: running pods keep their current image bytes even if you just re-imported tag ${TAG}."
   fi
@@ -587,7 +642,7 @@ restart_if_spec_unchanged() {
 
 assert_deployed_image() {
   local deployment="$1" expected="$2" deployed
-  deployed="$(ssh -n "${REMOTE}" "${KUBECTL} -n '${NAMESPACE}' get deploy ${deployment} -o jsonpath='{.spec.template.spec.containers[0].image}'" 2>/dev/null || true)"
+  deployed="$(node_exec "${KUBECTL} -n '${NAMESPACE}' get deploy ${deployment} -o jsonpath='{.spec.template.spec.containers[0].image}'" 2>/dev/null || true)"
   [[ "${deployed}" == "${expected}" ]] ||
     fail "${deployment} now runs '${deployed}', not the '${expected}' this run pinned."
   log "${deployment} pins ${deployed}."
@@ -625,7 +680,7 @@ EOF
 If ${APP_HOST} does not resolve on this machine, address the ingress load balancer directly:
   curl -sS -i --resolve ${APP_HOST}:80:${LB_ADDRESS} http://${APP_HOST}/healthz
 EOF
-  else
+  elif [[ -n "${REMOTE}" ]]; then
     cat <<EOF
 
 If ${APP_HOST} does not resolve on this machine, set LB_ADDRESS in ${ENV_FILE} to the
@@ -634,8 +689,17 @@ service port:
   ssh -L 8080:127.0.0.1:18080 ${REMOTE} "${KUBECTL} -n ${NAMESPACE} port-forward --address 127.0.0.1 svc/${DEPLOYMENT_NAME} 18080:80"
   # then open http://localhost:8080/
 EOF
+  else
+    cat <<EOF
+
+If ${APP_HOST} does not resolve here, set LB_ADDRESS in ${ENV_FILE} to this node's
+address and re-run, or browse without DNS by forwarding the service port locally:
+  ${KUBECTL} -n ${NAMESPACE} port-forward --address 127.0.0.1 svc/${DEPLOYMENT_NAME} 18080:80
+  # then open http://localhost:18080/
+EOF
   fi
-  cat <<EOF
+  if [[ -n "${REMOTE}" ]]; then
+    cat <<EOF
 
 See pod status:
   ssh ${REMOTE} "${KUBECTL} -n ${NAMESPACE} get pods -l app.kubernetes.io/name=${DEPLOYMENT_NAME} -o wide"
@@ -643,4 +707,14 @@ See pod status:
 See pod logs:
   ssh ${REMOTE} "${KUBECTL} -n ${NAMESPACE} logs -l app.kubernetes.io/name=${DEPLOYMENT_NAME} --tail=50"
 EOF
+  else
+    cat <<EOF
+
+See pod status:
+  ${KUBECTL} -n ${NAMESPACE} get pods -l app.kubernetes.io/name=${DEPLOYMENT_NAME} -o wide
+
+See pod logs:
+  ${KUBECTL} -n ${NAMESPACE} logs -l app.kubernetes.io/name=${DEPLOYMENT_NAME} --tail=50
+EOF
+  fi
 fi

@@ -15,6 +15,12 @@
 TLS_SECRET_NAME=joi-button-tls
 K8S_NS=joi-button
 
+# Pipe stdin into a command on the node: ssh when REMOTE is set, a local shell
+# otherwise. The same helper drives a remote node and this machine, so the k3s
+# manifests below apply identically in both. (run_on from target.sh does the
+# no-stdin case; this is its stdin-carrying sibling.)
+k3s_pipe() { if [[ -n "${REMOTE:-}" ]]; then ssh "$REMOTE" "$1"; else bash -c "$1"; fi; }
+
 apply_target() {
   case "${DEPLOY_TARGET:?run the target step first}" in
     k3s)    apply_k3s ;;
@@ -28,9 +34,19 @@ apply_target() {
 # ---------------------------------------------------------------------------
 
 apply_k3s() {
-  [[ -n "${REMOTE:-}" ]] || die 'k3s deploy needs REMOTE (the node ssh alias)'
   [[ -n "${APP_HOST:-}" ]] || die 'APP_HOST is unset — run the domain step'
   : "${KUBECTL:=sudo k3s kubectl}"
+
+  # Where the images come from. A single-host run (no REMOTE) has no Docker on the
+  # k3s node to build with, so the images MUST come from the registry — the kubelet
+  # pulls them. With a REMOTE, either source works; the caller's IMAGE_SOURCE wins
+  # (default local-build, streamed in over ssh).
+  local image_source="${IMAGE_SOURCE:-local}"
+  if [[ -z "${REMOTE:-}" ]]; then
+    image_source=registry
+    note 'Single-host deploy on this node (no REMOTE): images are pulled from the'
+    note 'registry (IMAGE_SOURCE=registry) — nothing is built here.'
+  fi
 
   section 'k3s — TLS prerequisites'
   case "${TLS_MODE:?run the TLS step first}" in
@@ -38,9 +54,10 @@ apply_k3s() {
     letsencrypt) k3s_cert_manager; k3s_cluster_issuer ;;
   esac
 
-  section 'k3s — build images, runtime Secret, workloads'
-  note 'Delegating to deploy/deploy-k3s.sh (build + import + Secret + apply).'
-  APP_HOST="$APP_HOST" REMOTE="$REMOTE" bash "$REPO_ROOT/deploy/deploy-k3s.sh" all \
+  section 'k3s — runtime Secret and workloads'
+  note "Delegating to deploy/deploy-k3s.sh (Secret + apply; images: $image_source)."
+  APP_HOST="$APP_HOST" REMOTE="${REMOTE:-}" IMAGE_SOURCE="$image_source" \
+    bash "$REPO_ROOT/deploy/deploy-k3s.sh" all \
     || die 'deploy-k3s.sh failed'
 
   section 'k3s — attach TLS to the Ingress'
@@ -58,7 +75,7 @@ apply_k3s() {
 # that never comes back, i.e. a login that cannot complete.
 k3s_http_redirect() {
   printf 'apiVersion: traefik.io/v1alpha1\nkind: Middleware\nmetadata:\n  name: redirect-https\n  namespace: %s\nspec:\n  redirectScheme:\n    scheme: https\n    permanent: true\n' \
-    "$K8S_NS" | ssh "$REMOTE" "$KUBECTL apply -f -" >&2 \
+    "$K8S_NS" | k3s_pipe "$KUBECTL apply -f -" >&2 \
     || { note 'could not create the redirect middleware (older traefik CRD?); http will not redirect'; return 0; }
   run_on "$KUBECTL -n $K8S_NS annotate ingress joi-button-public traefik.ingress.kubernetes.io/router.middlewares=${K8S_NS}-redirect-https@kubernetescrd --overwrite" >&2 \
     || note 'could not annotate the ingress for the redirect'
@@ -72,7 +89,7 @@ k3s_tls_secret_from_files() {
   [[ -r "${CERT_FILE:-}" && -r "${KEY_FILE:-}" ]] || die 'CERT_FILE/KEY_FILE unreadable — run the TLS step'
   note "Creating Secret $TLS_SECRET_NAME from your certificate."
   tls_secret_yaml "$TLS_SECRET_NAME" "$CERT_FILE" "$KEY_FILE" \
-    | ssh "$REMOTE" "$KUBECTL -n $K8S_NS apply -f -" >&2 \
+    | k3s_pipe "$KUBECTL -n $K8S_NS apply -f -" >&2 \
     || die 'failed to create the TLS secret'
 }
 
@@ -104,7 +121,7 @@ k3s_cluster_issuer() {
   [[ "${ACME_EMAIL:-}" == *@*.* ]] || die 'ACME_EMAIL unset — run the TLS step'
   note 'Creating the Let'\''s Encrypt ClusterIssuer.'
   printf 'apiVersion: cert-manager.io/v1\nkind: ClusterIssuer\nmetadata:\n  name: letsencrypt\nspec:\n  acme:\n    email: %s\n    server: https://acme-v02.api.letsencrypt.org/directory\n    privateKeySecretRef:\n      name: letsencrypt-account\n    solvers:\n      - http01:\n          ingress:\n            class: traefik\n' \
-    "$ACME_EMAIL" | ssh "$REMOTE" "$KUBECTL apply -f -" >&2 \
+    "$ACME_EMAIL" | k3s_pipe "$KUBECTL apply -f -" >&2 \
     || die 'failed to create the ClusterIssuer'
 }
 

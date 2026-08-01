@@ -124,20 +124,24 @@ pick_and_install() {
 }
 
 install_k3s() {
-  [[ -n "${REMOTE:-}" ]] || die 'installing k3s needs REMOTE set (the ssh alias of the node to install it on)'
-  note 'This runs the official k3s installer on the node:'
+  # REMOTE is no longer required: with it, k3s is installed on the node over ssh;
+  # without it, on THIS machine (a single-host cluster). run_on already runs local
+  # when REMOTE is empty, so the installer line is identical either way. A
+  # single-host k3s then serves via the registry image path (no Docker here).
+  local where; where="$([[ -n "${REMOTE:-}" ]] && echo "the node ($REMOTE)" || echo 'this machine')"
+  note "This runs the official k3s installer on ${where}:"
   note '  curl -sfL https://get.k3s.io | sudo sh -'
-  note 'It needs sudo on the node and the node needs internet access.'
+  note "It needs sudo${REMOTE:+ on the node} and internet access."
   confirm_yes 'Install k3s now?' || die 'aborted — install k3s yourself, then re-run'
   run_on 'curl -sfL https://get.k3s.io | sudo sh -' >&2 \
-    || die 'the k3s installer failed (check the node has sudo and internet)'
+    || die 'the k3s installer failed (check sudo and internet access)'
   note 'Waiting for the node to become Ready...'
   local i
   for i in $(seq 1 30); do
     run_on 'sudo k3s kubectl get nodes 2>/dev/null | grep -qw Ready' && { note 'k3s is Ready.'; return; }
     sleep 4
   done
-  die 'k3s installed but the node did not become Ready in time; check `sudo k3s kubectl get nodes` on the node'
+  die 'k3s installed but the node did not become Ready in time; check `sudo k3s kubectl get nodes`'
 }
 
 install_docker() {

@@ -18,12 +18,17 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-: "${REMOTE:?set REMOTE to the node ssh alias}"
+# REMOTE is optional: over ssh when set, on THIS machine (single-host k3s) when not.
+REMOTE="${REMOTE:-}"
 KUBECTL="${KUBECTL:-sudo k3s kubectl}"
 NS=joi-button
 
 say() { printf '  %s\n' "$1" >&2; }
-k()   { ssh -n "$REMOTE" "$KUBECTL -n $NS $1"; }
+# Run a command on the node: ssh when REMOTE is set, a local shell otherwise.
+# node_pipe is the stdin-carrying sibling (kubectl apply -f - / exec -i).
+node_exec() { if [[ -n "$REMOTE" ]]; then ssh -n "$REMOTE" "$1"; else bash -c "$1"; fi; }
+node_pipe() { if [[ -n "$REMOTE" ]]; then ssh    "$REMOTE" "$1"; else bash -c "$1"; fi; }
+k()   { node_exec "$KUBECTL -n $NS $1"; }
 
 # The exact image the api Deployment runs, so the seed pod is byte-identical to
 # production (same schema, same import-snapshot).
@@ -33,7 +38,7 @@ say "Seed pod image: $IMAGE"
 
 # A pod that sleeps so the payload can be streamed in before the import runs.
 say 'Creating the one-off seed pod...'
-ssh "$REMOTE" "$KUBECTL apply -f -" >/dev/null <<YAML
+node_pipe "$KUBECTL apply -f -" >/dev/null <<YAML
 apiVersion: v1
 kind: Pod
 metadata:
@@ -80,7 +85,7 @@ k "wait --for=condition=Ready pod/joi-seed --timeout=120s" >&2
 
 say 'Streaming the baseline clips in...'
 tar -C "$REPO_ROOT" -cf - src/voices.json public/voices \
-  | ssh "$REMOTE" "$KUBECTL -n $NS exec -i joi-seed -- tar -xf - -C /"
+  | node_pipe "$KUBECTL -n $NS exec -i joi-seed -- tar -xf - -C /"
 
 say 'Importing the snapshot...'
 k "exec joi-seed -- sh -c 'cd /app && DATA_DIR=/srv/shared node scripts/import-snapshot.mjs'" >&2
@@ -108,6 +113,6 @@ console.log(JSON.stringify({ groups: r.catalog.groups, clips: r.catalog.clips })
 db.close()
 JS
 )
-printf '%s' "$PUBLISH_JS" | ssh "$REMOTE" "$KUBECTL -n $NS exec -i joi-seed -- sh -c 'cat > /tmp/publish.mjs && node /tmp/publish.mjs'" >&2
+printf '%s' "$PUBLISH_JS" | node_pipe "$KUBECTL -n $NS exec -i joi-seed -- sh -c 'cat > /tmp/publish.mjs && node /tmp/publish.mjs'" >&2
 
 say 'Seed complete.'

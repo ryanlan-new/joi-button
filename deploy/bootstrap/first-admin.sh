@@ -99,7 +99,11 @@ reload_api() {
   case "$DEPLOY_TARGET" in
     k3s)
       note 'Recreating the runtime Secret and restarting the API...'
-      APP_HOST="$APP_HOST" REMOTE="$REMOTE" bash "$REPO_ROOT/deploy/deploy-k3s.sh" apply >&2 \
+      # Single-host (no REMOTE) re-applies from the registry, same as apply_k3s.
+      local image_source="${IMAGE_SOURCE:-local}"
+      [[ -n "${REMOTE:-}" ]] || image_source=registry
+      APP_HOST="$APP_HOST" REMOTE="${REMOTE:-}" IMAGE_SOURCE="$image_source" \
+        bash "$REPO_ROOT/deploy/deploy-k3s.sh" apply >&2 \
         || die 'failed to re-apply after setting ADMIN_OPEN_IDS'
       ;;
     docker)

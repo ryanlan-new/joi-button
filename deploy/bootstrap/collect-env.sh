@@ -36,41 +36,90 @@
 # to drive. Opened by open_tty on fd 3 (a fixed number, so this stays bash-3.2 compatible
 # for a stock macOS /bin/bash), read via read -u 3.
 open_tty() { exec 3<"$BOOTSTRAP_TTY"; }
-close_tty() { exec 3<&- 2>/dev/null || true; }
+# Close fd 3. The 2>/dev/null only hushes a "bad fd" error if fd 3 is already
+# closed — but it MUST be scoped to a group. `exec 3<&- 2>/dev/null` (exec with no
+# command) makes BOTH redirections permanent, which silently sends stderr to
+# /dev/null for the rest of the run — so every prompt after the first close_tty
+# (i.e. everything from Step 2 on) becomes invisible and the script looks frozen
+# at an unseen read. The braces keep the 2>/dev/null off the exec.
+close_tty() { { exec 3<&-; } 2>/dev/null || true; }
 
 # --- small IO helpers -------------------------------------------------------
 
 section() { printf '\n\033[1m%s\033[0m\n' "$1" >&2; }
 note()    { printf '  %s\n' "$1" >&2; }
 
-# A visible field with an optional default. Prints nothing secret.
+# Discard type-ahead already sitting on the input fd before showing a prompt, so a
+# paste (or a run of Enters) meant for an EARLIER field cannot silently satisfy
+# this one — which reads as "it skipped a prompt" or "it hung at a later prompt",
+# the exact confusion this bootstrap hit. Only on a real terminal, and only on
+# bash 4+: a fed file in a test is not a tty (-t 3 false) and must never be
+# drained, because its bytes ARE the answers. Each byte is consumed only after
+# `read -t 0` confirms one is waiting, so this cannot block.
+drain_tty() {
+  [[ -t 3 ]] || return 0
+  [[ "${BASH_VERSINFO[0]:-0}" -ge 4 ]] || return 0
+  local _junk
+  while IFS= read -r -s -u 3 -t 0 2>/dev/null; do
+    IFS= read -r -s -u 3 -n 1 _junk 2>/dev/null || break
+  done
+}
+
+# A visible field with an optional default.
+#
+# The prompt is printed EXPLICITLY to stderr, not via `read -p`: read only shows
+# a -p prompt when the fd it reads from is a terminal in the way it checks, and
+# reading from fd 3 (not stdin) it often shows nothing — which looks exactly like
+# a hang. Printing it ourselves shows it in every terminal.
 #   ask VAR "Prompt" "default"
 ask() {
   local var="$1" prompt="$2" default="$3"
   local current="${!var:-$default}"
   local shown="$prompt"
   [[ -n "$current" ]] && shown="$prompt [$current]"
+  drain_tty
+  printf '  %s: ' "$shown" >&2
   local answer
-  read -r -u 3 -p "  $shown: " answer || true
+  read -r -u 3 answer || true
   printf -v "$var" '%s' "${answer:-$current}"
 }
 
-# A secret field. Never echoes; keeps the existing value on empty input. The
-# existing value is signalled ONLY as the word "set", never as its bytes.
+# A secret field. Never shows the bytes, but DOES echo a dot per character so a
+# paste or a keystroke visibly registers — the "did that go in?" problem with a
+# fully silent prompt. Backspace deletes the last dot. Enter ends. Empty input
+# keeps whatever is already set.
 #   ask_secret VAR "Prompt"
 ask_secret() {
   local var="$1" prompt="$2"
   local has="" ; [[ -n "${!var:-}" ]] && has=" (currently set — Enter keeps it)"
-  local answer
-  read -r -s -u 3 -p "  $prompt$has: " answer || true
+  drain_tty
+  printf '  %s%s: ' "$prompt" "$has" >&2
+  local answer='' ch
+  # -s so bash echoes nothing; we echo the dots. -n1 reads one char at a time so
+  # a paste streams in as a run of dots. read returns non-zero at EOF/newline.
+  while IFS= read -r -s -u 3 -n1 ch; do
+    if [[ -z "$ch" ]]; then break; fi                     # Enter
+    if [[ "$ch" == $'\x7f' || "$ch" == $'\b' ]]; then      # backspace / delete
+      if [[ -n "$answer" ]]; then answer="${answer%?}"; printf '\b \b' >&2; fi
+    else
+      answer+="$ch"; printf '\xe2\x80\xa2' >&2             # a • per character
+    fi
+  done
   printf '\n' >&2
-  [[ -n "$answer" ]] && printf -v "$var" '%s' "$answer"
+  # An `[[ -n "$answer" ]] && printf ...` here returns NON-ZERO when the answer is
+  # empty (Enter pressed to keep an existing secret) — and since this function is
+  # called as a bare statement under the caller's `set -e`, that non-zero status
+  # kills the whole script at the prompt. Use an explicit `if` and return 0.
+  if [[ -n "$answer" ]]; then printf -v "$var" '%s' "$answer"; fi
+  return 0
 }
 
 # A yes/no, default yes.
 confirm_yes() {
   local prompt="$1" answer
-  read -r -u 3 -p "  $prompt [Y/n]: " answer || true
+  drain_tty
+  printf '  %s [Y/n]: ' "$prompt" >&2
+  read -r -u 3 answer || true
   [[ ! "$answer" =~ ^[Nn] ]]
 }
 

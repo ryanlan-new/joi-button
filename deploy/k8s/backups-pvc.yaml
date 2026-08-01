@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: MIT
+#
+# Where the nightly snapshot lands.
+#
+# A SEPARATE claim from joi-button-data, and the separation is the point: the
+# failure this defends against is a bad write to the data — a migration that
+# corrupts, a delete nobody meant — and a copy on the same claim is reachable by
+# the same mistake. The API never mounts this one at all; only the CronJob does.
+#
+# WHAT IT IS NOT. k3s's local-path provisioner puts every claim on the same disk,
+# so this is not off-site and does not survive the node. The off-site copy is the
+# operator's PULL (deploy/k8s/README.md) — pull rather than push because the
+# credentials only point one way, and a node that could write to the backup
+# destination is a node whose compromise takes the backups with it.
+#
+# SIZING. The media pool is deduplicated by content hash — the filenames are
+# sha256 of their own bytes and nothing rewrites one — so N snapshots of the same
+# library cost one library, plus one database file each. 4Gi is the 2Gi data
+# claim's worth of audio plus room for a month of ~300KB databases.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: joi-button-backups
+  namespace: joi-button
+  labels:
+    app.kubernetes.io/name: joi-button-backups
+    app.kubernetes.io/part-of: joi-button
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 4Gi

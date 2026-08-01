@@ -12,6 +12,8 @@
     "dev": "node --watch server.mjs",
     "test": "node --test",
     "import-snapshot": "node scripts/import-snapshot.mjs",
+    "backup": "node scripts/backup.mjs",
+    "backup:verify": "node scripts/backup.mjs --verify",
     "test:http": "node --test test/http/"
   },
   "dependencies": {

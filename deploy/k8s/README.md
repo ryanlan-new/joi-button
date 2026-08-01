@@ -126,6 +126,56 @@ kubectl -n joi-button get deploy joi-button-web \
   -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
 ```
 
+## Backups
+
+`backup-cronjob.yaml` runs `server/scripts/backup.mjs` out of the API image at
+03:17 nightly, into the separate `joi-button-backups` claim. Read that script's
+header for what is included and what is not; the short version is joi.db via
+`VACUUM INTO`, the referenced media once per blob, and nothing derived or in
+flight.
+
+**The on-cluster copy is not off-site.** k3s's local-path provisioner puts every
+claim on the same disk, so it survives a bad migration and not a dead node. The
+second copy is a PULL, from your machine, because the credentials only point one
+way — and a node that could write to the backup destination is a node whose
+compromise takes the backups too.
+
+```bash
+deploy/pull-backup.sh
+```
+
+It rsyncs the volume here and then verifies the LOCAL copy: re-derives the
+database digest from the manifest, opens it and runs `integrity_check`, and
+checks every blob the manifest names is present. "The transfer exited 0" is a
+different claim, and not the one that matters.
+
+Check the schedule is actually running, rather than assuming it:
+
+```bash
+kubectl -n joi-button get cronjob joi-button-backup
+kubectl -n joi-button get jobs -l app.kubernetes.io/name=joi-button-backup
+kubectl -n joi-button logs -l app.kubernetes.io/name=joi-button-backup --tail=40
+```
+
+**Restoring.** Never in place — that destroys the only copy of the current state
+with the command meant to recover from destroying it. Restore beside it and swap:
+
+```bash
+node server/scripts/backup.mjs --restore 20260801T031700Z --into /srv/shared.restored
+```
+
+The command refuses to write into a directory that already holds a `joi.db`, and
+it checks the snapshot's digest before copying rather than after. `catalog.json`
+is not restored because it is derived — point the API at the restored directory
+and publish once.
+
+**Retention is a policy.** `BACKUP_PRUNE_DAYS` (30) bounds how far back a
+restore can reach, and anything deleted from the live data inside that window
+comes back with the restore. Re-run whatever deletion policy exists afterwards.
+There is no automatic deletion in this system today — `v_unreferenced_media`
+names collectable blobs and nothing acts on it — so the rule is written before
+the policy it has to respect.
+
 ## Verify
 
 Resolving the name yourself tests routing without depending on DNS — use it

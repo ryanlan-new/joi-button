@@ -1,0 +1,131 @@
+# SPDX-License-Identifier: MIT
+#
+# joi-button — the nightly snapshot.
+#
+# Runs server/scripts/backup.mjs out of the API image, against the same volume
+# the API writes, into a SEPARATE claim. Read the script's header for what is and
+# is not included and why; the short version is: joi.db via VACUUM INTO, the
+# referenced media once per blob, and nothing derived or in flight.
+#
+# ===========================================================================
+# WHAT THIS BUYS AND WHAT IT DOES NOT
+# ===========================================================================
+# A second claim protects against LOGICAL loss — a bad migration, a delete
+# nobody meant, a database that will not open. It does NOT protect against
+# losing the node: k3s's default local-path provisioner puts every claim on the
+# same disk, so a dead disk takes this with it.
+#
+# Off-site is the operator's pull, documented in deploy/k8s/README.md, and it is
+# a PULL because the credentials only point one way: the operator can reach the
+# node and the node cannot reach the operator. A node that could write to the
+# backup destination is a node whose compromise takes the backups too.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: joi-button-backup
+  namespace: joi-button
+  labels:
+    app.kubernetes.io/name: joi-button-backup
+    app.kubernetes.io/part-of: joi-button
+spec:
+  # 03:17 rather than 03:00: every other cron on every other machine fires on the
+  # hour, and this shares a disk with them.
+  schedule: "17 3 * * *"
+  # The volume is RWO and the API is `Recreate` for the same reason — two writers
+  # on one SQLite file is the failure this whole design avoids. `Forbid` means a
+  # run that overruns its window is not joined by the next one.
+  concurrencyPolicy: Forbid
+  # A missed window (node down, cluster upgrade) is not made up for. Two
+  # snapshots taken minutes apart are not worth the disk; the next scheduled one
+  # is minutes-to-hours away.
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  # Higher than successful, on purpose: the failures are what an operator needs
+  # to read, and `kubectl logs` needs the Job to still exist.
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      # No retry. A backup that failed because the disk is full fails again in
+      # thirty seconds, six times, and fills the log with the same message; the
+      # next scheduled run is the retry.
+      backoffLimit: 0
+      # Bounded, so a hung run cannot hold the RWO volume against tomorrow's.
+      activeDeadlineSeconds: 1800
+      template:
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            # 101, the same identity as the API and the web pod. Any other id
+            # would fight them over the shared volume's group ownership on every
+            # restart. See api-deployment.yaml.
+            runAsUser: 101
+            runAsGroup: 101
+            fsGroup: 101
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: backup
+              # The API image, because it already carries node, better-sqlite3
+              # compiled for this platform, and the script. A second image would
+              # be a second thing to keep in step with db/schema.sql.
+              image: ghcr.io/ryanlan-new/joi-button/api:replace-me
+              imagePullPolicy: IfNotPresent
+              command: ["node", "scripts/backup.mjs"]
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              env:
+                # NOT envFrom the runtime Secret. This process opens the database
+                # read-only and binds no socket, so it needs no session key, no
+                # Bilibili credential and no Turnstile secret — and a backup that
+                # mounted them would put every secret in the site into a pod
+                # whose whole job is to copy data somewhere else.
+                - name: NODE_ENV
+                  value: production
+                - name: DATA_DIR
+                  value: /srv/shared
+                - name: BACKUP_DIR
+                  value: /srv/backups
+                # How far back a restore can reach. It is a POLICY: anything
+                # deleted from the live data inside this window comes back with a
+                # restore, so it has to be at least as short as the shortest
+                # retention promise the site makes.
+                - name: BACKUP_PRUNE_DAYS
+                  value: "30"
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  # VACUUM INTO rewrites the database and the copy loop reads each
+                  # new blob whole, so this is I/O bound rather than memory bound.
+                  cpu: 500m
+                  memory: 256Mi
+              volumeMounts:
+                # READ-ONLY. A backup job has no business writing to the data it
+                # is copying, and VACUUM INTO does not need it to: the script
+                # opens the source read-only and writes only to BACKUP_DIR.
+                - name: shared
+                  mountPath: /srv/shared
+                  readOnly: true
+                - name: backups
+                  mountPath: /srv/backups
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: shared
+              persistentVolumeClaim:
+                claimName: joi-button-data
+                readOnly: true
+            - name: backups
+              persistentVolumeClaim:
+                claimName: joi-button-backups
+            - name: tmp
+              emptyDir:
+                sizeLimit: 16Mi

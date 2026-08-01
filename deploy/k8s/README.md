@@ -126,6 +126,44 @@ kubectl -n joi-button get deploy joi-button-web \
   -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
 ```
 
+## The theme
+
+The owner's theme is two files on the same shared volume as `catalog.json` and
+`media/`, both written by the **API** and served read-only by the **web** pod.
+Nothing is baked into the image and nothing is rebuilt when a theme changes.
+
+| Path on the volume            | URL                  | Cache-Control             |
+| ----------------------------- | -------------------- | ------------------------- |
+| `theme.css`                   | `/theme.css`         | `no-cache` + ETag         |
+| `wallpaper/<sha256>.<ext>`    | `/wallpaper/<name>`  | `max-age=31536000, immutable` |
+
+`theme.css` is a `:root` block of the same custom properties `src/App.vue`
+declares. `public/index.html` links it unconditionally, from `<body>` so that it
+is read after the bundled stylesheet — same selector, same specificity, later
+declaration wins. `POST /api/admin/theme` rewrites the file and `DELETE` replaces
+it with a comment, so **the site returns to its bundled palette without a
+redeploy**.
+
+The two rows get **opposite** cache treatment, and that is the whole point:
+
+- `theme.css` **changes at a stable name**, so `immutable` would pin every
+  visitor to the first theme they ever loaded for a year, with no way for the
+  owner to correct it. `no-cache` plus the ETag nginx already emits makes a save
+  visible on the next navigation for the price of one conditional request
+  against a few hundred bytes. It is an exact-match location for the same reason
+  `/catalog.json` is: an exact match is decided before any regex, so the generic
+  `*.css` rule — one hour — cannot reach it and no save can sit invisible for
+  up to sixty minutes while the admin page says it worked.
+- The wallpaper's filename **is** its sha256 (a `CHECK` in `server/db/schema.sql`
+  permits no other spelling), so new bytes cannot reuse the URL and `immutable`
+  is a promise the name keeps by itself.
+
+**A first deploy has no `theme.css` and that is not an error.** `/theme.css`
+answers 404, the browser drops the stylesheet, and the page renders in the
+palette compiled into its bundle — the same fallback shape as `catalog.json`.
+Both directions are asserted by `deploy/smoke-image.sh`, which seeds its own
+fixtures and checks the immutable/bounded split each way.
+
 ## Backups
 
 `backup-cronjob.yaml` runs `server/scripts/backup.mjs` out of the API image at
@@ -213,6 +251,8 @@ manual look because the whole voice-file workflow rests on it:
 | `/`, `/index.html`, any deep link       | `no-cache, must-revalidate`           |
 | `/js/app.<hash>.js`, `/css/…`, `/fonts/…`, `/img/…` | `max-age=31536000, immutable` |
 | `/voices/*.mp3`                         | `max-age=31536000, immutable`          |
+| `/media/*`, `/wallpaper/*`              | `max-age=31536000, immutable`          |
+| `/catalog.json`, `/theme.css`           | `no-cache`                             |
 | `/resources/**`, `/site.webmanifest`    | `max-age=3600, must-revalidate`        |
 
 The last row is the one that is easy to get wrong in the dangerous direction:

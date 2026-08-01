@@ -107,12 +107,35 @@ const CAPTIONS = { 'en-US': 'Ei?', 'zh-CN': '欸？', 'ja-JP': 'え？' }
 // ---------------------------------------------------------------------------
 // the gate
 
+// Fastify's routing verbs. Anything on this list that the double does not
+// implement is a LOUD stub, not an absent property, because of what happened the
+// last time one was merely absent: the plugin gained a DELETE route, this double
+// had no `delete`, routes/admin.mjs took its `typeof fastify.delete === 'function'`
+// fallback, and the roster assertion below went on passing while never once
+// seeing the only route that turns the theme off. The fallback's warning could
+// not report it either — it goes through `fastify.log?.warn?.`, and the double
+// had no `log`, so the optional chaining written to be defensive was the thing
+// doing the hiding. A double that silently absorbs a call it does not model
+// turns a coverage gate into a gate over whatever the double happens to support.
+const UNSUPPORTED_VERBS = ['put', 'patch', 'head', 'options', 'all', 'route']
+
 function fakeFastify() {
   const routes = []
   const hooks = []
-  return {
+  // Recorded rather than discarded: routes/admin.mjs uses `log.warn` to report
+  // states it chooses to serve through instead of throwing (an empty
+  // ADMIN_OPEN_IDS list, derived theme paths), and a test that wants to assert
+  // one of those happened needs somewhere for it to land.
+  const warnings = []
+  const fastify = {
     routes,
     hooks,
+    warnings,
+    log: {
+      warn(...args) {
+        warnings.push(args)
+      },
+    },
     addHook(name, fn) {
       hooks.push({ name, fn })
     },
@@ -122,7 +145,20 @@ function fakeFastify() {
     post(url, handler) {
       routes.push({ method: 'POST', url, handler })
     },
+    delete(url, handler) {
+      routes.push({ method: 'DELETE', url, handler })
+    },
   }
+  for (const verb of UNSUPPORTED_VERBS) {
+    fastify[verb] = (url) => {
+      throw new Error(
+        `fakeFastify: the plugin registered ${verb.toUpperCase()} ${url}, which this double does not model. ` +
+          'Add it to fakeFastify and to the expected roster — do not let it vanish, because a route ' +
+          'the double drops is a route the gate assertions never evaluate.',
+      )
+    }
+  }
+  return fastify
 }
 
 function fakeReply() {
@@ -170,13 +206,41 @@ test('the plugin puts ONE gate in front of every route it registers, and registe
       'POST /api/admin/item/:id',
       'POST /api/admin/publish',
       'GET /api/admin/audit',
+      'GET /api/admin/theme',
+      'POST /api/admin/theme',
+      'DELETE /api/admin/theme',
+      'POST /api/admin/theme/wallpaper',
     ],
+  )
+  // Named on its own because it is the one the double used to swallow: DELETE is
+  // the route that turns the theme off, and it is the route whose absence nobody
+  // would notice from the other three working.
+  assert.ok(
+    fastify.routes.some((route) => route.method === 'DELETE' && route.url === '/api/admin/theme'),
+    'the plugin must register DELETE /api/admin/theme on a host that can take it',
   )
   // One onRequest hook and no per-route check. The coverage property is
   // fastify's: an onRequest hook added inside an encapsulated plugin runs for
   // every route registered in that plugin, including ones added later — which is
   // why the check is a hook and not something each route has to remember.
   assert.deepEqual(fastify.hooks.map((hook) => hook.name), ['onRequest'])
+})
+
+// The roster assertion above is only worth its runtime if the double cannot
+// quietly drop what it is handed. This case is about the double, not the plugin:
+// it fixes the property that made the DELETE hole possible in the first place,
+// so the next verb this file has not modelled yet stops the suite instead of
+// evaporating out of `fastify.routes`.
+test('the fastify double refuses a verb it does not model instead of swallowing the route', () => {
+  const fastify = fakeFastify()
+  for (const verb of UNSUPPORTED_VERBS) {
+    assert.throws(
+      () => fastify[verb]('/api/admin/example'),
+      /does not model/,
+      `${verb} must throw, not absorb the registration`,
+    )
+  }
+  assert.deepEqual(fastify.routes, [], 'a refused registration must not leave a half-recorded route behind')
 })
 
 test('a non-admin gets the answer a missing route gets, produced by fastify\'s own not-found handler', async (t) => {

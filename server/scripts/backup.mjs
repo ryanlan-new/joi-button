@@ -7,8 +7,12 @@
 //   node server/scripts/backup.mjs --verify              check every one
 //   node server/scripts/backup.mjs --restore <stamp> --into <dir>
 //
-// Reads DATA_DIR (and the derived DB_FILE / MEDIA_DIR) exactly as the API does,
-// and writes under BACKUP_DIR.
+// Reads DATA_DIR (and the derived DB_FILE / MEDIA_DIR / WALLPAPER_DIR) exactly
+// as the API does, and writes under BACKUP_DIR.
+//
+// Exercised as a process by test/backup.test.mjs, which restores a snapshot and
+// then performs the recovery this file's contract promises, rather than checking
+// that it printed a success line.
 //
 // ===========================================================================
 // WHAT IS BACKED UP, AND WHAT IS DELIBERATELY NOT
@@ -23,6 +27,16 @@
 //                 contents and nothing ever rewrites one, so the backup keeps a
 //                 single pool and every snapshot references into it. Ten
 //                 snapshots of a 400MB library cost 400MB, not 4GB.
+//   wallpaper/    YES, pooled exactly like media/ and for the same reason: the
+//                 filenames are sha256 of their own contents. These bytes are
+//                 NOT derived — a wallpaper exists nowhere but the volume, and
+//                 saveTheme refuses a themes row whose wallpaper_path is not on
+//                 the volume (`wallpaper_missing`). A snapshot that took the row
+//                 and left the picture therefore restores to an ACTIVE theme the
+//                 owner cannot re-save, which is the one recovery this system
+//                 documents. EVERY row's wallpaper, not just the active one:
+//                 deactivated rows are kept so a rollback can reach them, and a
+//                 rollback needs the picture that was live with it.
 //   incoming/     NO, and this is a decision rather than an oversight. Those are
 //                 bytes mid-request: routes/public.mjs discards them before it
 //                 answers, so anything there belongs to a request still in
@@ -33,6 +47,12 @@
 //                 database, byte-identically, and the publish path rewrites it.
 //                 Backing up a derived artefact invites restoring a stale one
 //                 beside a newer database.
+//   theme.css     NO, for catalog.json's reason and no other. It is DERIVED: a
+//                 pure function of the active themes row's tokens and
+//                 wallpaper_path, which is precisely why lib/theme-store.mjs
+//                 writes the row first and treats a re-save as the fix. Pressing
+//                 Save once after a restore reproduces the exact bytes — and
+//                 that only works because the wallpaper above came back too.
 //
 // ===========================================================================
 // WHAT THIS PROTECTS AGAINST, AND WHAT IT DOES NOT
@@ -113,10 +133,31 @@ function fail(message) {
 const { config } = loadConfig()
 const dbFile = config.database.file
 const mediaDir = config.storage.mediaDir
+const wallpaperDir = config.storage.wallpaperDir
 const backupDir = process.env.BACKUP_DIR ?? join(config.storage.dataDir, 'backups')
 
 const POOL = join(backupDir, 'media')
+// A SIBLING pool, not a corner of the media one. Both are content-addressed, but
+// media.storage_path is `aa/bb/<sha>.<ext>` (two levels of fan-out, because that
+// table grows without bound) and themes.wallpaper_path is a bare `<sha>.<ext>`.
+// Sharing one directory would put flat names beside the collector's three-deep
+// walk, and the restore has to reproduce the volume's own layout anyway — where
+// wallpaper/ is a sibling of media/ for the reasons config.mjs states.
+const WALLPAPER_POOL = join(backupDir, 'wallpaper')
 const SNAPSHOTS = join(backupDir, 'snapshots')
+
+/**
+ * The wallpapers a manifest claims, tolerating manifests written before there
+ * were any.
+ *
+ * A v1 snapshot never held wallpapers and never said it did, so it is read as
+ * claiming none. Inventing entries for it would make an old, intact snapshot
+ * fail --verify for content it never promised — the manifest is the record of
+ * what a snapshot claimed, and the verifier's whole job is holding it to that.
+ */
+function manifestWallpapers(manifest) {
+  return Array.isArray(manifest.wallpaper) ? manifest.wallpaper : []
+}
 
 function sha256File(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex')
@@ -163,6 +204,12 @@ if (VERIFY_ONLY) {
     // Then the pool. A manifest naming a blob the pool does not hold is a
     // snapshot that restores to a catalogue with a missing button.
     const missing = manifest.media.filter((m) => !existsSync(join(POOL, m.path)))
+    // Same question for the wallpapers, and it is not the same consequence: a
+    // missing audio blob is a button with no sound, a missing wallpaper is a
+    // themes row that saveTheme will not accept, so the restored site cannot be
+    // re-saved into a consistent state at all.
+    const wallpapers = manifestWallpapers(manifest)
+    const wallpaperMissing = wallpapers.filter((w) => !existsSync(join(WALLPAPER_POOL, w.path)))
     // And the database has to still OPEN, which a digest match cannot tell you
     // if the digest was recorded from an already-broken file.
     let integrity = 'unopened'
@@ -175,11 +222,12 @@ if (VERIFY_ONLY) {
         integrity = `open failed: ${error?.code ?? error?.message ?? 'unknown'}`
       }
     }
-    const ok = digestOk && missing.length === 0 && integrity === 'ok'
+    const ok = digestOk && missing.length === 0 && wallpaperMissing.length === 0 && integrity === 'ok'
     if (!ok) bad += 1
     process.stdout.write(
       `  ${name}  ${ok ? 'OK  ' : 'BAD '} db=${digestOk ? 'match' : 'MISMATCH'} ` +
-        `integrity=${integrity} media=${manifest.media.length - missing.length}/${manifest.media.length}\n`,
+        `integrity=${integrity} media=${manifest.media.length - missing.length}/${manifest.media.length} ` +
+        `wallpaper=${wallpapers.length - wallpaperMissing.length}/${wallpapers.length}\n`,
     )
   }
   log(`${names.length} snapshots, ${bad} bad`)
@@ -230,20 +278,53 @@ if (RESTORE !== null) {
     copyFileSync(src, dst)
     restored += 1
   }
+  // The wallpapers, into the sibling directory config.mjs derives from DATA_DIR.
+  // Unconditionally created, even for a snapshot that claims none: the API's
+  // upload path expects the directory to be there, and an empty one is the
+  // honest statement "this restore carries no wallpapers".
+  mkdirSync(join(RESTORE_INTO, 'wallpaper'), { recursive: true })
+  const wallpapers = manifestWallpapers(manifest)
+  let wallpapersRestored = 0
+  const wallpapersAbsent = []
+  for (const blob of wallpapers) {
+    const src = join(WALLPAPER_POOL, blob.path)
+    if (!existsSync(src)) {
+      wallpapersAbsent.push(blob.path)
+      continue
+    }
+    copyFileSync(src, join(RESTORE_INTO, 'wallpaper', blob.path))
+    wallpapersRestored += 1
+  }
+
   // incoming/ is deliberately absent from the snapshot; the directory is created
   // so the API does not have to on its first write.
   mkdirSync(join(RESTORE_INTO, 'incoming'), { recursive: true })
 
-  log(`restored ${RESTORE} into ${RESTORE_INTO}: joi.db + ${restored}/${manifest.media.length} blobs`)
+  log(
+    `restored ${RESTORE} into ${RESTORE_INTO}: joi.db + ${restored}/${manifest.media.length} blobs + ` +
+      `${wallpapersRestored}/${wallpapers.length} wallpaper(s)`,
+  )
   if (absent.length > 0) {
     process.stderr.write(
       `backup: ${absent.length} blob(s) named by the manifest are not in the pool — the restored ` +
         'catalogue will have buttons with no audio:\n' + absent.map((p) => `  ${p}\n`).join(''),
     )
   }
+  if (wallpapersAbsent.length > 0) {
+    // Named as loudly as the audio, because the consequence is worse: the owner
+    // cannot press Save to fix it. saveTheme refuses a row whose wallpaper is
+    // not on the volume, so the recovery below is the operation that fails.
+    process.stderr.write(
+      `backup: ${wallpapersAbsent.length} wallpaper(s) named by the manifest are not in the pool — a ` +
+        'themes row pointing at one cannot be re-saved (wallpaper_missing); clear the wallpaper or ' +
+        'upload it again:\n' + wallpapersAbsent.map((p) => `  ${p}\n`).join(''),
+    )
+  }
   log('catalog.json is NOT restored: it is derived. Point the API at this directory and publish once.')
+  log('theme.css is NOT restored either, for the same reason: press Save once in the theme desk and it')
+  log('is rebuilt from the active themes row — the wallpapers it names came back above.')
   log('Then re-run whatever deletion policy exists, or this restore has undone it.')
-  process.exit(absent.length === 0 ? 0 : 1)
+  process.exit(absent.length === 0 && wallpapersAbsent.length === 0 ? 0 : 1)
 }
 
 // ---------------------------------------------------------------------------
@@ -260,6 +341,7 @@ if (existsSync(target)) fail(`${target} already exists; a snapshot was taken thi
 
 mkdirSync(target, { recursive: true })
 mkdirSync(POOL, { recursive: true })
+mkdirSync(WALLPAPER_POOL, { recursive: true })
 
 // --- the database ----------------------------------------------------------
 // READ-ONLY, and VACUUM INTO still works from a read-only handle: it writes to
@@ -280,6 +362,14 @@ for (const table of ['groups', 'clips', 'media', 'submitters', 'batches', 'batch
 // row is either mid-upload or already collectable, and a backup is not the place
 // to resurrect either.
 const referenced = source.prepare('SELECT sha256, ext, storage_path, bytes FROM media ORDER BY sha256').all()
+// Every wallpaper any themes row names, active or not. DISTINCT because two rows
+// may share a picture (the filename is its sha256), and not `WHERE is_active = 1`
+// because deactivated rows are the rollback path and a rollback that lands on a
+// row whose wallpaper was never backed up is refused by saveTheme.
+const wallpapersReferenced = source
+  .prepare('SELECT DISTINCT wallpaper_path FROM themes WHERE wallpaper_path IS NOT NULL ORDER BY wallpaper_path')
+  .all()
+  .map((row) => row.wallpaper_path)
 source.close()
 
 // --- the media pool --------------------------------------------------------
@@ -305,11 +395,43 @@ for (const blob of referenced) {
   copied += 1
 }
 
+// --- the wallpaper pool ----------------------------------------------------
+// Same dedup story as media/, for the same reason: the names are sha256 of the
+// contents, so a snapshot that changes nothing copies nothing.
+let wallpaperCopied = 0
+let wallpaperDeduped = 0
+const wallpaperPooled = []
+const wallpapersMissingFromVolume = []
+for (const path of wallpapersReferenced) {
+  const from = join(wallpaperDir, path)
+  const to = join(WALLPAPER_POOL, path)
+  if (!existsSync(from)) {
+    // Reported, not fatal, exactly as for media: a themes row naming a file the
+    // volume does not hold is already broken live, and refusing to snapshot the
+    // rest of the site over it makes that worse.
+    wallpapersMissingFromVolume.push(path)
+    continue
+  }
+  const bytes = statSync(from).size
+  if (existsSync(to) && statSync(to).size === bytes) {
+    wallpaperDeduped += 1
+  } else {
+    copyFileSync(from, to)
+    wallpaperCopied += 1
+  }
+  // No separate sha256 field: the filename IS the digest, so recording it beside
+  // the path would be one fact written twice and free to disagree.
+  wallpaperPooled.push({ path, bytes })
+}
+
 // --- the manifest ----------------------------------------------------------
 // Written LAST. A snapshot with no manifest is one that was interrupted, and
 // both the verifier and the pruner treat it as unusable rather than as empty.
+// v2 because the manifest now carries a `wallpaper` list. v1 snapshots stay
+// readable — manifestWallpapers() reads their silence as "no wallpapers", which
+// is exactly what they hold — so bumping this costs no old backup.
 const manifest = {
-  schemaVersion: 'joi-button.backup.v1',
+  schemaVersion: 'joi-button.backup.v2',
   takenAt: now,
   database: {
     file: 'joi.db',
@@ -321,17 +443,40 @@ const manifest = {
   media: referenced
     .filter((blob) => !missingFromVolume.includes(blob.storage_path))
     .map((blob) => ({ sha256: blob.sha256, path: blob.storage_path, bytes: blob.bytes })),
+  // Every wallpaper any themes row names. Kept out of `media` rather than merged
+  // into it: they live in a different directory, are collected on a different
+  // predicate, and a restore that put them in media/ would satisfy the manifest
+  // while leaving the site's themes still broken.
+  wallpaper: wallpaperPooled,
   // Named in the manifest so a restore does not have to guess what was left out.
+  // Anything absent from a restored volume and absent from this map is a bug in
+  // this script, not a decision — which is the only reason the map is worth
+  // maintaining.
   excluded: {
     'incoming/': 'in-flight uploads; restoring them would resurrect refused and abandoned files',
     'catalog.json': 'derived from the database by lib/catalog.mjs; regenerate it by publishing',
+    'theme.css': 'derived from the active themes row by lib/theme-store.mjs; regenerate it by saving the theme once',
   },
   missingFromVolume,
+  // Separate from missingFromVolume because it is a different repair: a media
+  // blob is gone for good, a wallpaper the owner still has can be re-uploaded.
+  wallpapersMissingFromVolume,
 }
 writeFileSync(join(target, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`)
 
 log(`snapshot ${stamp}: db ${manifest.database.bytes} bytes, ${referenced.length} blobs (${copied} new, ${deduped} already pooled)`)
+log(
+  `  wallpapers: ${wallpapersReferenced.length} referenced ` +
+    `(${wallpaperCopied} new, ${wallpaperDeduped} already pooled)`,
+)
 for (const [table, n] of Object.entries(counts)) log(`  ${table}: ${n}`)
+if (wallpapersMissingFromVolume.length > 0) {
+  process.stderr.write(
+    `backup: WARNING — ${wallpapersMissingFromVolume.length} wallpaper(s) are named by a themes row and ` +
+      'not on the volume; a restore cannot bring back what is already gone:\n' +
+      wallpapersMissingFromVolume.map((p) => `  ${p}\n`).join(''),
+  )
+}
 if (missingFromVolume.length > 0) {
   process.stderr.write(
     `backup: WARNING — ${missingFromVolume.length} blob(s) are in the database and not on the volume:\n` +
@@ -357,10 +502,12 @@ for (const name of snapshots()) {
 }
 
 const stillReferenced = new Set()
+const wallpapersStillReferenced = new Set()
 for (const name of snapshots()) {
   const manifestOf = readManifest(name)
   if (manifestOf === null) continue
   for (const blob of manifestOf.media) stillReferenced.add(blob.path)
+  for (const blob of manifestWallpapers(manifestOf)) wallpapersStillReferenced.add(blob.path)
 }
 let collected = 0
 if (existsSync(POOL)) {
@@ -380,7 +527,24 @@ if (existsSync(POOL)) {
   }
 }
 
-log(`pruned ${dropped} snapshot(s) older than ${PRUNE_DAYS} days, collected ${collected} pooled blob(s)`)
+// The wallpaper pool is FLAT, so it is its own loop rather than a parameter of
+// the one above — a shared walker would have to be told how deep to go, and
+// getting that argument wrong deletes backed-up bytes.
+let wallpapersCollected = 0
+if (existsSync(WALLPAPER_POOL)) {
+  for (const file of readdirSync(WALLPAPER_POOL)) {
+    if (wallpapersStillReferenced.has(file)) continue
+    const path = join(WALLPAPER_POOL, file)
+    if (!statSync(path).isFile()) continue
+    rmSync(path, { force: true })
+    wallpapersCollected += 1
+  }
+}
+
+log(
+  `pruned ${dropped} snapshot(s) older than ${PRUNE_DAYS} days, collected ${collected} pooled blob(s) ` +
+    `and ${wallpapersCollected} pooled wallpaper(s)`,
+)
 log(`RETENTION IS A POLICY, NOT A CONVENIENCE: a restore reaches back at most ${PRUNE_DAYS} days, and`)
 log('anything deleted from the live data within that window comes back with it. Re-run the deletion')
 log('policy after a restore.')

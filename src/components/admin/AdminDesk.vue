@@ -36,6 +36,10 @@
                         :aria-pressed="String(tab === 'audit')" @click="tab = 'audit'">
                     {{ $t("admin.nav.audit") }}
                 </button>
+                <button type="button" class="adm-tab" :class="{ 'is-on': tab === 'theme' }"
+                        :aria-pressed="String(tab === 'theme')" @click="tab = 'theme'">
+                    {{ $t("admin.nav.theme") }}
+                </button>
             </nav>
         </header>
 
@@ -77,6 +81,7 @@
              the site as it was when this tab was opened. -->
         <PublishPanel v-if="tab === 'publish'" @published="loadCatalogue" />
         <AuditTrail v-if="tab === 'audit'" />
+        <ThemePanel v-if="tab === 'theme'" />
     </div>
 </template>
 
@@ -370,6 +375,7 @@ import ReviewQueue from './ReviewQueue.vue'
 import ReviewDeskItem from './ReviewDeskItem.vue'
 import PublishPanel from './PublishPanel.vue'
 import AuditTrail from './AuditTrail.vue'
+import ThemePanel from './ThemePanel.vue'
 
 /**
  * One client for the whole admin area, so exactly one place knows how this API
@@ -485,7 +491,7 @@ function createAdminApi({ onGone }) {
 }
 
 @Component({
-    components: { ReviewQueue, ReviewDeskItem, PublishPanel, AuditTrail },
+    components: { ReviewQueue, ReviewDeskItem, PublishPanel, AuditTrail, ThemePanel },
     provide() {
         // Built here rather than as a class property: it holds functions, not
         // state, and `data` would make Vue walk it for reactivity it can never

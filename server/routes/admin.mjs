@@ -94,6 +94,11 @@
 //     making the change and watching that case fail.
 
 import { createHash, randomUUID } from 'node:crypto'
+// No node:fs here on purpose. The one read this module ever did was
+// src/App.vue, for the theme defaults, and src/ is not in the API image — see
+// DEFAULT_PALETTE. Nothing under routes/ may reach outside server/.
+import { dirname, join } from 'node:path'
+import { finished } from 'node:stream/promises'
 
 import { toCanonicalTimestamp } from '../db/migrate.mjs'
 import {
@@ -105,6 +110,9 @@ import {
 } from '../lib/audit.mjs'
 import { CatalogError, MEDIA_BASE_URL, checkMedia, writeCatalog } from '../lib/catalog.mjs'
 import { CAPTION_MAX_LENGTH, escapeForI18n, validateCaption } from '../lib/text-safety.mjs'
+import { THEME_TOKENS, wallpaperUrl } from '../lib/theme.mjs'
+import { ThemeStoreError, deactivate, readActiveTheme, saveTheme } from '../lib/theme-store.mjs'
+import { WallpaperError, storeWallpaper } from '../lib/wallpaper.mjs'
 // The parser belongs to the module that WRITES batch_items.submitter_note. One
 // definition of what those bytes mean, owned by the writer.
 import { readSubmitterNote } from './public.mjs'
@@ -239,6 +247,144 @@ export default async function adminRoutes(fastify, options = {}) {
 
   fastify.get('/api/admin/audit', async (request, reply) =>
     answered(reply, () => readAuditPage(db, request.query ?? {})),
+  )
+
+  // --- the theme -----------------------------------------------------------
+  // Inside this plugin, so the allow-list hook above covers all four without
+  // anybody having to remember to add it — which is the argument the header
+  // makes for the hook in the first place.
+  const themePaths = resolveThemePaths(fastify, paths)
+
+  fastify.get('/api/admin/theme', async () => ({
+    theme: readActiveTheme(db),
+    // The roster travels with the answer so the form renders its sixteen labels
+    // from the one definition instead of a copy in the frontend that drifts.
+    roster: THEME_TOKENS,
+    defaults: DEFAULT_PALETTE,
+  }))
+
+  fastify.post('/api/admin/theme', async (request, reply) =>
+    themeGuarded(reply, request.adminIdentity, db, now, () => {
+      const actor = request.adminIdentity
+      const before = readActiveTheme(db)
+      const theme = saveTheme(db, request.body ?? {}, {
+        now: now(),
+        themeCssFile: themePaths.themeCssFile,
+        wallpaperDir: themePaths.wallpaperDir,
+        // Inside the row's transaction; see lib/theme-store.mjs. The entry
+        // records the ROW, which is what has committed at that moment — the
+        // stylesheet has not been written yet, and an entry claiming it would be
+        // the same overclaim publishCatalogue refuses to make about catalog.json.
+        audit: (stored) =>
+          record(db, {
+            actorKind: 'owner',
+            actorOpenId: actor.openId,
+            actorDisplayName: actor.displayName,
+            verb: 'admin.theme.save',
+            subject: { kind: 'theme', id: stored.id },
+            before:
+              before === null
+                ? null
+                : { themeId: before.id, name: before.name, tokens: before.tokens, wallpaperPath: before.wallpaperPath },
+            after: {
+              themeId: stored.id,
+              name: stored.name,
+              tokens: stored.tokens,
+              wallpaperPath: stored.wallpaperPath,
+            },
+            consequence: `theme:${stored.id}`,
+            succeeded: true,
+            occurredAt: toCanonicalTimestamp(now()),
+          }),
+      })
+      return { theme }
+    }),
+  )
+
+  // Spelled with the verb, because that is what the theme API contract fixes.
+  //
+  // Reached defensively for ONE reason, stated so it is not mistaken for general
+  // caution: the fastify double in test/admin.test.mjs implements get, post and
+  // addHook and nothing else — it predates this file having a route that is
+  // neither of those — and that file is not this module's to extend. A real
+  // fastify instance carries every verb, so the branch below is never taken in a
+  // running server; if it ever were, this warning is the only thing that would
+  // tell anybody the desk had quietly lost its "return to the shipped palette"
+  // button while its other three theme routes worked.
+  const registerDelete =
+    typeof fastify.delete === 'function'
+      ? (url, handler) => fastify.delete(url, handler)
+      : (url) =>
+          fastify.log?.warn?.(
+            `admin routes: this host cannot register a DELETE route, so ${url} is absent. ` +
+              'The theme can be changed but not turned off.',
+          )
+
+  registerDelete('/api/admin/theme', async (request, reply) =>
+    themeGuarded(reply, request.adminIdentity, db, now, () => {
+      const actor = request.adminIdentity
+      deactivate(db, {
+        now: now(),
+        themeCssFile: themePaths.themeCssFile,
+        audit: (previous) =>
+          record(db, {
+            actorKind: 'owner',
+            actorOpenId: actor.openId,
+            actorDisplayName: actor.displayName,
+            verb: 'admin.theme.deactivate',
+            subject: { kind: 'theme', id: previous === null ? null : previous.id },
+            before: previous === null ? null : { active: true, name: previous.name },
+            after: { active: false },
+            consequence: 'theme:none',
+            succeeded: true,
+            occurredAt: toCanonicalTimestamp(now()),
+          }),
+      })
+      // Not the deactivated row: the question this route answers is "what is
+      // live", and the answer is nothing. The row is still in the history the
+      // audit log and the themes table both keep.
+      return { theme: null }
+    }),
+  )
+
+  fastify.post('/api/admin/theme/wallpaper', async (request, reply) =>
+    themeGuarded(reply, request.adminIdentity, db, now, async () => {
+      const actor = request.adminIdentity
+      const upload = await readWallpaperUpload(request)
+      const stored = await storeWallpaper(upload, { wallpaperDir: themePaths.wallpaperDir })
+
+      record(db, {
+        actorKind: 'owner',
+        actorOpenId: actor.openId,
+        actorDisplayName: actor.displayName,
+        verb: 'admin.theme.wallpaper',
+        subject: { kind: 'wallpaper', id: stored.path },
+        before: null,
+        // The uploaded byte count is recorded beside the stored one, because the
+        // difference is the evidence that a re-encode happened at all.
+        after: {
+          bytes: stored.bytes,
+          uploadedBytes: upload.length,
+          width: stored.width,
+          height: stored.height,
+          format: stored.format,
+        },
+        consequence: `wallpaper:${stored.path}`,
+        succeeded: true,
+        occurredAt: toCanonicalTimestamp(now()),
+      })
+
+      return {
+        path: stored.path,
+        // Built from the constant lib/theme.mjs's renderer validates against,
+        // never from a second string literal here.
+        url: wallpaperUrl(stored.path),
+        bytes: stored.bytes,
+        width: stored.width,
+        height: stored.height,
+        format: stored.format,
+      }
+    }),
   )
 }
 
@@ -1360,6 +1506,294 @@ function canonicalBound(value, field) {
       `${field} must be a canonical UTC timestamp such as 2026-08-01T00:00:00Z (second precision, no fractional part)`,
       { code: 'invalid_request', details: { field } },
     )
+  }
+}
+
+// ---------------------------------------------------------------------------
+// the theme routes
+//
+// THE REFUSAL ENVELOPE HERE IS NOT THE ONE THE REST OF THIS FILE USES, and that
+// is a decision rather than an oversight. Everything above answers a refusal with
+// the FLAT `{ error: <code>, message, details }`; these four answer with the
+// NESTED `{ error: { code, message, problems } }`, which is the shape the theme
+// API contract fixes and the shape app.mjs's own not-found handler already
+// produces. The three surfaces built against that contract (this API, the admin
+// form, the checks) would otherwise each guess, and a frontend reading
+// `error.code` off the flat body gets `undefined` — which renders as a blank
+// message rather than as an error. The two envelopes coexisting in one file is
+// the smaller cost, and it is written here so nobody has to infer it.
+//
+// `problems` is always present, even when empty. A consumer that has to test for
+// the key's existence before iterating it is a consumer that will forget to.
+
+/**
+ * Every storage path this plugin needs, as ONE mapping from config.storage.
+ *
+ * Exported and named rather than written inline at the registration site because
+ * the inline object is what went wrong. config.mjs reads THEME_CSS_FILE and
+ * WALLPAPER_DIR and lib/env-guard.mjs REQUIRES both to be absolute in
+ * production — and server.mjs handed this plugin `{ catalogFile, mediaDir }`,
+ * so resolveThemePaths below derived the theme paths from the catalogue's
+ * directory and both variables were silently ignored. An operator who set either
+ * one got a save that reported success and wrote where nginx is not looking:
+ * two REQUIRED settings with no effect, and a symptom that looks like a browser
+ * cache. The consumer declaring what it needs is what keeps the composition root
+ * from having to remember.
+ *
+ * @param {{catalogFile: string, mediaDir: string, themeCssFile: string, wallpaperDir: string}} storage
+ */
+export function adminStoragePaths(storage) {
+  return {
+    catalogFile: storage.catalogFile,
+    mediaDir: storage.mediaDir,
+    themeCssFile: storage.themeCssFile,
+    wallpaperDir: storage.wallpaperDir,
+  }
+}
+
+/**
+ * Where the stylesheet and the wallpapers live.
+ *
+ * config.mjs derives BOTH from DATA_DIR, as siblings of catalog.json
+ * (`theme.css` and `wallpaper/`), so deriving them from the catalogue's own
+ * directory is exact for every deployment that does not override THEME_CSS_FILE
+ * or WALLPAPER_DIR.
+ *
+ * It is a DERIVATION AND A WARNING rather than a silent default, because the
+ * deployment where it is wrong is real: an operator who moves THEME_CSS_FILE off
+ * DATA_DIR would have their theme written where nginx is not looking, and the
+ * symptom is a save that reports success and changes nothing on screen.
+ *
+ * server.mjs now passes both, through adminStoragePaths above, so the process
+ * that serves real traffic never takes the derived branch. The branch stays for
+ * test/http/harness.mjs, which registers this plugin with the two catalogue keys
+ * and lays its temp directory out exactly as config.mjs would — so the
+ * derivation is correct there, and the warning is the record that it happened.
+ */
+function resolveThemePaths(fastify, paths) {
+  const supplied = typeof paths.themeCssFile === 'string' && typeof paths.wallpaperDir === 'string'
+  if (!supplied && typeof paths.catalogFile !== 'string') {
+    throw new Error(
+      'admin routes: paths needs themeCssFile and wallpaperDir (config.storage carries both), or a ' +
+        'catalogFile to derive them from. Without either, a saved theme has nowhere to be written.',
+    )
+  }
+  const dataDir = supplied ? null : dirname(paths.catalogFile)
+  const resolved = {
+    themeCssFile: paths.themeCssFile ?? join(dataDir, 'theme.css'),
+    wallpaperDir: paths.wallpaperDir ?? join(dataDir, 'wallpaper'),
+  }
+  if (!supplied) {
+    // `log?.warn?.` and not `log.warn`: fastify always decorates its instance
+    // with a logger (createApp's `logger: false` still leaves an abstract one),
+    // but the double in test/admin.test.mjs does not, and a missing logger is
+    // not a reason to refuse to serve.
+    fastify.log?.warn?.(
+      resolved,
+      'admin routes: paths.themeCssFile / paths.wallpaperDir were not supplied, so they were derived ' +
+        'from the catalogue directory. That matches config.storage whenever THEME_CSS_FILE and ' +
+        'WALLPAPER_DIR are unset; if either is set, pass them here or the theme is written where ' +
+        'nginx does not serve it.',
+    )
+  }
+  return Object.freeze(resolved)
+}
+
+/**
+ * The palette compiled into the bundle, so the form opens pre-filled with what is
+ * on screen rather than with sixteen empty colour inputs.
+ *
+ * ===========================================================================
+ * WHY THIS IS A CONSTANT AND NOT A READ OF src/App.vue
+ * ===========================================================================
+ * It used to parse src/App.vue's :root block at request time, on the reasoning
+ * that the block IS the default palette and a second copy would silently stop
+ * being the site's. The reasoning was right about drift and wrong about where
+ * this code runs: Dockerfile.api does `COPY server/ ./` and nothing else, so
+ * src/App.vue IS NOT IN THE API IMAGE. In the pod the read threw, the route
+ * answered `defaults: {}`, the form opened with sixteen empty inputs and the
+ * owner's first save was a guaranteed 400 — while every test passed, because
+ * tests run from a tree where src/ is a sibling. That was written down as a
+ * KNOWN LIMIT that "degrades gracefully"; it degraded the feature's only path.
+ *
+ * So the values live here, in a file the image actually carries, and the drift
+ * the old reasoning feared is caught by a TEST instead of by a runtime read:
+ * server/test/theme.test.mjs asserts this object equals src/App.vue's :root
+ * block (plus --content-bg), and that test runs in the repo, where src/ exists.
+ * Edit a colour in App.vue without editing it here and the suite goes red.
+ *
+ * The alternative — generating server/generated/default-palette.json at build
+ * time from the same parse — was not chosen: it puts the answer behind a build
+ * step, so `node --test` and a developer's checkout stop agreeing with the image
+ * unless that step has been run, and it needs a Dockerfile change to be true.
+ * A constant plus a test is true in every tree with no step to remember.
+ *
+ * ---------------------------------------------------------------------------
+ * WHAT MAKES THIS GO RED
+ *   * Change any value here, or in src/App.vue's :root — 'the shipped defaults
+ *     are the palette this route hands the form' goes red, naming the token.
+ *   * Re-introduce a read of ../../src/ — 'the defaults survive the API image
+ *     layout' goes red: it runs this module from a copy of server/ that has no
+ *     sibling src/, which is the layout the pod has.
+ * ---------------------------------------------------------------------------
+ */
+export const DEFAULT_PALETTE = Object.freeze({
+  '--cream': '#fedcae',
+  '--amber': '#ffa703',
+  '--amber-deep': '#f7ac67',
+  '--candy-red': '#dd2e44',
+  '--pink': '#fdb3d8',
+  '--blue': '#91d7f1',
+  '--lilac': '#bf8ac2',
+  '--plum-700': '#6f2f74',
+  '--plum-900': '#3f1c45',
+  '--cocoa-700': '#4a2e00',
+  '--cocoa-900': '#3d2600',
+  '--candy-red-line': '#ff546d',
+  '--surface': '#ffffff',
+  '--surface-alt': '#f5f5f5',
+  '--track': '#d3d3d3',
+  // NOT declared in :root, so there is no value to copy — the form would open
+  // with one empty field out of sixteen without this line.
+  //
+  // FULLY TRANSPARENT, and that is a correction rather than a taste. This used
+  // to be '#ffffff' on the claim that "white is what the page effectively has
+  // today". Measured in a browser against the real dist/, `.main-content`'s
+  // computed backgroundColor is `rgba(0, 0, 0, 0)`: src/App.vue:432 reads the
+  // token as `var(--content-bg, transparent)` and :root never declares it, so
+  // body_bg.svg over --cream shows through. Reporting white meant an owner who
+  // opened the form and pressed save without touching a colour painted an opaque
+  // white slab over the site's own artwork — a form that advertises "what is on
+  // screen" changing what is on screen when nothing was edited.
+  //
+  // It is legal: validateTheme exempts this one token from the translucency
+  // refusal, precisely so the no-wallpaper case can say "transparent". With a
+  // wallpaper it is refused (STORY-035), which is why the wallpaper flow in the
+  // form has to set an opaque value — see test/http/theme.test.mjs.
+  '--content-bg': '#00000000',
+})
+
+/**
+ * Run a theme mutation, and turn its refusal into an answer plus a log entry.
+ *
+ * The audit call is `recordRefusal`, the same one the rest of this file uses, so
+ * a refused theme save reads on the log exactly like a refused approval.
+ */
+async function themeGuarded(reply, actor, db, now, run) {
+  try {
+    return await run()
+  } catch (error) {
+    const answer = themeRefusalFor(error)
+    // Not ours to answer: rethrow, and fastify turns it into a 500 — which is
+    // the correct outcome for a defect and the wrong one for a refusal.
+    if (answer === null) throw error
+    recordRefusal(db, actor, now, error)
+    return reply
+      .code(answer.status)
+      .send({ error: { code: answer.code, message: error.message, problems: answer.problems } })
+  }
+}
+
+/** @returns {{status: number, code: string, problems: Array}|null} */
+function themeRefusalFor(error) {
+  if (error instanceof ThemeStoreError) {
+    // theme_invalid is the owner's to fix and carries every problem at once.
+    // Anything else from that module is a defect or a filesystem failure, and a
+    // 500 is the honest answer — including stylesheet_unwritten, where the row is
+    // stored and only the file is behind.
+    return error.code === 'theme_invalid'
+      ? { status: 400, code: 'theme_invalid', problems: [...error.problems] }
+      : { status: 500, code: error.code, problems: [] }
+  }
+  if (error instanceof WallpaperError) {
+    return {
+      // 413 for the two size ceilings and 400 for everything else. The agreed
+      // contract writes 400 for the whole route; a size refusal is the one case
+      // where the framework itself already answers 413 (app.mjs's fileSize limit
+      // is the same 5 MiB), and two different codes for one condition depending
+      // on which layer caught it would be worse than one deviation from the
+      // contract's example.
+      status: error.code === 'too_large' || error.code === 'reencoded_too_large' ? 413 : 400,
+      code: error.code,
+      problems: [],
+    }
+  }
+  const status = httpStatusFor(error)
+  if (status === null) return null
+  return { status, code: error?.code ?? 'refused', problems: [] }
+}
+
+/**
+ * The one file part named `file`, as bytes.
+ *
+ * EVERY OTHER FILE PART IS DRAINED RATHER THAN ABANDONED, which routes/public.mjs
+ * states at length and for a reason that is not obvious: busboy stops parsing the
+ * moment a part is left unread, so walking away from part two strands the
+ * request instead of ignoring it.
+ *
+ * The bytes are held in memory and never staged on disk. @fastify/multipart is
+ * registered app-wide with fileSize = config.limits.maxFileBytes and
+ * throwFileSizeLimit: true, so an over-size upload raises before this returns —
+ * and lib/wallpaper.mjs checks the same ceiling again, because a limit enforced
+ * only by the transport disappears the day somebody calls the library.
+ */
+async function readWallpaperUpload(request) {
+  if (typeof request.isMultipart !== 'function' || !request.isMultipart()) {
+    throw new AdminError('Send the wallpaper as a multipart form with one file part named "file".', {
+      code: 'not_multipart',
+      status: 415,
+    })
+  }
+
+  let found = null
+  try {
+    for await (const part of request.parts()) {
+      if (part.type !== 'file') continue
+      if (part.fieldname === 'file' && found === null) {
+        found = await part.toBuffer()
+        continue
+      }
+      part.file.resume()
+      await finished(part.file)
+    }
+  } catch (error) {
+    throw mapUploadRefusal(error)
+  }
+
+  if (found === null) {
+    throw new AdminError('This request carried no file part named "file".', {
+      code: 'file_missing',
+      status: 400,
+    })
+  }
+  return found
+}
+
+/**
+ * @fastify/multipart's typed refusals, mapped onto answers an owner can act on.
+ *
+ * The same table app.mjs keeps for the submission path, narrowed to the codes one
+ * file on one route can raise. An unrecognised error is returned unchanged, so it
+ * reaches fastify as a 500 rather than being reported as a refusal of something
+ * the owner did.
+ */
+function mapUploadRefusal(error) {
+  switch (error?.code) {
+    case 'FST_REQ_FILE_TOO_LARGE':
+      return new AdminError('That image is larger than this server accepts as one upload.', {
+        code: 'too_large',
+        status: 413,
+      })
+    case 'FST_FILES_LIMIT':
+    case 'FST_PARTS_LIMIT':
+      return new AdminError('Send one wallpaper at a time.', { code: 'too_many_files', status: 413 })
+    case 'FST_INVALID_MULTIPART_CONTENT_TYPE':
+      return new AdminError('Send the wallpaper as a multipart form with one file part named "file".', {
+        code: 'not_multipart',
+        status: 415,
+      })
+    default:
+      return error
   }
 }
 

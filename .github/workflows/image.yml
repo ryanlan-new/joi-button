@@ -112,7 +112,7 @@ jobs:
       # The palette gate, on a runner rather than only in a comment.
       #
       # `npm run contrast` reads src/App.vue's :root block and asserts all
-      # eighteen foreground/background pairings the site renders. It had existed
+      # every foreground/background pairing the site renders. It had existed
       # since the palette repair and was invoked by nothing — not the Dockerfile,
       # not this workflow, not the smoke test — which made it a comment rather
       # than a gate.

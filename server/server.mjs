@@ -51,7 +51,7 @@ import { dirname, isAbsolute } from 'node:path'
 import Database from 'better-sqlite3'
 
 import { createApp } from './app.mjs'
-import adminRoutes from './routes/admin.mjs'
+import adminRoutes, { adminStoragePaths } from './routes/admin.mjs'
 import publicRoutes from './routes/public.mjs'
 import { CONFIG_EXTRA_REQUIREMENTS, ENV_SOURCES, loadConfig } from './config.mjs'
 import { applyConnectionPragmas, migrate } from './db/migrate.mjs'
@@ -151,7 +151,14 @@ async function main() {
         options: {
           db,
           adminOpenIds: config.admin.openIds,
-          paths: { catalogFile: config.storage.catalogFile, mediaDir: config.storage.mediaDir },
+          // ALL FOUR, from the plugin's own mapping. This line used to name
+          // catalogFile and mediaDir only, which meant THEME_CSS_FILE and
+          // WALLPAPER_DIR — both read by config.mjs and both REQUIRED absolute
+          // in production by env-guard — reached the process and then went
+          // nowhere: routes/admin.mjs fell back to deriving them from the
+          // catalogue's directory. Setting either variable changed nothing, and
+          // the theme was written where the web pod does not serve it.
+          paths: adminStoragePaths(config.storage),
         },
       },
     ],
@@ -176,6 +183,12 @@ async function main() {
       database: config.database.file,
       mediaDir: config.storage.mediaDir,
       catalogFile: config.storage.catalogFile,
+      // The two the web pod also has to be looking at. On the line because the
+      // failure they cause is invisible from the API side: a theme saved to a
+      // path nginx does not serve answers 200 and changes nothing on screen, so
+      // the first question is always "where did it go", and this is the answer.
+      themeCssFile: config.storage.themeCssFile,
+      wallpaperDir: config.storage.wallpaperDir,
     },
     'joi-button API listening',
   )

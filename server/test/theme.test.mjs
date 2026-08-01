@@ -38,9 +38,16 @@ function defaultTokens() {
     tokens[name] = value
   }
   // --content-bg is read by .main-content with a `transparent` fallback and is
-  // not declared in :root, so a theme has to supply it. White is what the page
-  // effectively has today.
-  tokens['--content-bg'] = '#ffffff'
+  // not declared in :root, so a theme has to supply it.
+  //
+  // FULLY TRANSPARENT is what the page actually has: measured in a browser
+  // against the real dist/, `.main-content`'s computed backgroundColor is
+  // `rgba(0, 0, 0, 0)` and body_bg.svg shows through. This fixture said
+  // '#ffffff' and called it "what the page effectively has today", which was a
+  // claim about a rendered state nobody had rendered — and routes/admin.mjs
+  // handed the same value to the form, so an owner who saved without touching a
+  // colour painted an opaque slab over the site's artwork.
+  tokens['--content-bg'] = '#00000000'
   return tokens
 }
 
@@ -140,11 +147,17 @@ test('the content backing may be transparent WITHOUT a wallpaper and not WITH on
   // blanket translucency check exempted --content-bg. A transparent backing over
   // the plain page colour is what the site does today; it is only once there is
   // a picture behind it that the text's contrast would depend on the picture.
+  //
+  // Both values are named HERE rather than taken from the fixture. The fixture's
+  // own --content-bg is the transparent one (that is what the site ships), so
+  // leaning on it for the "wallpaper + opaque" leg would have made that leg
+  // silently change meaning the day the fixture did.
   const transparent = { ...GOOD.tokens, '--content-bg': '#ffffff00' }
+  const opaque = { ...GOOD.tokens, '--content-bg': '#ffffff' }
   const wallpaperPath = `ab/cd/${'f'.repeat(64)}.png`
 
   assert.equal(validateTheme({ ...GOOD, tokens: transparent }).ok, true, 'no wallpaper: transparent is fine')
-  assert.equal(validateTheme({ ...GOOD, wallpaperPath }).ok, true, 'wallpaper + opaque backing is fine')
+  assert.equal(validateTheme({ ...GOOD, tokens: opaque, wallpaperPath }).ok, true, 'wallpaper + opaque backing is fine')
 
   const verdict = validateTheme({ ...GOOD, wallpaperPath, tokens: transparent })
   assert.equal(verdict.ok, false, 'wallpaper + transparent backing was accepted')
@@ -152,6 +165,50 @@ test('the content backing may be transparent WITHOUT a wallpaper and not WITH on
     verdict.problems.map((p) => p.code),
     [THEME_REJECTIONS.content_backing_translucent],
     'the ONLY problem should be this one; anything else means it fired for the wrong reason',
+  )
+})
+
+test('a translucent content backing is measured through what shows behind it, not as if it were opaque', () => {
+  // The trap this closes: luminance() cannot see alpha, so a raw read of
+  // --content-bg would measure '#00000000' — the site's actual, legal, shipped
+  // state — as opaque BLACK and refuse it, while measuring '#ffffff00' as white
+  // and passing it. Two values that render IDENTICALLY would have got opposite
+  // verdicts. contrast.mjs composites the token over --cream instead, which is
+  // what `.main-content`'s `transparent` fallback really reveals.
+  const behind = GOOD.tokens['--cream']
+  for (const value of ['#00000000', '#ffffff00', '#12345600']) {
+    const { rows, failures, missing } = evaluatePalette({ ...GOOD.tokens, '--content-bg': value })
+    assert.deepEqual(missing, [], value)
+    assert.equal(failures, 0, `${value} was refused: ${JSON.stringify(rows.filter((r) => !r.ok))}`)
+    const row = rows.find((r) => r.what === 'page copy on the content backing')
+    assert.equal(row.bgValue, behind, `alpha 0 should resolve to the page fill, not to ${value}`)
+  }
+
+  // And the composite is not a way to smuggle an unreadable backing past the
+  // gate: half-opaque black over --cream lands near #7f6e57, where the page's
+  // own body ink is 2.57:1.
+  const half = evaluatePalette({ ...GOOD.tokens, '--content-bg': '#00000080' })
+  assert.ok(half.failures > 0, 'a half-transparent black backing was accepted')
+  assert.ok(half.rows.some((r) => !r.ok && r.what === 'page copy on the content backing'))
+})
+
+test('every token the site paints is named by at least one contrast pair', () => {
+  // The property that was FALSE and is the reason this file gained a test that
+  // reads the roster rather than a fixture: --surface painted the voice button
+  // face and every card on the site while appearing in no pair, so
+  // `--surface: <the label colour>` stored 200 with every gate green and every
+  // button label at 1.00:1. A count of pairs could not see that; only asking
+  // "which tokens does the roster actually mention" can.
+  const mentioned = new Set(CONTRAST_PAIRS.flatMap(([, fg, bg]) => [fg, bg]))
+  const uncovered = TOKEN_NAMES.filter((name) => !mentioned.has(name))
+  assert.deepEqual(
+    uncovered,
+    // The one deliberate omission, argued in contrast.mjs: the section header is
+    // identified by its fill and its white text, so its lighter outline carries
+    // no information SC 1.4.11 asks about. If this list ever grows, the growth
+    // is a token nobody decided about.
+    ['--candy-red-line'],
+    'a token in no pair is a colour the owner can set to anything with every gate green',
   )
 })
 

@@ -34,7 +34,7 @@
 // roster and the same arithmetic the build gate uses on the default palette —
 // and a palette that fails is refused with the failing pairs named. The owner
 // cannot make their own site unreadable through this form. That is not
-// paternalism: they cannot see every one of the eighteen pairings by eye, and a
+// paternalism: they cannot see every one of the 25 pairings by eye, and a
 // theme that ships a 2:1 button label is discovered by a visitor, not by them.
 //
 // ===========================================================================
@@ -233,7 +233,7 @@ export function renderThemeCss(theme) {
     // themes.wallpaper_path stores the bare `<sha256>.<ext>` — no slash, so the
     // database CHECK alone makes a traversal unspellable — and the serving
     // prefix belongs to nginx.
-    if (!/^\/wallpaper\/[0-9a-f]{64}\.(?:png|jpg|webp)$/.test(url)) {
+    if (!WALLPAPER_URL_PATTERN.test(url)) {
       throw new Error(`theme: refusing to render a wallpaper url that is not a content-addressed wallpaper path: ${JSON.stringify(url)}`)
     }
     out.push(
@@ -270,6 +270,24 @@ export function renderThemeCss(theme) {
  * drift from it. deploy/nginx.conf carries the matching `location ^~ /wallpaper/`.
  */
 export const WALLPAPER_URL_PREFIX = '/wallpaper/'
+
+/**
+ * The only URL shape renderThemeCss will put inside a url().
+ *
+ * BUILT FROM the constant above rather than written out again. It used to be a
+ * second literal — `/^\/wallpaper\/[0-9a-f]{64}…/` — three hundred lines away
+ * from the constant, under a comment claiming the two were held in step by that
+ * constant. They were not: changing WALLPAPER_URL_PREFIX to '/bg/' made
+ * wallpaperUrl() emit '/bg/<sha>.png' and this guard reject it, so every save
+ * with a wallpaper failed with a bare Error carrying no reason code. Fail-closed,
+ * but failed, and the sentence in the comment was untrue.
+ *
+ * The escape is real work rather than ceremony: a prefix containing '.' or '?'
+ * would otherwise become a wildcard and widen the very check this is.
+ */
+const WALLPAPER_URL_PATTERN = new RegExp(
+  `^${WALLPAPER_URL_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[0-9a-f]{64}\\.(?:png|jpg|webp)$`,
+)
 
 /** `<sha256>.<ext>` -> the URL the stylesheet may reference. */
 export function wallpaperUrl(path) {

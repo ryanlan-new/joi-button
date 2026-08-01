@@ -25,6 +25,31 @@
     <meta name="theme-color" content="#fedcae">
   </head>
   <body>
+    <!-- The owner's theme, written onto the API's shared volume and served by
+         nginx (`location = /theme.css` in deploy/nginx.conf).  It is a `:root`
+         block of the same custom properties App.vue declares, so it only works
+         if it is read AFTER the bundled stylesheet: same selector, same
+         specificity, later declaration wins.
+
+         WHY IT IS IN <body> AND NOT IN <head>, which is where a stylesheet
+         belongs: html-webpack-plugin 3.2.0 (vue-cli 4.5) APPENDS the bundle's
+         own <link rel="stylesheet"> tags to the end of <head>, so anything
+         written in this template's head is emitted BEFORE them.  That was
+         measured, not assumed — with this link in the head, the built
+         dist/index.html read `theme.css` then `chunk-vendors.css` then
+         `app.css`, i.e. App.vue's :root block overrode the theme and saving a
+         theme appeared to do nothing at all.  A failure with no error message
+         anywhere.  `stylesheet` is a body-ok link type in the HTML spec, so
+         this placement is conforming, and it is the only one in this template
+         that cannot be reordered by the build.
+
+         WHEN THE FILE IS NOT THERE — which is every deploy until an owner saves
+         a theme, and every deploy with no shared volume at all — nginx answers
+         404 and the browser drops the stylesheet.  That is the designed
+         fallback, not a degraded state: the page renders with the palette
+         compiled into the bundle, which is the palette the site has always had.
+         Said here rather than left as a surprise in a network panel. -->
+    <link rel="stylesheet" href="/theme.css">
     <noscript>
       <strong>We're sorry but This website doesn't work properly without JavaScript enabled. Please enable it to continue.</strong>
     </noscript>

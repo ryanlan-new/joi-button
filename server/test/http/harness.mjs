@@ -338,7 +338,19 @@ export async function boot(t, {
         options: {
           db,
           adminOpenIds: [...adminOpenIds],
-          paths: { catalogFile: paths.catalogFile, mediaDir: paths.mediaDir },
+          // All four keys, the way server.mjs passes them. It used to be two,
+          // and routes/admin.mjs would then DERIVE the theme paths from
+          // dirname(catalogFile) — which in this harness's layout lands on the
+          // same directory, so no test through boot() could tell the wired world
+          // from the derived one. Passing all four means a future regression in
+          // adminStoragePaths is at least representable here, rather than
+          // needing the one test that builds a divergent tree by hand.
+          paths: {
+            catalogFile: paths.catalogFile,
+            mediaDir: paths.mediaDir,
+            themeCssFile: paths.themeCssFile,
+            wallpaperDir: paths.wallpaperDir,
+          },
           now: clock.now,
         },
       },

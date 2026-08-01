@@ -283,7 +283,9 @@ test('the code is not handed over before the socket is listening', async (t) => 
   ).json()
 
   assert.equal(live.state, LOGIN_STATES.WAITING)
-  assert.match(live.code, /^[A-Z0-9]{6}$/)
+  // The code shown to the visitor is now the natural-language phrase, which
+  // always carries 橘子 (lib/challenge-phrase.mjs), not a six-letter string.
+  assert.ok(live.code.includes('橘子'), `expected a phrase carrying 橘子, got ${live.code}`)
   assert.equal(live.canAssertNotSeen, true)
   // Asked at t=0, listening began at t=5, revealed at t=6. Only one of those
   // three is the ruled answer, and it is the middle one.
@@ -346,17 +348,18 @@ test('a danmaku carrying the code verifies the session and gives the socket back
   assert.equal(source.status().waiters, 0, 'the room lease survived a successful verification')
 })
 
-test('a code retyped on an IME, in the wrong case, still matches', async (t) => {
+test('a phrase typed on an IME, with full-width digits and stray spaces, still matches', async (t) => {
   const { app, source, clock } = await boot(t)
   const started = await app.inject({ method: 'POST', url: '/api/login/start' })
   const cookie = cookieOf(started)
   await clock.advance(1)
   const live = (await app.inject({ method: 'GET', url: '/api/login/status', headers: { cookie } })).json()
 
-  // Fullwidth Ａ-Ｚ and ０-９, lowercased, wrapped in fullwidth brackets. To the
-  // person typing it this is the code they were shown.
-  const fullwidth = [...live.code].map((c) => String.fromCodePoint(c.codePointAt(0) + 0xfee0)).join('')
-  source.control.emitDanmaku({ openId: 'open-2', displayName: 'IME', text: `【${fullwidth.toLowerCase()}】` })
+  // A Chinese IME sends the number as a full-width digit (７ not 7) and the
+  // visitor may sprinkle spaces or wrap it in brackets. NFKC + whitespace
+  // stripping in the matcher folds all of that to the same phrase.
+  const fullwidth = live.code.replace(/[0-9]/g, (d) => String.fromCodePoint(d.codePointAt(0) + 0xfee0))
+  source.control.emitDanmaku({ openId: 'open-2', displayName: 'IME', text: `【 ${fullwidth} 】` })
 
   assert.equal(
     (await app.inject({ method: 'GET', url: '/api/login/status', headers: { cookie } })).json().state,
@@ -377,7 +380,7 @@ test('a gap in our listening is never reported as "you have not sent it yet"', a
   source.control.disconnect({ reason: 'simulated' })
   const down = await read()
   assert.equal(down.state, LOGIN_STATES.ROOM_UNREACHABLE, 'a deaf socket was reported as waiting')
-  assert.equal(down.code.length, 6, 'the code was withdrawn, which makes the UI flicker for no reason')
+  assert.ok(down.code.includes('橘子'), 'the code was withdrawn, which makes the UI flicker for no reason')
 
   await clock.advance(2000) // the reconnect lands
   const recovered = await read()

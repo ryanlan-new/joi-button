@@ -431,15 +431,19 @@
     text-decoration: underline;
 }
 .the-code {
-    font-family: 'Courier New', monospace;
-    font-size: 34px;
-    letter-spacing: 6px;
+    /* The code is now a Chinese phrase (lib/challenge-phrase.mjs), not six
+       monospace letters, so it is set as readable running text: a normal font,
+       no per-glyph letter-spacing (which looks broken on Hanzi), and it may wrap
+       onto a second line rather than break mid-word. */
+    font-size: 26px;
+    line-height: 1.4;
     font-weight: bold;
     color: var(--plum-700);         /* 8.99:1 on white */
-    /* So a tap-and-hold on a phone selects the whole code rather than one glyph. */
+    /* So a tap-and-hold on a phone selects the whole phrase rather than one glyph. */
     user-select: all;
     -webkit-user-select: all;
-    word-break: break-all;
+    word-break: normal;
+    overflow-wrap: break-word;
 }
 .code-label {
     margin-bottom: 0;

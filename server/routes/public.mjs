@@ -195,6 +195,7 @@ import { parseFile } from 'music-metadata'
 
 import { readInstanceMode, toCanonicalTimestamp } from '../db/migrate.mjs'
 import { record as recordAudit } from '../lib/audit.mjs'
+import { danmakuCarriesPhrase, generateChallengePhrase } from '../lib/challenge-phrase.mjs'
 import { VISITOR_VERDICTS } from '../lib/danmaku-source.mjs'
 import { DEFAULT_POLICY } from '../lib/turnstile.mjs'
 import {
@@ -559,12 +560,18 @@ export default async function publicRoutes(fastify, options = {}) {
 
   function onDanmaku(event) {
     const at = stamp()
-    for (const token of codeTokens(event.text)) {
-      const row = q.pendingCodeByCode.get(token)
-      if (row === undefined) continue
-      if (row.expires_at <= at) continue
-      verifyCode(row, event, at)
-      return
+    // Containment over the live phrases, not a token lookup: a phrase reads like
+    // a sentence and has no A-Z0-9 token to look up by equality. The set is
+    // capped at maxPendingCodes (50), so scanning it per danmaku is cheap, and
+    // the query already excludes expired and dev-bypass (challenge_text NULL)
+    // rows. First match wins — two live phrases sharing a containment is not
+    // constructible from the generator (distinct slots), and even a crafted one
+    // only binds the poster's own identity, which is the danmaku's whole point.
+    for (const row of q.pendingChallengeCodes.all({ now: at })) {
+      if (danmakuCarriesPhrase(event.text, row.challenge_text)) {
+        verifyCode(row, event, at)
+        return
+      }
     }
   }
 
@@ -828,6 +835,11 @@ export default async function publicRoutes(fastify, options = {}) {
         q.insertCode.run({
           id,
           code: randomCode(),
+          // The phrase the visitor actually posts. Regenerated on each retry
+          // alongside `code`, because either UNIQUE column can be the one that
+          // collided — with ~225k phrases a collision is rare but the same retry
+          // that protects `code` protects this.
+          challenge_text: generateChallengePhrase(),
           session_id: attempt.sessionId,
           room_id: roomId,
           issued_at: issuedAt,
@@ -835,8 +847,9 @@ export default async function publicRoutes(fastify, options = {}) {
         })
         break
       } catch (error) {
-        // code is UNIQUE across all history, so that a late danmaku resolves to
-        // exactly one code forever. A collision is a retry, not an ambiguity.
+        // code and challenge_text are both UNIQUE across all history, so that a
+        // late danmaku resolves to exactly one code forever. A collision on
+        // either is a retry, not an ambiguity.
         if (tries >= 5 || !isUniqueViolation(error)) throw error
       }
     }
@@ -930,7 +943,11 @@ export default async function publicRoutes(fastify, options = {}) {
     const snapshot = source.status({ since: row.issued_at })
     const base = {
       roomId: row.room_id,
-      code: row.code,
+      // The client renders `code` and copies it to post as a danmaku, so it must
+      // be the PHRASE, not the internal handle. Falls back to the handle only for
+      // a row minted before this feature (challenge_text NULL) — none reachable
+      // in a live deployment, but the fallback keeps an old row renderable.
+      code: row.challenge_text ?? row.code,
       issuedAt: row.issued_at,
       expiresAt: row.expires_at,
       expiresInSeconds: Math.max(0, Math.round((Date.parse(row.expires_at) - Date.parse(at)) / 1000)),
@@ -2026,28 +2043,6 @@ function randomCode() {
   return code
 }
 
-/**
- * The tokens in a danmaku that could be a code.
- *
- * NFKC first: a viewer typing on a Chinese IME sends fullwidth Ａ and １, which
- * are the same characters to them and different code points to us. Uppercasing
- * afterwards is safe precisely because verify_codes.code is CHECKed to [A-Z0-9] —
- * that constraint is what guarantees case folding cannot make one danmaku match
- * two different codes.
- */
-function codeTokens(text) {
-  if (typeof text !== 'string') return []
-  const normalised = text.normalize('NFKC').toUpperCase()
-  const seen = new Set()
-  for (const match of normalised.matchAll(/[A-Z0-9]+/g)) {
-    const token = match[0]
-    if (token.length < 4 || token.length > 32) continue
-    seen.add(token)
-    if (seen.size >= 64) break
-  }
-  return seen
-}
-
 function addMinutes(canonical, minutes) {
   return toCanonicalTimestamp(new Date(Date.parse(canonical) + minutes * MINUTE_MS))
 }
@@ -2143,23 +2138,27 @@ function prepareStatements(db) {
     `),
 
     insertCode: db.prepare(`
-      INSERT INTO verify_codes (id, code, session_id, room_id, issued_at, expires_at)
-      VALUES (@id, @code, @session_id, @room_id, @issued_at, @expires_at)
+      INSERT INTO verify_codes (id, code, challenge_text, session_id, room_id, issued_at, expires_at)
+      VALUES (@id, @code, @challenge_text, @session_id, @room_id, @issued_at, @expires_at)
     `),
     codeById: db.prepare(`
-      SELECT id, code, session_id, room_id, state, issued_at, expires_at, closed_at, submitter_id
+      SELECT id, code, challenge_text, session_id, room_id, state, issued_at, expires_at, closed_at, submitter_id
         FROM verify_codes WHERE id = ?
+    `),
+    // The live phrases the room matcher compares a danmaku against: pending, not
+    // expired, and carrying a phrase (so the dev-bypass rows, which have none,
+    // are excluded). Capped by maxPendingCodes, so `all()` is a short list.
+    pendingChallengeCodes: db.prepare(`
+      SELECT id, challenge_text
+        FROM verify_codes
+       WHERE state = 'pending' AND expires_at > @now AND challenge_text IS NOT NULL
     `),
     pendingCodeById: db.prepare(`
       SELECT id, code, session_id, room_id, state, issued_at, expires_at
         FROM verify_codes WHERE id = ? AND state = 'pending'
     `),
-    pendingCodeByCode: db.prepare(`
-      SELECT id, code, session_id, room_id, state, issued_at, expires_at
-        FROM verify_codes WHERE code = ? AND state = 'pending'
-    `),
     livePendingCodeForSession: db.prepare(`
-      SELECT id, code, session_id, room_id, state, issued_at, expires_at
+      SELECT id, code, challenge_text, session_id, room_id, state, issued_at, expires_at
         FROM verify_codes
        WHERE session_id = @session_id AND state = 'pending' AND expires_at > @now
        ORDER BY issued_at DESC LIMIT 1

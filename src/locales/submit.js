@@ -35,20 +35,20 @@ export default {
         heading: '为什么要你在直播间发一条弹幕？',
         lead: '先把事情说清楚，再问你要东西。',
         noPassword:
-          '不用密码，不用扫码，也不用给这个站任何授权。你要做的只有一件事：在本站的直播间里，把一串码当成普通弹幕发出去。',
+          '不用密码，不用扫码，也不用给这个站任何授权。你要做的只有一件事：在本站的直播间里，把一句话当成普通弹幕发出去。',
         whatWeSee:
           '我们能看到的就只有那一条弹幕：谁发的、发了什么。关注列表、私信、充电记录、手机号，这个站碰都碰不到，也不想碰。',
         whatWeLearn:
           '认出你之后，我们记下的是 B 站单独发给这个站的一串编号（只在这里作数，换个站就对不上），外加你当时的昵称。那不是你的账号。',
-        safeHeading: '所以这串码就算被整个直播间看见也不要紧：',
+        safeHeading: '所以这句话就算被整个直播间看见也不要紧：',
         safeOneTime: '一次性，用掉就没了；',
         safeShort: '寿命很短，页面上的倒计时就是它剩下的全部时间；',
         safeFirstCome: '谁先发出来算谁的；',
         safeVoid: '我们看见它的那一刻，它当场作废。',
         neverDelete:
-          '弹幕发出去就撤不回来，所以这串码本来就是照着「被人看见也无所谓」设计的。你不需要去删它。',
+          '弹幕发出去就撤不回来，所以这句话本来就是照着「被人看见也无所谓」设计的。你不需要去删它。',
         stolen:
-          '真被人抢着发了会怎样：这个浏览器会变成对方的身份，你会在下面看到别人的昵称。那就退出登录，重新要一串新的。',
+          '真被人抢着发了会怎样：这个浏览器会变成对方的身份，你会在下面看到别人的昵称。那就退出登录，重新要一句新的。',
       },
 
       state: {
@@ -56,19 +56,19 @@ export default {
         preparing: '正在接直播间…',
         preparingDetail:
           '码还没生成 —— 我们得先真的连上直播间听着，不然你发出去的弹幕会掉进一个没人听的房间，而系统还会理直气壮地说你没发。等一下下。',
-        waiting: '把下面这串码发到直播间',
+        waiting: '把下面这句话发到直播间',
         waitingDetail: '普通弹幕就行，不用加任何前缀。发出去之后这一页会自己变。',
         unreachable: '我们这边现在听不见直播间',
         unreachableDetail:
           '这是我们的问题，不是你的 —— 你发没发我们都不知道。等一会儿再试，或者现在就重试一次。',
-        expired: '这串码已经过期了',
-        expiredDetail: '重新要一串就好，旧的那串已经作废，不用管它。',
-        resend: '中间有一小段时间我们没听见，你要是刚才已经发过，麻烦再发一次这串码。',
+        expired: '这句话已经过期了',
+        expiredDetail: '重新要一句就好，旧的那句已经作废，不用管它。',
+        resend: '中间有一小段时间我们没听见，你要是刚才已经发过，麻烦再发一次这句话。',
         verifiedAs: '现在登录的是：{name}',
       },
 
       code: {
-        label: '你的码',
+        label: '你要发的这句话',
         expiresIn: '剩余 {time}',
         expiredNow: '倒计时走完了，正在跟服务器确认…',
         room: '本站的直播间',
@@ -115,8 +115,8 @@ export default {
       },
 
       action: {
-        getCode: '给我一串码',
-        getCodeAgain: '再要一串',
+        getCode: '给我一句话',
+        getCodeAgain: '再要一句',
         cancel: '算了，不登录了',
         retry: '重试',
         copy: '复制',
@@ -204,9 +204,9 @@ export default {
 
       reason: {
         // The identity / session family
-        identity_required: '要先登录：先要一串码，再把它当弹幕发到直播间。',
-        no_verification_in_progress: '现在没有正在进行的验证，先要一串码。',
-        unknown_poll_token: '这个查询凭据不属于当前这个浏览器会话，重新要一串码。',
+        identity_required: '要先登录：先要一句话，再把它当弹幕发到直播间。',
+        no_verification_in_progress: '现在没有正在进行的验证，先要一句话。',
+        unknown_poll_token: '这个查询凭据不属于当前这个浏览器会话，重新要一句话。',
         room_not_configured: '这个部署还没配直播间，所以发不出码来。',
         verification_capacity: '同时等待验证的人太多了，过几分钟再试。',
         submitter_blocked: '这个账号不能投稿。',
@@ -280,12 +280,12 @@ export default {
         heading: 'Why are we asking you to post a danmaku?',
         lead: 'Here is the whole story before we ask you for anything.',
         noPassword:
-          'No password, no QR scan, no authorisation of any kind. One thing only: post a short code as an ordinary danmaku in the live room.',
+          'No password, no QR scan, no authorisation of any kind. One thing only: post a short phrase as an ordinary danmaku in the live room.',
         whatWeSee:
           'All we see is that one danmaku: who sent it and what it said. Your follows, your messages, your payments, your phone number — this site cannot reach any of it and does not want to.',
         whatWeLearn:
           'Once you are recognised we keep an id Bilibili issues for this application alone (it means nothing anywhere else), plus the nickname you were using. That is not your account.',
-        safeHeading: 'Which is why the code is harmless even if the whole room reads it:',
+        safeHeading: 'Which is why the phrase is harmless even if the whole room reads it:',
         safeOneTime: 'it works once, and then it is spent;',
         safeShort: 'it is short-lived — the countdown on this page is its whole life;',
         safeFirstCome: 'first one to post it wins it;',
@@ -301,7 +301,7 @@ export default {
         preparing: 'Opening the room…',
         preparingDetail:
           'There is no code yet, on purpose. We have to be genuinely listening first, or your danmaku lands in a room nobody is hearing and the system cheerfully tells you that you never sent it. One moment.',
-        waiting: 'Post this code in the live room',
+        waiting: 'Post this phrase in the live room',
         waitingDetail: 'An ordinary danmaku, no prefix needed. This page changes by itself once it lands.',
         unreachable: 'Our side cannot hear the room right now',
         unreachableDetail:
@@ -314,7 +314,7 @@ export default {
       },
 
       code: {
-        label: 'Your code',
+        label: 'Your phrase',
         expiresIn: '{time} left',
         expiredNow: 'The countdown ran out; checking with the server…',
         room: "this site's live room",
@@ -525,7 +525,7 @@ export default {
         heading: 'どうして配信部屋に弾幕を流してもらうの？',
         lead: '何かをお願いする前に、まず全部説明します。',
         noPassword:
-          'パスワードも、QRコードの読み取りも、認可も要りません。やることはひとつだけ。配信部屋にコードをふつうの弾幕として流すこと。',
+          'パスワードも、QRコードの読み取りも、認可も要りません。やることはひとつだけ。配信部屋にひとことのフレーズをふつうの弾幕として流すこと。',
         whatWeSee:
           'こちらから見えるのは、その弾幕ひとつだけです。誰が、何を書いたか。フォローも、DMも、投げ銭も、電話番号も、このサイトからは触れませんし、触るつもりもありません。',
         whatWeLearn:
@@ -546,7 +546,7 @@ export default {
         preparing: '配信部屋につないでいます…',
         preparingDetail:
           'コードはまだ出しません。こちらが本当に聞いている状態になってからでないと、流した弾幕が誰も聞いていない部屋に落ちて、そのうえシステムが「送っていませんね」と言い出します。少しだけお待ちを。',
-        waiting: 'このコードを配信部屋に流してください',
+        waiting: 'このフレーズを配信部屋に流してください',
         waitingDetail: 'ふつうの弾幕でOK。届けばこのページがひとりでに変わります。',
         unreachable: 'いま配信部屋の音がこちらに届いていません',
         unreachableDetail:
@@ -559,7 +559,7 @@ export default {
       },
 
       code: {
-        label: 'あなたのコード',
+        label: 'あなたのフレーズ',
         expiresIn: '残り {time}',
         expiredNow: 'カウントダウンが終わりました。サーバーに確認しています…',
         room: '当サイトの配信部屋',

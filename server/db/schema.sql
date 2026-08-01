@@ -454,6 +454,19 @@ CREATE TABLE IF NOT EXISTS verify_codes (
     observed_display_name  TEXT,
     verified_via           TEXT CHECK (verified_via IN ('danmaku', 'dev-bypass')),
 
+    -- The natural-language phrase the visitor posts (lib/challenge-phrase.mjs).
+    -- `code` above stays the internal A-Z0-9 handle; this is what the danmaku
+    -- carries and what the room matcher compares against. Nullable: the
+    -- dev-bypass path proves identity without a danmaku and sets none. UNIQUE is
+    -- inline here so a FRESH database gets it from this CREATE TABLE; an UPGRADE
+    -- gets the same guarantee from the v3 migration step's named index, because
+    -- ALTER ADD COLUMN cannot carry UNIQUE. It is deliberately NOT a standalone
+    -- CREATE UNIQUE INDEX below: migrate() re-execs this whole file BEFORE its
+    -- steps run, so an index naming this column would fire before the ALTER adds
+    -- it on an upgrade and fail with "no such column". SQLite lets the many
+    -- historical NULLs coexist under a UNIQUE column.
+    challenge_text         TEXT UNIQUE CHECK (challenge_text IS NULL OR (length(challenge_text) BETWEEN 4 AND 40)),
+
     CHECK (id <> '' AND id NOT GLOB '*[^a-z0-9_-]*'),
     -- Uppercase and digits only: the visitor retypes this into a chat box, and
     -- if matching had to case-fold then 'a1b2c3' and 'A1B2C3' would be two rows

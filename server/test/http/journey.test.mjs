@@ -89,7 +89,7 @@ test('the whole path: identity from the room, a batch of three, a review, and a 
   await clock.advance(4000)
   const live = (await get(app, '/api/login/status', { cookie: visitorCookie })).json()
   assert.equal(live.state, LOGIN_STATES.WAITING)
-  assert.match(live.code, /^[A-Z0-9]{6}$/)
+  assert.ok(live.code.includes('橘子'), `expected a natural-language phrase carrying 橘子, got ${live.code}`)
   assert.equal(danmaku.status().listening, true, 'a code was live while our side was deaf')
   // The ten minutes start when LISTENING began, not when the request arrived —
   // a start that took four seconds costs this visitor nothing. Read off the

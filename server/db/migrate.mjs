@@ -10,7 +10,7 @@
 import { readFileSync } from 'node:fs';
 
 /** Version this code writes.  Bump on every schema change. */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 /**
  * Oldest catalogue parser that can still read a document produced at
@@ -56,6 +56,22 @@ export const POST_BASELINE_STEPS = [
                  AND substr(wallpaper_path, 1, 64) NOT GLOB '*[^0-9a-f]*'
                  AND substr(wallpaper_path, 65, 1) = '.'
                  AND length(wallpaper_path) <= 69));`,
+    },
+    {
+        version: 3,
+        // The natural-language challenge (lib/challenge-phrase.mjs). `code` stays
+        // the internal A-Z0-9 handle its CHECK still requires; this holds the
+        // phrase the visitor actually posts and the matcher compares against.
+        // Nullable because ADD COLUMN cannot backfill NOT NULL, and older rows
+        // (and the dev-bypass path, which never posts a danmaku) have none; the
+        // route sets it on every real code. The UNIQUE INDEX gives the same
+        // "one live phrase resolves to exactly one code" guarantee `code UNIQUE`
+        // gives the handle — SQLite lets the many historical NULLs coexist under
+        // a UNIQUE index. MIN_COMPATIBLE stays 1: a catalogue reader never looks
+        // at verify_codes.
+        sql: `ALTER TABLE verify_codes ADD COLUMN challenge_text TEXT
+                CHECK (challenge_text IS NULL OR (length(challenge_text) BETWEEN 4 AND 40));
+              CREATE UNIQUE INDEX IF NOT EXISTS verify_codes_challenge ON verify_codes (challenge_text);`,
     },
 ];
 

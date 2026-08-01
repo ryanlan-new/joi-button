@@ -40,7 +40,8 @@ import {
   migrate,
 } from '../db/migrate.mjs'
 
-/** schema.sql as it stood at v1: the two wallpaper additions taken back out. */
+/** schema.sql as it stood at v1: the v2 (wallpaper) and v3 (challenge_text)
+ * additions taken back out, so migrate() has real work to do. */
 function schemaAtV1() {
   const current = readFileSync(new URL('../db/schema.sql', import.meta.url), 'utf8')
 
@@ -60,8 +61,20 @@ function schemaAtV1() {
   v1 = v1.slice(0, checkStart).replace(/,\n$/, '\n') + v1.slice(checkEnd + 1)
 
   assert.equal(v1.includes('wallpaper_path'), false, 'the v1 fixture still mentions wallpaper_path')
+
+  // v3: the challenge_text column and its unique index. Both lines name the
+  // column and nothing else does, so dropping every line that mentions it takes
+  // exactly those two lines; the comments above them are inert SQL either way.
+  assert.ok(v1.includes('challenge_text'), 'schema.sql no longer carries challenge_text for this fixture to strip')
+  v1 = v1
+    .split('\n')
+    .filter((line) => !line.includes('challenge_text'))
+    .join('\n')
+  assert.equal(v1.includes('challenge_text'), false, 'the v1 fixture still mentions challenge_text')
+
   assert.ok(v1.includes('CREATE TABLE IF NOT EXISTS themes'), 'the strip removed more than it should have')
   assert.ok(v1.includes('CREATE TABLE IF NOT EXISTS clips'), 'the strip removed more than it should have')
+  assert.ok(v1.includes('CREATE TABLE IF NOT EXISTS verify_codes'), 'the strip removed more than it should have')
   return v1
 }
 
@@ -89,13 +102,14 @@ function openV1(t) {
 }
 
 test('the version roster is self-consistent', () => {
-  assert.equal(SCHEMA_VERSION, 2)
-  // MIN_COMPATIBLE stays 1 on purpose: a themes column is invisible to a
-  // catalogue reader, and src/catalog.mjs only refuses a document whose
-  // minCompatibleVersion EXCEEDS what it knows. Bumping it would make every tab
-  // holding a year-cached chunk refuse a catalogue it can read perfectly well.
+  assert.equal(SCHEMA_VERSION, 3)
+  // MIN_COMPATIBLE stays 1 on purpose: a themes column and a verify_codes column
+  // are both invisible to a catalogue reader, and src/catalog.mjs only refuses a
+  // document whose minCompatibleVersion EXCEEDS what it knows. Bumping it would
+  // make every tab holding a year-cached chunk refuse a catalogue it can read
+  // perfectly well.
   assert.equal(MIN_COMPATIBLE_SCHEMA_VERSION, 1)
-  assert.deepEqual(POST_BASELINE_STEPS.map((step) => step.version), [2])
+  assert.deepEqual(POST_BASELINE_STEPS.map((step) => step.version), [2, 3])
 })
 
 test('a v1 database gains themes.wallpaper_path from the post-baseline step', (t) => {
@@ -103,11 +117,18 @@ test('a v1 database gains themes.wallpaper_path from the post-baseline step', (t
 
   const report = migrate(db, { mode: 'development', now: '2026-08-01T00:00:01Z' })
   assert.equal(report.from, 1)
-  assert.equal(report.to, 2)
+  // A v1 database now climbs all the way to the current version, applying every
+  // post-baseline step in order (v2's wallpaper column, then v3's challenge_text).
+  assert.equal(report.to, SCHEMA_VERSION)
   assert.equal(report.applied, true)
 
   assert.equal(
     db.prepare("SELECT count(*) n FROM pragma_table_info('themes') WHERE name='wallpaper_path'").get().n,
+    1,
+  )
+  // v3's column arrived on the same climb.
+  assert.equal(
+    db.prepare("SELECT count(*) n FROM pragma_table_info('verify_codes') WHERE name='challenge_text'").get().n,
     1,
   )
 })

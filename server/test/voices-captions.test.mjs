@@ -85,7 +85,17 @@ test('every caption in src/voices.json passes validateCaption', () => {
   }
 
   const longest = Math.max(...captions.map((c) => [...c.text].length))
-  assert.equal(longest, 54, 'the longest shipped caption is 54 code points; CAPTION_MAX_LENGTH is sized against it')
+  // A tripwire, and it has already fired once: it was 54 while the longest
+  // caption was the en-US "Arctic Eggs_don't approach me...(extremly scared
+  // ver.)" — a FILENAME rather than a line. STORY-045 rewrote all twelve en-US
+  // captions as what the character actually says, matching the register zh-CN
+  // and ja-JP always used, and the longest is now the 48-code-point
+  // "I can't take it... help... I can't watch this...".
+  //
+  // The number is pinned rather than merely bounded so that a change to the
+  // shipped set is NOTICED. The bound below is the safety property; this line is
+  // the notification.
+  assert.equal(longest, 48, 'the longest shipped caption is 48 code points; CAPTION_MAX_LENGTH is sized against it')
   assert.ok(
     longest <= CAPTION_MAX_LENGTH,
     `CAPTION_MAX_LENGTH (${CAPTION_MAX_LENGTH}) is now below the longest caption the owner has actually written (${longest})`,

@@ -13,7 +13,7 @@
                   "path": "Cute Hummings_Ei.mp3",
                   "description": {
                       "ja-JP": "え？",
-                      "en-US": "Ei?",
+                      "en-US": "Eh?",
                       "zh-CN": "欸？"
                   }
               }
@@ -32,7 +32,7 @@
                   "path": "Alarms_it's time for streaming.mp3",
                   "description": {
                       "ja-JP": "起きて！配信の時間です！",
-                      "en-US": "Wakeup! It's time for streaming!",
+                      "en-US": "Wake up! It's stream time!",
                       "zh-CN": "该直播了该直播了到点儿了"
                   }
               }
@@ -51,7 +51,7 @@
                   "path": "Arctic Eggs_ah no.mp3",
                   "description": {
                       "ja-JP": "やめてください...",
-                      "en-US": "Arctic Eggs - Ah No",
+                      "en-US": "Ah— no—",
                       "zh-CN": "煎G蛋-啊不"
                   }
               },
@@ -60,7 +60,7 @@
                   "path": "Arctic Eggs_its on my hand.mp3",
                   "description": {
                       "ja-JP": "私の手が...",
-                      "en-US": "Arctic Eggs - its on my hand",
+                      "en-US": "It's on my hand...",
                       "zh-CN": "煎G蛋-掉 手 上 了 "
                   }
               },
@@ -69,7 +69,7 @@
                   "path": "Arctic Eggs_nonononono..-.mp3",
                   "description": {
                       "ja-JP": "ややややややめなさい...",
-                      "en-US": "Arctic Eggs - nonononono...",
+                      "en-US": "N-n-n-no no no no...",
                       "zh-CN": "煎G蛋-别别别别别别..."
                   }
               },
@@ -78,7 +78,7 @@
                   "path": "Arctic Eggs_Why do we have to feed them.mp3",
                   "description": {
                       "ja-JP": "彼ら二人に料理を作らなければならないの?",
-                      "en-US": "Arctic Eggs - Do we have to feed them?",
+                      "en-US": "Do I really have to cook for those two?",
                       "zh-CN": "煎G蛋-我一定要给他们俩做饭吗？"
                   }
               },
@@ -87,7 +87,7 @@
                   "path": "Arctic Eggs_why.mp3",
                   "description": {
                       "ja-JP": "なぜ？",
-                      "en-US": "Arctic Eggs - why?",
+                      "en-US": "Why...?",
                       "zh-CN": "煎G蛋-为什么？"
                   }
               },
@@ -96,7 +96,7 @@
                   "path": "Arctic Eggs_don't approach me (scared ver.).mp3",
                   "description": {
                       "ja-JP": "近づかないでください... (ちょうどびっくりした)",
-                      "en-US": "Arctic Eggs - don't approach me (scared ver.)",
+                      "en-US": "Don't come any closer...",
                       "zh-CN": "煎G蛋-别过来...."
                   }
               },
@@ -105,7 +105,7 @@
                   "path": "Arctic Eggs_don't approach me..-.mp3",
                   "description": {
                       "ja-JP": "近づかないで...(すごくびっくりした)",
-                      "en-US": "Arctic Eggs_don't approach me...(extremly scared ver.)",
+                      "en-US": "Don't come closer, don't come closer, don't—",
                       "zh-CN": "煎G蛋-别过来别过来别过来"
                   }
               },
@@ -114,7 +114,7 @@
                   "path": "Arctic Eggs_I can't achieve it.......-.mp3",
                   "description": {
                       "ja-JP": "もう限界...",
-                      "en-US": "Arctic Eggs - I can't achieve it.......",
+                      "en-US": "Ohhh, I can't do this~~~~",
                       "zh-CN": "煎G蛋-哎呀我不行了~~~~"
                   }
               },
@@ -123,7 +123,7 @@
                   "path": "Arctic Eggs_I can't bear it (cute ver.).mp3",
                   "description": {
                       "ja-JP": "もう限界...",
-                      "en-US": "Arctic Eggs - I can't bear it (cute ver.)",
+                      "en-US": "I can't take this...",
                       "zh-CN": "煎G蛋-我受不了了..."
                   }
               },
@@ -132,7 +132,7 @@
                   "path": "Arctic Eggs_I can't bear it (premium ver.).mp3",
                   "description": {
                       "ja-JP": "もう限界...助けてください...",
-                      "en-US": "Arctic Eggs - I can't bear it (premium ver.)",
+                      "en-US": "I can't take it... help... I can't watch this...",
                       "zh-CN": "煎G蛋-我受不了...救命...我看不得这些..."
                   }
               }

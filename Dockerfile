@@ -14,7 +14,7 @@
 # ---------------------------------------------------------------------------
 # stage 1 — build the static bundle
 # ---------------------------------------------------------------------------
-# node:20-alpine, not bookworm-slim.  Checked against package-lock.json
+# Alpine, not bookworm-slim.  Checked against package-lock.json
 # (lockfileVersion 3) rather than assumed:
 #   * no node-sass anywhere; `sass` resolves to 1.77.8, which is dart-sass
 #     compiled to JS — no libsass, no node-gyp, no python needed.
@@ -26,9 +26,15 @@
 #     its node-gyp build never runs.  musl is therefore not a risk here.
 #   * every dependency resolves to registry.npmjs.org (0 git/tarball URLs), so
 #     the image needs no git.
-# Node 20 is pinned to match .github/workflows/deploy.yml (setup-node@v4,
-# node-version: 20) — the version this lockfile is proven to build under.
-FROM --platform=$BUILDPLATFORM node:20-alpine AS builder
+# node:22-alpine, not node:20. Node 20 left maintenance on 2026-04-30, and the
+# workflow that pinned 20 (.github/workflows/deploy.yml, the GitHub Pages
+# publish) has been deleted — so the reason this said 20 no longer exists.
+#
+# The risk of the bump is bounded and stated: this stage only runs the JS
+# toolchain and emits static text, and its output is checked by the PUBLIC_PATH
+# gate below plus deploy/smoke-image.sh against the running container. Nothing
+# from this stage reaches the runtime image except dist/.
+FROM --platform=$BUILDPLATFORM node:22-alpine AS builder
 
 WORKDIR /app
 

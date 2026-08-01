@@ -238,6 +238,28 @@ check  "referrer-policy on /"                 "referrer-policy"                 
 check  "nosniff survives a 404"               "x-content-type-options: nosniff" "$(hdr /js/absent.12345678.js)"
 refute "no nginx version leak"                "nginx/1."                        "$(hdr /)"
 
+echo "--- content-security-policy, on EVERY response that can carry markup or code"
+# The shape first, then the reach. Both matter and they fail differently: a
+# policy with the wrong sources is a policy that breaks the site, and a policy
+# that is only on some responses is one an attacker routes around.
+check  "script-src has no unsafe-inline"      "script-src 'self' https://challenges.cloudflare.com" "$(hdr /)"
+check  "object-src is none"                   "object-src 'none'"               "$(hdr /)"
+check  "base-uri is pinned"                   "base-uri 'self'"                 "$(hdr /)"
+check  "turnstile may render"                 "frame-src https://challenges.cloudflare.com" "$(hdr /)"
+check  "the google font import is allowed"    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com" "$(hdr /)"
+refute "script-src is not wide open"          "script-src 'self' 'unsafe-inline'" "$(hdr /)"
+refute "nothing is allowed from anywhere"     "default-src *"                   "$(hdr /)"
+
+# THE REACH. nginx's add_header is inherited only by a level that declares NO
+# add_header of its own, so every location that sets any header silently drops
+# the server-level ones — which is why deploy/nginx.conf keeps the policy in a
+# `map` and re-emits it in nine places. One missed repetition is invisible in
+# review and invisible in a single curl; it is only visible by asking every kind
+# of response. This loop is that question.
+for probe in / /index.html /site.webmanifest "$CSS_HREF" /js/absent.12345678.js /404.html; do
+  check  "CSP on ${probe}"                    "content-security-policy"         "$(hdr "$probe")"
+done
+
 echo
 echo "SMOKE_RESULT pass=${PASS} fail=${FAIL}"
 [ "$FAIL" -eq 0 ]

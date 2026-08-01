@@ -280,9 +280,11 @@ test('every admin request appends exactly the entries its events deserve, and re
   assert.equal(JSON.parse(again.appended[0].detail).diff.changed.after, false)
 
   // A mutation an admin asked for and did not get is worth one line, marked as
-  // a failure — unlike a refusal by the gate.
+  // a failure — unlike a refusal by the gate. A SECOND reject on an item already
+  // rejected is that refusal: approving it would be revised into a draft
+  // (STORY-076), but re-rejecting decides nothing and is refused 409.
   const refused = await verbs(() =>
-    postJson(app, `/api/admin/item/${three}`, { cookie: owner, body: { decision: 'approve', label: 'x' } }),
+    postJson(app, `/api/admin/item/${three}`, { cookie: owner, body: { decision: 'reject', reason: 'still too quiet' } }),
   )
   assert.equal(refused.answer.statusCode, 409)
   assert.deepEqual(refused.appended.map((row) => row.action), ['admin.refused'])

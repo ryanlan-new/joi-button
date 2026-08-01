@@ -110,10 +110,19 @@ import {
 } from '../lib/audit.mjs'
 import { createAdminInvites } from '../lib/admin-invites.mjs'
 import { CatalogError, MEDIA_BASE_URL, checkMedia, writeCatalog } from '../lib/catalog.mjs'
+import { RECYCLE_RETENTION_DAYS, collectMedia, reclaimablePreview } from '../lib/media-gc.mjs'
 import { CAPTION_MAX_LENGTH, escapeForI18n, validateCaption } from '../lib/text-safety.mjs'
 import { THEME_TOKENS, wallpaperUrl } from '../lib/theme.mjs'
 import { ThemeStoreError, deactivate, readActiveTheme, saveTheme } from '../lib/theme-store.mjs'
 import { WallpaperError, storeWallpaper } from '../lib/wallpaper.mjs'
+import {
+  BrandingError,
+  brandingPathsFrom,
+  faviconUrl,
+  readBranding,
+  storeFavicon,
+  writeBranding,
+} from '../lib/branding.mjs'
 // The parser belongs to the module that WRITES batch_items.submitter_note. One
 // definition of what those bytes mean, owned by the writer.
 import { readSubmitterNote } from './public.mjs'
@@ -250,11 +259,18 @@ export default async function adminRoutes(fastify, options = {}) {
     }),
   )
 
+  fastify.get('/api/admin/recycle', async (request, reply) =>
+    answered(reply, () => readRecycle(db, { mediaBaseUrl, now })),
+  )
+
   fastify.post('/api/admin/item/:id', async (request, reply) =>
     guarded(reply, request.adminIdentity, db, now, () =>
       reviewItem(db, request.params.id, request.body ?? {}, {
         actor: request.adminIdentity,
         now,
+        // Threaded so revising a rejected item can verify its audio is still on
+        // the volume before it re-approves; a plain decision never touches paths.
+        paths,
       }),
     ),
   )
@@ -268,6 +284,36 @@ export default async function adminRoutes(fastify, options = {}) {
         promote: request.body?.promote !== false,
         verifyMedia: request.body?.verifyMedia,
       }),
+    ),
+  )
+
+  // The catalogue library: list every clip, and take one down / put it back.
+  // No delete route — retire is the removal (see listClips's header).
+  fastify.get('/api/admin/clips', async (request, reply) =>
+    answered(reply, () => listClips(db, { mediaBaseUrl })),
+  )
+
+  fastify.post('/api/admin/clips/:id/retire', async (request, reply) =>
+    guarded(reply, request.adminIdentity, db, now, () =>
+      retireClip(db, paths, request.params.id, { actor: request.adminIdentity, now }),
+    ),
+  )
+
+  fastify.post('/api/admin/clips/:id/restore', async (request, reply) =>
+    guarded(reply, request.adminIdentity, db, now, () =>
+      restoreClip(db, paths, request.params.id, { actor: request.adminIdentity, now }),
+    ),
+  )
+
+  // Media reclamation (STORY-077): preview what is collectable, then remove it.
+  // A read and an audited mutation, the same shape retire/restore use.
+  fastify.get('/api/admin/reclaimable', async (request, reply) =>
+    answered(reply, () => reclaimablePreview(db, { now })),
+  )
+
+  fastify.post('/api/admin/reclaim', async (request, reply) =>
+    guarded(reply, request.adminIdentity, db, now, () =>
+      collectMedia(db, paths.mediaDir, { actor: request.adminIdentity, now }),
     ),
   )
 
@@ -376,7 +422,7 @@ export default async function adminRoutes(fastify, options = {}) {
   fastify.post('/api/admin/theme/wallpaper', async (request, reply) =>
     themeGuarded(reply, request.adminIdentity, db, now, async () => {
       const actor = request.adminIdentity
-      const upload = await readWallpaperUpload(request)
+      const upload = await readSingleFileUpload(request, 'wallpaper')
       const stored = await storeWallpaper(upload, { wallpaperDir: themePaths.wallpaperDir })
 
       record(db, {
@@ -412,6 +458,71 @@ export default async function adminRoutes(fastify, options = {}) {
       }
     }),
   )
+
+  // --- site branding (JOI-BUTTON-STORY-068) --------------------------------
+  // Navbar title, document title, channel link, favicon — editable without a
+  // rebuild, delivered the way the theme and catalogue are: this API writes one
+  // file to DATA_DIR and the web pod serves it read-only at a stable URL. Paths
+  // are DERIVED from catalog.json's directory, so there is no new config key.
+  // Absent in a harness that registers no catalogFile; the routes are then simply
+  // not present, the same way the invite routes are.
+  const brandingPaths = typeof paths.catalogFile === 'string' ? brandingPathsFrom(paths.catalogFile) : null
+
+  if (brandingPaths) {
+    fastify.get('/api/admin/branding', async (request, reply) =>
+      answered(reply, async () => ({ branding: await readBranding(brandingPaths.brandingFile) })),
+    )
+
+    fastify.post('/api/admin/branding', async (request, reply) =>
+      guarded(reply, request.adminIdentity, db, now, async () => {
+        const actor = request.adminIdentity
+        const branding = await writeBranding(brandingPaths.brandingFile, request.body ?? {})
+        record(db, {
+          actorKind: 'owner',
+          actorOpenId: actor.openId,
+          actorDisplayName: actor.displayName,
+          verb: 'admin.branding.write',
+          subject: { kind: 'branding', id: null },
+          before: null,
+          after: {
+            navTitle: branding.navTitle,
+            docTitle: branding.docTitle,
+            channel: branding.channel,
+            faviconPath: branding.faviconPath,
+          },
+          consequence: null,
+          succeeded: true,
+          occurredAt: toCanonicalTimestamp(now()),
+        })
+        return { branding }
+      }),
+    )
+
+    fastify.post('/api/admin/branding/favicon', async (request, reply) =>
+      guarded(reply, request.adminIdentity, db, now, async () => {
+        const actor = request.adminIdentity
+        const upload = await readSingleFileUpload(request, 'favicon')
+        const stored = await storeFavicon(upload, { faviconDir: brandingPaths.faviconDir })
+        // Persist the favicon onto the branding document in the same call, so an
+        // upload is live immediately rather than only after a separate save.
+        const current = await readBranding(brandingPaths.brandingFile)
+        const branding = await writeBranding(brandingPaths.brandingFile, { ...current, faviconPath: stored.path })
+        record(db, {
+          actorKind: 'owner',
+          actorOpenId: actor.openId,
+          actorDisplayName: actor.displayName,
+          verb: 'admin.branding.favicon',
+          subject: { kind: 'favicon', id: stored.path },
+          before: current.faviconPath === null ? null : { faviconPath: current.faviconPath },
+          after: { faviconPath: stored.path, bytes: stored.bytes, format: stored.format },
+          consequence: `favicon:${stored.path}`,
+          succeeded: true,
+          occurredAt: toCanonicalTimestamp(now()),
+        })
+        return { branding, favicon: { path: stored.path, url: faviconUrl(stored.path) } }
+      }),
+    )
+  }
 
   // -------------------------------------------------------------------------
   // Admins and invitations (JOI-BUTTON-STORY-055/056)
@@ -555,9 +666,13 @@ function inviteError(code) {
 // A read that can refuse — a page size out of range, a malformed cursor, an item
 // id that names nothing. Nothing is audited: a read changes nothing, and a log
 // entry per GET would bury the entries that record a change.
-function answered(reply, run) {
+// `run` may be synchronous or async. Awaiting it means a rejected async read —
+// e.g. readBranding hitting a branding.json it cannot read — is caught here and
+// turned into the same error envelope a synchronous throw gets, instead of
+// escaping as an unhandled rejection that fastify answers with a bare 500.
+async function answered(reply, run) {
   try {
-    return run()
+    return await run()
   } catch (error) {
     return replyForError(reply, error)
   }
@@ -590,6 +705,20 @@ function replyForError(reply, error) {
  */
 export function httpStatusFor(error) {
   if (error instanceof AdminError) return error.status
+  if (error instanceof BrandingError) {
+    switch (error.code) {
+      case 'too_large':
+        return 413
+      case 'unsupported_format':
+      case 'not_multipart':
+        return 415
+      case 'read_failed':
+      case 'bad_argument':
+        return 500 // a defect, not the operator's input
+      default:
+        return 400 // invalid_request, empty, file_missing …
+    }
+  }
   if (error instanceof CatalogError) {
     // media_missing is the operator's problem to fix and is stated as a
     // conflict; the rest are defects in this code or in the database's shape.
@@ -609,11 +738,19 @@ function errorBody(error) {
   if (error instanceof CatalogError) {
     return { error: error.code, message: error.message, details: error.details }
   }
+  if (error instanceof BrandingError) {
+    return { error: error.code, message: error.message, details: error.details }
+  }
   return { error: 'refused', message: error.message, details: null }
 }
 
 function isReportable(error) {
-  return error instanceof AdminError || error instanceof CatalogError || httpStatusFor(error) === 409
+  return (
+    error instanceof AdminError ||
+    error instanceof CatalogError ||
+    error instanceof BrandingError ||
+    httpStatusFor(error) === 409
+  )
 }
 
 function recordRefusal(db, actor, now, error) {
@@ -821,6 +958,84 @@ export function readQueue(db, { limit = QUEUE_DEFAULT_LIMIT, mediaBaseUrl = MEDI
   }
 }
 
+// ---------------------------------------------------------------------------
+// GET /api/admin/recycle
+
+/**
+ * Every rejected item, newest rejection first — the recycle bin (STORY-076).
+ *
+ * A flat list, not the queue's batch grouping: these span many long-resolved
+ * batches, and what the reviewer acts on is one item at a time (revise it, or
+ * let its audio age out). Each row carries what the bin shows — the proposed
+ * name, the size, when and why it was rejected, and how many days remain before
+ * the media GC (STORY-077) may reclaim the audio — plus the audioUrl the desk
+ * auditions, the same content-addressed URL the queue uses.
+ */
+export function readRecycle(db, { mediaBaseUrl = MEDIA_BASE_URL, now = () => new Date() } = {}) {
+  const rows = db
+    .prepare(`
+      SELECT i.id, i.proposed_label, i.resolved_at, i.reviewer_note,
+             m.sha256, m.ext, m.bytes, m.duration_seconds, m.storage_path, m.collected_at,
+             s.display_name AS submitter_name,
+             -- The GC ages a blob on the LATEST rejection of these exact bytes, and
+             -- only collects it while it is unreferenced. Read both here so the bin's
+             -- countdown matches what the sweep will actually do (STORY-076/077).
+             (SELECT max(x.resolved_at) FROM batch_items x WHERE x.media_sha256 = m.sha256) AS blob_last_reject,
+             EXISTS(SELECT 1 FROM v_unreferenced_media u WHERE u.sha256 = m.sha256) AS unreferenced
+      FROM batch_items i
+      JOIN media m ON m.sha256 = i.media_sha256
+      JOIN batches b ON b.id = i.batch_id
+      LEFT JOIN submitters s ON s.id = b.submitter_id
+      WHERE i.state = 'rejected'
+      ORDER BY i.resolved_at DESC, i.id
+    `)
+    .all()
+
+  const nowMs = now().getTime()
+  const items = rows.map((row) => ({
+    itemId: row.id,
+    proposedLabel: row.proposed_label,
+    rejectedAt: row.resolved_at,
+    reviewerNote: row.reviewer_note,
+    submitterName: row.submitter_name,
+    media: {
+      sha256: row.sha256,
+      audioUrl: `${mediaBaseUrl}${row.storage_path}`,
+      ext: row.ext,
+      bytes: row.bytes,
+      durationSeconds: row.duration_seconds,
+    },
+    retention: retentionStatus(row, nowMs),
+  }))
+
+  return { items, count: items.length, retentionDays: RECYCLE_RETENTION_DAYS }
+}
+
+// The blob's state from the media GC's point of view, computed the SAME way
+// listCollectable decides — so the bin never shows a countdown for a blob the GC
+// will not collect, nor a live row for one it already reclaimed:
+//   reclaimed  — audio already gone (collected_at set); not revisable.
+//   retained   — still referenced by a clip or a live pending item, so the sweep
+//                will never take it; no countdown.
+//   collectable— unreferenced and uncollected; days left anchored on the latest
+//                rejection of these exact bytes (max resolved_at), which is what
+//                listCollectable ages on.
+function retentionStatus(row, nowMs) {
+  if (row.collected_at !== null) return { status: 'reclaimed', daysLeft: null }
+  if (row.unreferenced !== 1) return { status: 'retained', daysLeft: null }
+  return { status: 'collectable', daysLeft: retentionDaysLeft(row.blob_last_reject, nowMs) }
+}
+
+// Whole days between now and when the GC may reclaim this blob's audio, floored
+// at 0 (past the window reads "0", i.e. collectable now). null when the anchor
+// cannot be parsed, so the bin can say "unknown" rather than a misleading number.
+function retentionDaysLeft(anchorAt, nowMs) {
+  const anchorMs = Date.parse(anchorAt)
+  if (!Number.isFinite(anchorMs)) return null
+  const deadline = anchorMs + RECYCLE_RETENTION_DAYS * 24 * 60 * 60 * 1000
+  return Math.max(0, Math.ceil((deadline - nowMs) / (24 * 60 * 60 * 1000)))
+}
+
 function submitterView(row) {
   const stored = {
     submittedCount: row.submitted_count,
@@ -1017,11 +1232,11 @@ function captionsOf(db, table, column, id) {
  * record — what they asked for — and overwriting it with what the reviewer chose
  * would erase the only evidence of the difference.
  */
-export function reviewItem(db, itemId, input = {}, { actor, now = () => new Date() } = {}) {
+export function reviewItem(db, itemId, input = {}, { actor, now = () => new Date(), paths = null } = {}) {
   requireActor(actor)
   const at = toCanonicalTimestamp(now())
   const item = db
-    .prepare('SELECT id, batch_id, media_sha256, state, clip_id, proposed_label, proposed_group_id FROM batch_items WHERE id = ?')
+    .prepare('SELECT id, batch_id, media_sha256, state, clip_id, proposed_label, proposed_group_id, reviewer_note FROM batch_items WHERE id = ?')
     .get(itemId)
   if (!item) throw new AdminError(`no item ${itemId}`, { code: 'not_found', status: 404 })
 
@@ -1034,6 +1249,17 @@ export function reviewItem(db, itemId, input = {}, { actor, now = () => new Date
   }
 
   if (decision === null) return editApprovedClip(db, item, input, { actor, at })
+
+  // The one exit from 'rejected': re-decide it into an approval (STORY-076). A
+  // reject is not always final — a mis-judged clip, or one the submitter cannot
+  // re-send because the copy on the volume is the only one left — so the recycle
+  // bin can approve it after the fact. Only 'approve': a second 'reject' changes
+  // nothing, and an edit (decision === null, above) needs a clip a rejected item
+  // has not got.
+  if (item.state === 'rejected' && decision === 'approve') {
+    return reviseRejectedItem(db, paths, item, input, { actor, at })
+  }
+
   if (item.state !== 'pending') {
     throw new AdminError(
       `item ${itemId} is already ${item.state}; a decision is only available while it is pending`,
@@ -1059,7 +1285,7 @@ export function reviewItem(db, itemId, input = {}, { actor, now = () => new Date
   return approveItem(db, item, batch, input, { actor, at })
 }
 
-function approveItem(db, item, batch, input, { actor, at }) {
+function approveItem(db, item, batch, input, { actor, at, revising = false }) {
   const label = cleanText(input.label, 'label', LABEL_MAX_LENGTH)
   const captions = cleanCaptions(db, input.captions)
   if (Object.keys(captions).length === 0) {
@@ -1108,6 +1334,12 @@ function approveItem(db, item, batch, input, { actor, at }) {
       VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, ?)
     `).run(clipId, groupId, item.media_sha256, label, sortOrder, at, batch.submitter_id, batch.submitted_at)
 
+    // A clip now references this blob, so it is present and referenced — clear any
+    // stale reclamation mark. Only reachable on a revise whose file removal had
+    // failed (a fresh approve's media is never collected), but it keeps the
+    // invariant "a clip-referenced blob is never marked collected" exact.
+    db.prepare('UPDATE media SET collected_at = NULL WHERE sha256 = ? AND collected_at IS NOT NULL').run(item.media_sha256)
+
     const insertCaption = db.prepare(
       'INSERT INTO clip_captions (clip_id, locale, text, updated_at) VALUES (?, ?, ?, ?)',
     )
@@ -1116,6 +1348,12 @@ function approveItem(db, item, batch, input, { actor, at }) {
     db.prepare("UPDATE batch_items SET state = 'approved', resolved_at = ?, reviewer_note = ?, clip_id = ? WHERE id = ?")
       .run(at, note, clipId, item.id)
     db.prepare('UPDATE submitters SET approved_count = approved_count + 1 WHERE id = ?').run(batch.submitter_id)
+    // Revising moves the item OUT of 'rejected', so the reject it once counted is
+    // no longer true. Undo it here, in the same transaction, or the stored
+    // rejected_count drifts from what v_submitter_counts_expected derives.
+    if (revising) {
+      db.prepare('UPDATE submitters SET rejected_count = rejected_count - 1 WHERE id = ?').run(batch.submitter_id)
+    }
 
     const batchResolved = resolveBatchIfDone(db, batch, at)
 
@@ -1123,10 +1361,17 @@ function approveItem(db, item, batch, input, { actor, at }) {
       actorKind: 'owner',
       actorOpenId: actor.openId,
       actorDisplayName: actor.displayName,
-      verb: 'admin.item.approve',
+      // A distinct verb, so the log — and its per-actor filter — can tell a
+      // first-time approval from an overturned rejection. before carries the
+      // original reject reason, the only record of why it was refused.
+      verb: revising ? 'admin.item.revise' : 'admin.item.approve',
       subject: { kind: 'batch_item', id: item.id },
-      before: { state: item.state, clipId: null },
-      after: { state: 'approved', clipId, groupId, label, captions, reviewerNote: note },
+      before: revising
+        ? { state: item.state, clipId: null, reviewerNote: item.reviewer_note ?? null }
+        : { state: item.state, clipId: null },
+      after: revising
+        ? { state: 'approved', clipId, groupId, label, captions, reviewerNote: note, revised: true }
+        : { state: 'approved', clipId, groupId, label, captions, reviewerNote: note },
       consequence: `clip:${clipId}`,
       succeeded: true,
       occurredAt: at,
@@ -1173,6 +1418,36 @@ function rejectItem(db, item, batch, input, { actor, at }) {
   })
 
   return { outcome: 'rejected', itemId: item.id, ...apply.immediate() }
+}
+
+/**
+ * Overturn a rejection into an approval (STORY-076). Everything the approval
+ * itself does is approveItem's — this adds only the two things a revision needs:
+ * a batch that is already resolved (rejecting the last item resolves it, so this
+ * must NOT require 'submitted' the way a fresh decision does), and a check that
+ * the blob is still on the volume.
+ *
+ * The media check is why `paths` is threaded this far: a rejected item's file is
+ * kept until the media GC reclaims it (STORY-077), and approving one whose file
+ * is already gone would mint a draft clip that can never publish. Refuse before
+ * any write, with an answer that says why.
+ */
+function reviseRejectedItem(db, paths, item, input, { actor, at }) {
+  const batch = db
+    .prepare('SELECT id, submitter_id, state, submitted_at FROM batches WHERE id = ?')
+    .get(item.batch_id)
+
+  if (paths && typeof paths.mediaDir === 'string') {
+    const problems = checkMedia(db, { mediaDir: paths.mediaDir }, [item.media_sha256])
+    if (problems.length > 0) {
+      throw new AdminError(
+        `item ${item.id} cannot be revised: its audio file is no longer in storage (it may have been reclaimed)`,
+        { code: 'conflict', status: 409, details: { problems } },
+      )
+    }
+  }
+
+  return approveItem(db, item, batch, input, { actor, at, revising: true })
 }
 
 function editApprovedClip(db, item, input, { actor, at }) {
@@ -1574,6 +1849,154 @@ function withoutDocument(result) {
 }
 
 // ---------------------------------------------------------------------------
+// GET /api/admin/clips  +  retire / restore
+//
+// The catalogue library: every clip the site has, in whatever state, so an admin
+// can take one down or put it back WITHOUT going through the submission queue.
+// Retiring sets state 'retired', which writeCatalog omits, so the button leaves
+// the site; restoring sets it back to 'published'. Both then rewrite catalog.json
+// through publishCatalogue's own writer with promote:false — so no pending draft
+// is dragged live as a side effect of taking one clip down — which is the single
+// place that turns clip state into what the site serves.
+//
+// There is DELIBERATELY no hard delete here. clips.media_sha256 and
+// batch_items.clip_id are both ON DELETE RESTRICT, and the schema's own comment
+// is explicit that a clip which must truly go needs a decision about what its
+// approving item then says — a statement written for that purpose, not a DELETE.
+// Retire is the removal that respects that, and it is reversible.
+
+export function listClips(db, { mediaBaseUrl = MEDIA_BASE_URL } = {}) {
+  const rows = db.prepare(`
+    SELECT c.id, c.label, c.state, c.sort_order, c.created_at, c.published_at, c.retired_at,
+           c.group_id, g.display_name AS group_name, g.state AS group_state,
+           m.sha256, m.storage_path, m.duration_seconds, m.bytes, m.ext, m.content_type,
+           (SELECT count(*) FROM clip_captions cc WHERE cc.clip_id = c.id) AS caption_count
+    FROM clips c
+    JOIN groups g ON g.id = c.group_id
+    JOIN media m ON m.sha256 = c.media_sha256
+    ORDER BY g.sort_order, g.id, c.sort_order, c.id
+  `).all()
+  return {
+    clips: rows.map((row) => ({
+      id: row.id,
+      label: row.label,
+      state: row.state,
+      group: { id: row.group_id, name: row.group_name, state: row.group_state },
+      createdAt: row.created_at,
+      publishedAt: row.published_at,
+      retiredAt: row.retired_at,
+      captionCount: row.caption_count,
+      media: {
+        sha256: row.sha256,
+        audioUrl: `${mediaBaseUrl}${row.storage_path}`,
+        durationSeconds: row.duration_seconds,
+        bytes: row.bytes,
+        ext: row.ext,
+        contentType: row.content_type,
+      },
+    })),
+    counts: {
+      total: rows.length,
+      published: rows.filter((r) => r.state === 'published').length,
+      retired: rows.filter((r) => r.state === 'retired').length,
+      draft: rows.filter((r) => r.state === 'draft').length,
+    },
+  }
+}
+
+export function retireClip(db, paths, clipId, { actor, now = () => new Date() } = {}) {
+  return setClipState(db, paths, clipId, {
+    from: 'published',
+    to: 'retired',
+    verb: 'admin.clip.retire',
+    stampColumn: 'retired_at',
+    clearColumn: null,
+    refusal: (state) => `clip ${clipId} is ${state}, not published; only a published clip can be retired`,
+    actor,
+    now,
+  })
+}
+
+export function restoreClip(db, paths, clipId, { actor, now = () => new Date() } = {}) {
+  return setClipState(db, paths, clipId, {
+    from: 'retired',
+    to: 'published',
+    verb: 'admin.clip.restore',
+    stampColumn: 'published_at',
+    clearColumn: 'retired_at',
+    refusal: (state) => `clip ${clipId} is ${state}, not retired; only a retired clip can be restored`,
+    actor,
+    now,
+  })
+}
+
+// One transition, then one catalogue rewrite. The state change and its audit
+// entry are in an immediate transaction (the same shape publish uses); the
+// catalogue write happens after, through publishCatalogue, which records its own
+// admin.catalog.write with the digest. `stampColumn`/`clearColumn` are a fixed
+// pair of column names chosen by the two callers above, never caller input.
+//
+// Ordering hazard, accepted deliberately: the state commits BEFORE the catalogue
+// is rewritten, so if publishCatalogue then throws (a referenced blob is missing,
+// or the write fails) the DB and catalog.json diverge until the next successful
+// publish — the same "stale-but-playable" tradeoff publishCatalogue documents,
+// and why a just-retired clip keeps playing rather than 404ing. Restore has one
+// gap the accepted window does not cover for free: it PUBLISHES this clip, so a
+// restore whose own blob is gone would commit and then fail the rewrite. We
+// check that one blob up front and refuse before the transaction, turning a
+// silent divergence into a clean 409.
+function setClipState(db, paths, clipId, { from, to, verb, stampColumn, clearColumn, refusal, actor, now }) {
+  requireActor(actor)
+  const at = toCanonicalTimestamp(now())
+  const clip = db.prepare('SELECT id, state, media_sha256 FROM clips WHERE id = ?').get(clipId)
+  if (!clip) throw new AdminError(`no clip ${clipId}`, { code: 'not_found', status: 404 })
+  if (clip.state !== from) {
+    throw new AdminError(refusal(clip.state), { code: 'conflict', status: 409, details: { state: clip.state } })
+  }
+  if (to === 'published') {
+    const problems = checkMedia(db, { mediaDir: paths.mediaDir }, [clip.media_sha256])
+    if (problems.length > 0) {
+      throw new AdminError(`clip ${clipId} cannot be restored: its media file is missing from storage`, {
+        code: 'conflict',
+        status: 409,
+        details: { problems },
+      })
+    }
+  }
+
+  const apply = db.transaction(() => {
+    const sets = ['state = @to', `${stampColumn} = @at`]
+    if (clearColumn) sets.push(`${clearColumn} = NULL`)
+    db.prepare(`UPDATE clips SET ${sets.join(', ')} WHERE id = @id AND state = @from`)
+      .run({ to, at, id: clipId, from })
+    record(db, {
+      actorKind: 'owner',
+      actorOpenId: actor.openId,
+      actorDisplayName: actor.displayName,
+      verb,
+      subject: { kind: 'clip', id: clipId },
+      before: { state: from },
+      after: { state: to },
+      // The catalogue write has not happened yet; the admin.catalog.write entry
+      // publishCatalogue records below carries the digest.
+      consequence: null,
+      succeeded: true,
+      occurredAt: at,
+    })
+  })
+  apply.immediate()
+
+  const published = publishCatalogue(db, paths, { actor, now, promote: false })
+  return {
+    clipId,
+    state: to,
+    catalog: published.catalog,
+    catalogChanged: published.catalog ? published.catalog.catalogChanged : null,
+    warnings: published.warnings,
+  }
+}
+
+// ---------------------------------------------------------------------------
 // GET /api/admin/audit
 
 /**
@@ -1601,6 +2024,17 @@ export function readAuditPage(db, query = {}) {
   if (isPresent(query.actorOpenId)) {
     clauses.push('actor_id = @actorOpenId')
     params.actorOpenId = String(query.actorOpenId)
+  }
+  if (isPresent(query.actorName)) {
+    // Filter by the display name AS RECORDED on the entry (detail.actorDisplayName)
+    // — exactly the name this table shows — rather than a live join to the current
+    // submitters/admins name. So an entry keeps matching the name it was written
+    // under even after that person is renamed, and there is no join to keep in
+    // step. A contains match; the caller sends a plain string and the % and the
+    // escaping of any %/_/\ the name itself contains are added here.
+    const needle = String(query.actorName).replace(/[\\%_]/g, (c) => `\\${c}`)
+    clauses.push("json_extract(detail, '$.actorDisplayName') LIKE @actorName ESCAPE '\\'")
+    params.actorName = `%${needle}%`
   }
   if (isPresent(query.actorKind)) {
     const actorKind = String(query.actorKind)
@@ -1908,9 +2342,9 @@ function themeRefusalFor(error) {
  * and lib/wallpaper.mjs checks the same ceiling again, because a limit enforced
  * only by the transport disappears the day somebody calls the library.
  */
-async function readWallpaperUpload(request) {
+async function readSingleFileUpload(request, noun = 'file') {
   if (typeof request.isMultipart !== 'function' || !request.isMultipart()) {
-    throw new AdminError('Send the wallpaper as a multipart form with one file part named "file".', {
+    throw new AdminError(`Send the ${noun} as a multipart form with one file part named "file".`, {
       code: 'not_multipart',
       status: 415,
     })
@@ -1928,7 +2362,7 @@ async function readWallpaperUpload(request) {
       await finished(part.file)
     }
   } catch (error) {
-    throw mapUploadRefusal(error)
+    throw mapUploadRefusal(error, noun)
   }
 
   if (found === null) {
@@ -1948,7 +2382,7 @@ async function readWallpaperUpload(request) {
  * reaches fastify as a 500 rather than being reported as a refusal of something
  * the owner did.
  */
-function mapUploadRefusal(error) {
+function mapUploadRefusal(error, noun = 'file') {
   switch (error?.code) {
     case 'FST_REQ_FILE_TOO_LARGE':
       return new AdminError('That image is larger than this server accepts as one upload.', {
@@ -1957,9 +2391,9 @@ function mapUploadRefusal(error) {
       })
     case 'FST_FILES_LIMIT':
     case 'FST_PARTS_LIMIT':
-      return new AdminError('Send one wallpaper at a time.', { code: 'too_many_files', status: 413 })
+      return new AdminError(`Send one ${noun} at a time.`, { code: 'too_many_files', status: 413 })
     case 'FST_INVALID_MULTIPART_CONTENT_TYPE':
-      return new AdminError('Send the wallpaper as a multipart form with one file part named "file".', {
+      return new AdminError(`Send the ${noun} as a multipart form with one file part named "file".`, {
         code: 'not_multipart',
         status: 415,
       })

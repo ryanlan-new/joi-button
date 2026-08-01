@@ -77,8 +77,17 @@
                         </tr>
                     </thead>
                     <tbody>
+                        <!-- The whole row opens the desk, not only the button in
+                             the last column: that column can be scrolled out of a
+                             narrow list pane (the wrapper scrolls sideways and
+                             macOS hides the bar), and a reviewer should not have
+                             to find one cell to start. The button stays for the
+                             keyboard, and stops the click so the row does not fire
+                             a second, identical select. -->
                         <tr v-for="item in batch.items" :key="item.itemId"
-                            :class="{ 'is-selected': item.itemId === selectedItemId }">
+                            class="adm-row-click"
+                            :class="{ 'is-selected': item.itemId === selectedItemId }"
+                            @click="$emit('select', item.itemId)">
                             <td class="adm-num">{{ item.position }}</td>
                             <td class="adm-wrap">{{ item.proposedLabel }}</td>
                             <!-- TWO WAYS a submitter can name a group, and this
@@ -117,7 +126,7 @@
                                 <span v-else class="adm-sub">{{ $t("admin.queue.noNote") }}</span>
                             </td>
                             <td>
-                                <button type="button" class="adm-btn" @click="$emit('select', item.itemId)">
+                                <button type="button" class="adm-btn" @click.stop="$emit('select', item.itemId)">
                                     {{ item.itemId === selectedItemId ? $t("admin.queue.open") : $t("admin.queue.review") }}
                                 </button>
                                 <span v-if="heardItemIds.indexOf(item.itemId) !== -1" class="adm-sub">

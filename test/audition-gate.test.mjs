@@ -26,9 +26,11 @@ import test from 'node:test'
 
 import {
   SHORTFALL_FLOOR_SECONDS,
+  adoptsEnded,
   judgeEnded,
   playedLength,
   shortfallTolerance,
+  standsDownFor,
 } from '../src/components/admin/audition-gate.mjs'
 
 // The two measurements above, verbatim.
@@ -117,4 +119,33 @@ test('playedLength reads only finite positive numbers', () => {
   assert.equal(playedLength({ duration: 9 }), 9)
   assert.equal(playedLength({ currentTime: -1, duration: -1 }), null)
   assert.equal(playedLength({ currentTime: '3', duration: '9' }), null)
+})
+
+// --- attribution: which audition owns an `ended` (STORY-076 contamination) ---
+
+test('only an audition with playback in flight adopts an ended', () => {
+  assert.equal(adoptsEnded('playing'), true)
+  assert.equal(adoptsEnded('stalled'), true)
+  // Everything else has nothing in flight and must ignore the shared bus event.
+  for (const phase of ['idle', 'paused', 'heard', 'truncated']) {
+    assert.equal(adoptsEnded(phase), false, phase)
+  }
+})
+
+test('an audition stands down when a DIFFERENT owner seizes the shared player, and only then', () => {
+  // The bug this guards: the queue desk, left playing under v-show, must leave
+  // 'playing'/'stalled'/'paused' when the recycle desk starts a clip — or it
+  // adopts that clip's `ended` (playing/stalled), or resumes it (paused). A
+  // takeover counts against any audition with a live or suspended playback
+  // context...
+  for (const phase of ['playing', 'stalled', 'paused']) {
+    assert.equal(standsDownFor(phase, 'recycle-audition', 'queue-audition'), true, phase)
+  }
+  // ...not against one that is idle or done (nothing to lose)...
+  for (const phase of ['idle', 'heard', 'truncated']) {
+    assert.equal(standsDownFor(phase, 'recycle-audition', 'queue-audition'), false, phase)
+  }
+  // ...and never against its OWN play, or every playFromStart would cancel itself.
+  assert.equal(standsDownFor('playing', 'queue-audition', 'queue-audition'), false)
+  assert.equal(standsDownFor('paused', 'queue-audition', 'queue-audition'), false)
 })

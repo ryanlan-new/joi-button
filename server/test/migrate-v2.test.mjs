@@ -72,6 +72,17 @@ function schemaAtV1() {
     .join('\n')
   assert.equal(v1.includes('challenge_text'), false, 'the v1 fixture still mentions challenge_text')
 
+  // v5: media.collected_at. Its column, its CHECK and its comment are the only
+  // lines that name it, so dropping every line that mentions it takes exactly
+  // those; the ALTER in the v5 step then has a column to add rather than colliding
+  // with one schema.sql already carries.
+  assert.ok(v1.includes('collected_at'), 'schema.sql no longer carries collected_at for this fixture to strip')
+  v1 = v1
+    .split('\n')
+    .filter((line) => !line.includes('collected_at'))
+    .join('\n')
+  assert.equal(v1.includes('collected_at'), false, 'the v1 fixture still mentions collected_at')
+
   assert.ok(v1.includes('CREATE TABLE IF NOT EXISTS themes'), 'the strip removed more than it should have')
   assert.ok(v1.includes('CREATE TABLE IF NOT EXISTS clips'), 'the strip removed more than it should have')
   assert.ok(v1.includes('CREATE TABLE IF NOT EXISTS verify_codes'), 'the strip removed more than it should have')
@@ -102,14 +113,14 @@ function openV1(t) {
 }
 
 test('the version roster is self-consistent', () => {
-  assert.equal(SCHEMA_VERSION, 4)
+  assert.equal(SCHEMA_VERSION, 5)
   // MIN_COMPATIBLE stays 1 on purpose: the theme/verify_codes columns and the
   // two admin tables are all invisible to a catalogue reader, and src/catalog.mjs
   // only refuses a document whose minCompatibleVersion EXCEEDS what it knows.
   // Bumping it would make every tab holding a year-cached chunk refuse a
   // catalogue it can read perfectly well.
   assert.equal(MIN_COMPATIBLE_SCHEMA_VERSION, 1)
-  assert.deepEqual(POST_BASELINE_STEPS.map((step) => step.version), [2, 3, 4])
+  assert.deepEqual(POST_BASELINE_STEPS.map((step) => step.version), [2, 3, 4, 5])
 })
 
 test('a v1 database gains themes.wallpaper_path from the post-baseline step', (t) => {
@@ -160,6 +171,29 @@ test('the CHECK came with the column, so an upgraded table refuses what a fresh 
     )
   }
   assert.equal(db.prepare('SELECT count(*) n FROM themes').get().n, 1)
+})
+
+test('a v1 database gains media.collected_at on the same climb, with its CHECK', (t) => {
+  const db = openV1(t)
+  migrate(db, { mode: 'development', now: '2026-08-01T00:00:01Z' })
+
+  assert.equal(
+    db.prepare("SELECT count(*) n FROM pragma_table_info('media') WHERE name='collected_at'").get().n,
+    1,
+  )
+
+  const insert = db.prepare(
+    'INSERT INTO media (sha256, ext, content_type, bytes, duration_seconds, uploaded_at, collected_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+  )
+  // NULL (present) and a canonical timestamp (reclaimed) are both accepted.
+  insert.run('b'.repeat(64), 'mp3', 'audio/mpeg', 100, 1.0, '2026-08-01T00:00:02Z', null)
+  insert.run('c'.repeat(64), 'mp3', 'audio/mpeg', 100, 1.0, '2026-08-01T00:00:02Z', '2026-08-02T00:00:00Z')
+  assert.equal(db.prepare('SELECT count(*) n FROM media').get().n, 2)
+  // A non-canonical timestamp is refused, exactly as a fresh table refuses it.
+  assert.throws(
+    () => insert.run('d'.repeat(64), 'mp3', 'audio/mpeg', 100, 1.0, '2026-08-01T00:00:02Z', 'yesterday'),
+    /CHECK/,
+  )
 })
 
 test('migrating an already-current database is a no-op, not a second ALTER', (t) => {

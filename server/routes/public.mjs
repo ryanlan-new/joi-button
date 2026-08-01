@@ -1354,6 +1354,8 @@ export default async function publicRoutes(fastify, options = {}) {
       // ON CONFLICT DO NOTHING: the same bytes may already be here from an
       // earlier submission, and media is one row per distinct blob.
       q.insertMedia.run(entry.media)
+      // ...and if those bytes had been reclaimed, they are present again now.
+      q.reviveMedia.run(entry.media.sha256)
     }
 
     const batchId = randomUUID()
@@ -2213,6 +2215,12 @@ function prepareStatements(db) {
       VALUES (@sha256, @ext, @content_type, @bytes, @duration_seconds, @uploaded_at)
       ON CONFLICT (sha256) DO NOTHING
     `),
+    // If these exact bytes had been reclaimed by the media GC (STORY-077) and are
+    // being submitted again, un-mark the row: placeMedia has put the file back on
+    // the volume, so the blob is present. Touches only a collected row.
+    reviveMedia: db.prepare(
+      'UPDATE media SET collected_at = NULL WHERE sha256 = ? AND collected_at IS NOT NULL',
+    ),
     insertBatch: db.prepare(`
       INSERT INTO batches (id, submitter_id, session_id, state, created_at,
                            turnstile_required, turnstile_verdict, turnstile_decided_at)

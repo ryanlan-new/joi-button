@@ -32,13 +32,29 @@
                         :aria-pressed="String(tab === 'publish')" @click="tab = 'publish'">
                     {{ $t("admin.nav.publish") }}
                 </button>
+                <button type="button" class="adm-tab" :class="{ 'is-on': tab === 'clips' }"
+                        :aria-pressed="String(tab === 'clips')" @click="tab = 'clips'">
+                    {{ $t("admin.nav.clips") }}
+                </button>
+                <button type="button" class="adm-tab" :class="{ 'is-on': tab === 'recycle' }"
+                        :aria-pressed="String(tab === 'recycle')" @click="tab = 'recycle'">
+                    {{ $t("admin.nav.recycle") }}
+                </button>
                 <button type="button" class="adm-tab" :class="{ 'is-on': tab === 'audit' }"
                         :aria-pressed="String(tab === 'audit')" @click="tab = 'audit'">
                     {{ $t("admin.nav.audit") }}
                 </button>
+                <button type="button" class="adm-tab" :class="{ 'is-on': tab === 'storage' }"
+                        :aria-pressed="String(tab === 'storage')" @click="tab = 'storage'">
+                    {{ $t("admin.nav.storage") }}
+                </button>
                 <button type="button" class="adm-tab" :class="{ 'is-on': tab === 'theme' }"
                         :aria-pressed="String(tab === 'theme')" @click="tab = 'theme'">
                     {{ $t("admin.nav.theme") }}
+                </button>
+                <button type="button" class="adm-tab" :class="{ 'is-on': tab === 'branding' }"
+                        :aria-pressed="String(tab === 'branding')" @click="tab = 'branding'">
+                    {{ $t("admin.nav.branding") }}
                 </button>
                 <button type="button" class="adm-tab" :class="{ 'is-on': tab === 'admins' }"
                         :aria-pressed="String(tab === 'admins')" @click="tab = 'admins'">
@@ -77,16 +93,60 @@
             </div>
         </div>
 
-        <!-- v-if, not v-show: these two each cost a request when they appear, and
+        <!-- The recycle bin is a split like the queue: a list of rejected items on
+             one side, and the SAME review desk on the other, re-opened to overturn
+             a rejection. It keeps its own selection so leaving and returning to the
+             queue does not disturb what is open here, and vice versa. -->
+        <div v-if="tab === 'recycle'" class="adm-split" :class="{ 'is-focused': selectedRecycleItemId !== null }">
+            <div class="adm-split-list">
+                <RecycleQueue
+                    :recycle="recycle"
+                    :loading="recycleLoading"
+                    :error="recycleError"
+                    :selected-item-id="selectedRecycleItemId"
+                    :heard-item-ids="heardItemIds"
+                    @select="selectRecycleItem"
+                    @reload="loadRecycle" />
+            </div>
+            <div class="adm-split-desk">
+                <button type="button" class="adm-btn adm-back" v-if="selectedRecycleItemId !== null"
+                        @click="selectRecycleItem(null)">
+                    {{ $t("admin.desk.backToRecycle") }}
+                </button>
+                <ReviewDeskItem
+                    v-if="selectedRecycleItemId !== null"
+                    :key="'rec-' + selectedRecycleItemId"
+                    :item-id="selectedRecycleItemId"
+                    :heard="heardItemIds.indexOf(selectedRecycleItemId) !== -1"
+                    :siblings-by-group="siblingsByGroup"
+                    :next-item-id="nextRecycleItemId"
+                    @heard="markHeard"
+                    @decided="onRecycleDecided"
+                    @open="selectRecycleItem"
+                    @open-publish="tab = 'publish'" />
+                <p v-else class="adm-empty">{{ $t("admin.recycle.pick") }}</p>
+            </div>
+        </div>
+
+        <!-- Every non-queue tab lives inside one body wrapper that carries the
+             SAME top gap the queue's .adm-split has, so the first panel of any
+             tab sits the same distance below the bar. Without it the bare panels
+             (.adm-panel has only a bottom margin) tucked straight under the bar. -->
+        <!-- v-if, not v-show: these each cost a request when they appear, and
              mounting them behind a hidden tab would spend it before anyone asked. -->
         <!-- The catalogue is re-read after a publish because that is the one
              event that changes it, and the register the desk shows is drawn
              from it. Without this the sibling captions would quietly describe
              the site as it was when this tab was opened. -->
-        <PublishPanel v-if="tab === 'publish'" @published="loadCatalogue" />
-        <AuditTrail v-if="tab === 'audit'" />
-        <ThemePanel v-if="tab === 'theme'" />
-        <AdminsPanel v-if="tab === 'admins'" />
+        <div v-if="tab !== 'queue' && tab !== 'recycle'" class="adm-tabbody">
+            <PublishPanel v-if="tab === 'publish'" @published="loadCatalogue" />
+            <ClipsPanel v-if="tab === 'clips'" />
+            <ReclaimPanel v-if="tab === 'storage'" />
+            <AuditTrail v-if="tab === 'audit'" />
+            <ThemePanel v-if="tab === 'theme'" />
+            <BrandingPanel v-if="tab === 'branding'" />
+            <AdminsPanel v-if="tab === 'admins'" />
+        </div>
     </div>
 </template>
 
@@ -223,7 +283,10 @@
 .adm-tab.is-on .adm-pill { background-color: #ffffff; color: var(--adm-danger-ink); }
 
 /* ---- layout ---------------------------------------------------------- */
+/* The top gap below the bar, shared by the queue's split and every other tab's
+   body, so no tab's first panel sits tighter to the bar than another's. */
 .adm-split { display: flex; gap: 12px; align-items: flex-start; margin-top: 12px; }
+.adm-tabbody { margin-top: 12px; }
 .adm-split-list { flex: 1 1 46%; min-width: 0; }
 .adm-split-desk { flex: 1 1 54%; min-width: 0; }
 .adm-back { display: none; margin-bottom: 8px; }
@@ -342,6 +405,18 @@
 /* The wrapper scrolls, never the page: a batch table on a phone is wider than
    the screen and a horizontally scrolling document loses the navbar. */
 .adm-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+/* Force a VISIBLE bar. macOS hides overlay scrollbars until a scroll is already
+   in progress, which left the last column (the review control) both off-screen
+   AND with nothing to say the row scrolls. Styling the bar makes WebKit draw the
+   classic, always-on one; scrollbar-color does the same for Firefox. */
+.adm-scroll { scrollbar-color: var(--adm-line) var(--adm-inset); }
+.adm-scroll::-webkit-scrollbar { height: 9px; }
+.adm-scroll::-webkit-scrollbar-track { background: var(--adm-inset); border-radius: 5px; }
+.adm-scroll::-webkit-scrollbar-thumb { background: var(--adm-line); border-radius: 5px; }
+/* The whole row is a control (see ReviewQueue.vue). Pointer + hover say so; a
+   selected row keeps its own fill and does not take the hover tint. */
+.adm-table tbody tr.adm-row-click { cursor: pointer; }
+.adm-table tbody tr.adm-row-click:not(.is-selected):hover { background-color: var(--adm-inset); }
 .adm-table { width: 100%; border-collapse: collapse; background-color: var(--adm-surface); }
 .adm-table th, .adm-table td {
     border-bottom: 1px solid var(--adm-hair);
@@ -377,10 +452,14 @@ import Vue from 'vue'
 import Component from 'vue-class-component'
 
 import ReviewQueue from './ReviewQueue.vue'
+import RecycleQueue from './RecycleQueue.vue'
 import ReviewDeskItem from './ReviewDeskItem.vue'
 import PublishPanel from './PublishPanel.vue'
+import ClipsPanel from './ClipsPanel.vue'
+import ReclaimPanel from './ReclaimPanel.vue'
 import AuditTrail from './AuditTrail.vue'
 import ThemePanel from './ThemePanel.vue'
+import BrandingPanel from './BrandingPanel.vue'
 import AdminsPanel from './AdminsPanel.vue'
 
 /**
@@ -497,7 +576,15 @@ function createAdminApi({ onGone }) {
 }
 
 @Component({
-    components: { ReviewQueue, ReviewDeskItem, PublishPanel, AuditTrail, ThemePanel, AdminsPanel },
+    components: { ReviewQueue, RecycleQueue, ReviewDeskItem, PublishPanel, ClipsPanel, ReclaimPanel, AuditTrail, ThemePanel, BrandingPanel, AdminsPanel },
+    watch: {
+        // The bin is read the first time its tab is opened, not on load: it is one
+        // more request, and a desk that opens on the queue should not spend it
+        // before anyone asks for the bin. The refresh button reloads thereafter.
+        tab(value) {
+            if (value === 'recycle' && this.recycle === null) this.loadRecycle()
+        },
+    },
     provide() {
         // Built here rather than as a class property: it holds functions, not
         // state, and `data` would make Vue walk it for reactivity it can never
@@ -518,6 +605,14 @@ class AdminDesk extends Vue {
     queueError = ''
 
     selectedItemId = null
+
+    // The recycle bin (STORY-076), with its own list and selection so it and the
+    // queue do not disturb each other's open item. heardItemIds is shared: a clip
+    // heard through is heard through whichever list opened it.
+    recycle = null
+    recycleLoading = false
+    recycleError = ''
+    selectedRecycleItemId = null
 
     /**
      * The clips that have been played all the way through in THIS session.
@@ -550,6 +645,15 @@ class AdminDesk extends Vue {
             for (const item of batch.items) {
                 if (item.itemId !== this.selectedItemId) return item.itemId
             }
+        }
+        return null
+    }
+
+    /** The first item in the bin that is not the one already open. */
+    get nextRecycleItemId() {
+        if (this.recycle === null) return null
+        for (const item of this.recycle.items) {
+            if (item.itemId !== this.selectedRecycleItemId) return item.itemId
         }
         return null
     }
@@ -630,6 +734,22 @@ class AdminDesk extends Vue {
 
     selectItem(itemId) {
         this.selectedItemId = itemId
+        // On a narrow screen the list is hidden and the desk takes its place
+        // (.adm-split.is-focused). A reviewer who had scrolled down the queue
+        // would otherwise land on the desk below the fold — or on blank space
+        // the vanished list left behind. Bring the area's top back into view
+        // once the DOM has swapped. Instant, not smooth: the site keeps motion
+        // off for whoever asks, and a scroll is not worth a special case here.
+        if (itemId !== null
+            && typeof window !== 'undefined'
+            && typeof window.matchMedia === 'function'
+            && window.matchMedia('(max-width: 900px)').matches) {
+            this.$nextTick(() => {
+                if (this.$el && typeof this.$el.scrollIntoView === 'function') {
+                    this.$el.scrollIntoView()
+                }
+            })
+        }
     }
 
     markHeard(itemId) {
@@ -640,6 +760,43 @@ class AdminDesk extends Vue {
         // The catalogue is not re-read here on purpose: a decision writes a
         // DRAFT clip, and catalog.json holds published ones. Publishing is what
         // moves it, and PublishPanel says so above.
+        this.loadQueue()
+    }
+
+    async loadRecycle() {
+        this.recycleLoading = true
+        this.recycleError = ''
+        try {
+            this.recycle = await this.api.get('/api/admin/recycle')
+        } catch (error) {
+            if (error.code !== 'gone') this.recycleError = error.message
+        } finally {
+            this.recycleLoading = false
+        }
+    }
+
+    selectRecycleItem(itemId) {
+        this.selectedRecycleItemId = itemId
+        // The same narrow-screen courtesy the queue does: when the list gives way
+        // to the desk, bring the area's top back into view.
+        if (itemId !== null
+            && typeof window !== 'undefined'
+            && typeof window.matchMedia === 'function'
+            && window.matchMedia('(max-width: 900px)').matches) {
+            this.$nextTick(() => {
+                if (this.$el && typeof this.$el.scrollIntoView === 'function') {
+                    this.$el.scrollIntoView()
+                }
+            })
+        }
+    }
+
+    onRecycleDecided() {
+        // A revision moves the item out of the bin (into a draft clip) and shifts
+        // the submitter's counts the queue's history column shows, so refresh
+        // both. The catalogue is unchanged for the same reason onDecided leaves
+        // it: the revised clip is a draft until it is published.
+        this.loadRecycle()
         this.loadQueue()
     }
 }

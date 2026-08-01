@@ -92,3 +92,45 @@ export function judgeEnded(played, durationSeconds) {
   const short = recorded - playedSeconds > shortfallTolerance(recorded)
   return { heard: !short, playedSeconds }
 }
+
+// ---------------------------------------------------------------------------
+// Attribution: which audition an `ended` belongs to.
+//
+// There is ONE media element and one `player:ended` bus, and — since the recycle
+// bin (STORY-076) — up to TWO live ClipAudition instances at once: the queue's is
+// kept alive under v-show while the bin's is mounted. So "one live instance,
+// destroyed when the desk moves on" is no longer what keeps an `ended` matched to
+// the clip that was playing. These two predicates do, and live here so they can
+// be tested in both directions the way judgeEnded is.
+
+/**
+ * May an audition in this phase adopt a `player:ended`?
+ *
+ * Only one with playback in flight. An idle/paused/heard/truncated instance has
+ * nothing playing and must not credit somebody else's event to its clip.
+ *
+ * @param {string} phase idle | playing | paused | heard | stalled | truncated
+ */
+export function adoptsEnded(phase) {
+  return phase === 'playing' || phase === 'stalled'
+}
+
+/**
+ * Must this audition stand down because another one seized the shared player?
+ *
+ * A `player:play` from a DIFFERENT owner means the one playhead is now on another
+ * clip, so this audition's playback context is gone. 'paused' counts as well as
+ * 'playing'/'stalled': a paused audition's position is against a src the shared
+ * element no longer holds, so a bare `player:replay` (resume) would continue the
+ * OTHER clip and then adopt its `ended`. Standing down (→ idle) drops the stale
+ * resume and forces a fresh play. Its own `player:play` (same owner) is not a
+ * takeover.
+ *
+ * @param {string} phase this audition's current phase
+ * @param {*} eventOwner the owner id carried by the player:play event
+ * @param {*} selfId this audition's own id
+ */
+export function standsDownFor(phase, eventOwner, selfId) {
+  if (eventOwner === selfId) return false
+  return phase === 'playing' || phase === 'stalled' || phase === 'paused'
+}

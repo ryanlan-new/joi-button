@@ -37,6 +37,14 @@
 //                 documents. EVERY row's wallpaper, not just the active one:
 //                 deactivated rows are kept so a rollback can reach them, and a
 //                 rollback needs the picture that was live with it.
+//   branding.json AND branding/<sha>.png|ico
+//                 YES. Like the wallpaper, these are NOT derived: there is no
+//                 branding table, so nothing in the database dump carries the
+//                 nav/doc titles, the channel link, or the custom favicon an
+//                 admin set. branding.json is small and mutable, so it rides
+//                 per snapshot beside joi.db; the favicon is content-addressed
+//                 and pooled like a wallpaper. A snapshot that took neither
+//                 restores to the bundle defaults — a fresh install, not a loss.
 //   incoming/     NO, and this is a decision rather than an oversight. Those are
 //                 bytes mid-request: routes/public.mjs discards them before it
 //                 answers, so anything there belongs to a request still in
@@ -100,6 +108,7 @@ import Database from 'better-sqlite3'
 
 import { loadConfig } from '../config.mjs'
 import { toCanonicalTimestamp } from '../db/migrate.mjs'
+import { brandingPathsFrom } from '../lib/branding.mjs'
 
 const args = process.argv.slice(2)
 const VERIFY_ONLY = args.includes('--verify')
@@ -134,6 +143,9 @@ const { config } = loadConfig()
 const dbFile = config.database.file
 const mediaDir = config.storage.mediaDir
 const wallpaperDir = config.storage.wallpaperDir
+// branding.json and the branding/ favicons derive from catalog.json's directory,
+// exactly as the API derives them — so a rename of DATA_DIR moves both together.
+const brandingPaths = brandingPathsFrom(config.storage.catalogFile)
 const backupDir = process.env.BACKUP_DIR ?? join(config.storage.dataDir, 'backups')
 
 const POOL = join(backupDir, 'media')
@@ -144,6 +156,9 @@ const POOL = join(backupDir, 'media')
 // walk, and the restore has to reproduce the volume's own layout anyway — where
 // wallpaper/ is a sibling of media/ for the reasons config.mjs states.
 const WALLPAPER_POOL = join(backupDir, 'wallpaper')
+// Branding favicons are content-addressed like wallpapers, so they pool the same
+// way; branding.json itself is authored and mutable, so it rides per-snapshot.
+const BRANDING_POOL = join(backupDir, 'branding')
 const SNAPSHOTS = join(backupDir, 'snapshots')
 
 /**
@@ -181,6 +196,19 @@ function readManifest(name) {
   }
 }
 
+// The favicon branding.json points at, IF it is a plain content-addressed name.
+// The pattern is the guard: a hand-edited branding.json with a `../` in it must
+// not make the backup copy a file from outside the favicon directory.
+function faviconNameFrom(brandingBytes) {
+  try {
+    const parsed = JSON.parse(brandingBytes.toString('utf8'))
+    const name = parsed && typeof parsed.faviconPath === 'string' ? parsed.faviconPath : null
+    return name !== null && /^[0-9a-f]{64}\.(?:png|ico)$/.test(name) ? name : null
+  } catch {
+    return null
+  }
+}
+
 // ---------------------------------------------------------------------------
 // verify
 
@@ -210,6 +238,11 @@ if (VERIFY_ONLY) {
     // re-saved into a consistent state at all.
     const wallpapers = manifestWallpapers(manifest)
     const wallpaperMissing = wallpapers.filter((w) => !existsSync(join(WALLPAPER_POOL, w.path)))
+    // The branding favicon, if the snapshot claims one: a manifest naming a
+    // favicon the pool has lost restores to the bundle icon, a soft loss but a
+    // snapshot that no longer holds what it says it holds.
+    const brandingFavicon = manifest.branding && manifest.branding.favicon ? [manifest.branding.favicon] : []
+    const brandingMissing = brandingFavicon.filter((f) => !existsSync(join(BRANDING_POOL, f)))
     // And the database has to still OPEN, which a digest match cannot tell you
     // if the digest was recorded from an already-broken file.
     let integrity = 'unopened'
@@ -222,12 +255,14 @@ if (VERIFY_ONLY) {
         integrity = `open failed: ${error?.code ?? error?.message ?? 'unknown'}`
       }
     }
-    const ok = digestOk && missing.length === 0 && wallpaperMissing.length === 0 && integrity === 'ok'
+    const ok = digestOk && missing.length === 0 && wallpaperMissing.length === 0
+      && brandingMissing.length === 0 && integrity === 'ok'
     if (!ok) bad += 1
     process.stdout.write(
       `  ${name}  ${ok ? 'OK  ' : 'BAD '} db=${digestOk ? 'match' : 'MISMATCH'} ` +
         `integrity=${integrity} media=${manifest.media.length - missing.length}/${manifest.media.length} ` +
-        `wallpaper=${wallpapers.length - wallpaperMissing.length}/${wallpapers.length}\n`,
+        `wallpaper=${wallpapers.length - wallpaperMissing.length}/${wallpapers.length}` +
+        `${brandingFavicon.length ? ` branding=${brandingFavicon.length - brandingMissing.length}/${brandingFavicon.length}` : ''}\n`,
     )
   }
   log(`${names.length} snapshots, ${bad} bad`)
@@ -296,13 +331,30 @@ if (RESTORE !== null) {
     wallpapersRestored += 1
   }
 
+  // branding.json (per-snapshot) and its favicon (pooled). Absent branding is
+  // fine — the site falls back to the bundle defaults, as a fresh deploy does.
+  // The directory is created unconditionally so the favicon upload path has it.
+  mkdirSync(join(RESTORE_INTO, 'branding'), { recursive: true })
+  const brandingFaviconAbsent = []
+  if (manifest.branding) {
+    const brandingSrc = join(from, 'branding.json')
+    if (existsSync(brandingSrc)) copyFileSync(brandingSrc, join(RESTORE_INTO, 'branding.json'))
+    const favicon = manifest.branding.favicon
+    if (favicon) {
+      const src = join(BRANDING_POOL, favicon)
+      if (existsSync(src)) copyFileSync(src, join(RESTORE_INTO, 'branding', favicon))
+      else brandingFaviconAbsent.push(favicon)
+    }
+  }
+
   // incoming/ is deliberately absent from the snapshot; the directory is created
   // so the API does not have to on its first write.
   mkdirSync(join(RESTORE_INTO, 'incoming'), { recursive: true })
 
   log(
     `restored ${RESTORE} into ${RESTORE_INTO}: joi.db + ${restored}/${manifest.media.length} blobs + ` +
-      `${wallpapersRestored}/${wallpapers.length} wallpaper(s)`,
+      `${wallpapersRestored}/${wallpapers.length} wallpaper(s)` +
+      `${manifest.branding ? ' + branding' : ''}`,
   )
   if (absent.length > 0) {
     process.stderr.write(
@@ -318,6 +370,15 @@ if (RESTORE !== null) {
       `backup: ${wallpapersAbsent.length} wallpaper(s) named by the manifest are not in the pool — a ` +
         'themes row pointing at one cannot be re-saved (wallpaper_missing); clear the wallpaper or ' +
         'upload it again:\n' + wallpapersAbsent.map((p) => `  ${p}\n`).join(''),
+    )
+  }
+  if (brandingFaviconAbsent.length > 0) {
+    // Softer than a missing wallpaper: the site simply falls back to the bundle
+    // icon, and a new favicon can be uploaded. Reported so the operator is not
+    // surprised the custom icon is gone.
+    process.stderr.write(
+      `backup: the branding favicon (${brandingFaviconAbsent.join(', ')}) named by the manifest is not ` +
+        'in the pool; the restored site shows the built-in icon until a new one is uploaded.\n',
     )
   }
   log('catalog.json is NOT restored: it is derived. Point the API at this directory and publish once.')
@@ -358,10 +419,16 @@ const counts = {}
 for (const table of ['groups', 'clips', 'media', 'submitters', 'batches', 'batch_items', 'audit_log', 'themes']) {
   counts[table] = source.prepare(`SELECT count(*) AS n FROM ${table}`).get().n
 }
-// Every blob the database references. NOT everything in mediaDir: a file with no
-// row is either mid-upload or already collectable, and a backup is not the place
-// to resurrect either.
-const referenced = source.prepare('SELECT sha256, ext, storage_path, bytes FROM media ORDER BY sha256').all()
+// Every blob the database references AND still holds on the volume. NOT
+// everything in mediaDir: a file with no row is either mid-upload or already
+// collectable, and a backup is not the place to resurrect either. And NOT a
+// reclaimed blob (collected_at set, STORY-077): its row is backed up with the
+// database, but the media GC removed its file ON PURPOSE, so its absence is
+// expected — counting it here would fill missingFromVolume below, the signal
+// reserved for a file the volume LOST, with files nobody lost.
+const referenced = source
+  .prepare('SELECT sha256, ext, storage_path, bytes FROM media WHERE collected_at IS NULL ORDER BY sha256')
+  .all()
 // Every wallpaper any themes row names, active or not. DISTINCT because two rows
 // may share a picture (the filename is its sha256), and not `WHERE is_active = 1`
 // because deactivated rows are the rollback path and a rollback that lands on a
@@ -427,11 +494,36 @@ for (const path of wallpapersReferenced) {
 // --- the manifest ----------------------------------------------------------
 // Written LAST. A snapshot with no manifest is one that was interrupted, and
 // both the verifier and the pruner treat it as unusable rather than as empty.
-// v2 because the manifest now carries a `wallpaper` list. v1 snapshots stay
-// readable — manifestWallpapers() reads their silence as "no wallpapers", which
-// is exactly what they hold — so bumping this costs no old backup.
+// --- branding (STORY-068) --------------------------------------------------
+// Authored, non-derived state with no database row, so it must be captured here
+// or a disaster restore loses it silently and there is nowhere to regenerate it
+// from. branding.json rides per-snapshot beside joi.db; its favicon pools like a
+// wallpaper. A referenced favicon the volume has lost is reported, not fatal —
+// the restored site falls back to the bundle icon, which is a soft loss.
+let branding = null
+const brandingMissingFavicon = []
+if (existsSync(brandingPaths.brandingFile)) {
+  copyFileSync(brandingPaths.brandingFile, join(target, 'branding.json'))
+  const favicon = faviconNameFrom(readFileSync(brandingPaths.brandingFile))
+  if (favicon !== null) {
+    const from = join(brandingPaths.faviconDir, favicon)
+    if (existsSync(from)) {
+      mkdirSync(BRANDING_POOL, { recursive: true })
+      const to = join(BRANDING_POOL, favicon)
+      if (!(existsSync(to) && statSync(to).size === statSync(from).size)) copyFileSync(from, to)
+    } else {
+      brandingMissingFavicon.push(favicon)
+    }
+  }
+  branding = { favicon }
+}
+
+// v3 because the manifest now carries `branding` too. Older snapshots stay
+// readable — a missing `branding` key reads as "no branding" and
+// manifestWallpapers() reads a missing `wallpaper` as "no wallpapers", each of
+// which is exactly what those snapshots held — so bumping this costs no backup.
 const manifest = {
-  schemaVersion: 'joi-button.backup.v2',
+  schemaVersion: 'joi-button.backup.v3',
   takenAt: now,
   database: {
     file: 'joi.db',
@@ -461,6 +553,12 @@ const manifest = {
   // Separate from missingFromVolume because it is a different repair: a media
   // blob is gone for good, a wallpaper the owner still has can be re-uploaded.
   wallpapersMissingFromVolume,
+  // Site branding (STORY-068): authored volume state with no database row. null
+  // when nothing was set; { favicon } names the pooled icon (or a null favicon
+  // for text-only branding). brandingMissingFavicon is the wallpaper story again
+  // — a branding.json naming a favicon the volume has lost.
+  branding,
+  brandingMissingFavicon,
 }
 writeFileSync(join(target, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`)
 

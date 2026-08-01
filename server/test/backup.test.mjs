@@ -353,6 +353,83 @@ test('media and the database come back exactly as they did before', (t) => {
   assert.equal(restoredDb.prepare('SELECT count(*) n FROM media').get().n, 2)
 })
 
+test('a reclaimed blob (collected_at set, file gone on purpose) is not read as corruption', (t) => {
+  const { dir, db } = volume(t)
+  const present = mediaOnVolume(dir, db, Buffer.from('kept blob'))
+  // A blob the media GC reclaimed (STORY-077): row present, collected_at set, its
+  // file removed on purpose. It must NOT look like a file the volume lost.
+  const gone = Buffer.from('reclaimed blob')
+  const goneSha = createHash('sha256').update(gone).digest('hex')
+  db.prepare(
+    `INSERT INTO media (sha256, ext, content_type, bytes, duration_seconds, uploaded_at, collected_at)
+     VALUES (?, 'mp3', 'audio/mpeg', ?, 1.5, '2026-01-01T00:00:00Z', '2026-02-01T00:00:00Z')`,
+  ).run(goneSha, gone.length)
+  db.close()
+
+  const backupDir = tempDir(t, 'joi-backup-out-')
+  const taken = run(dir, backupDir)
+  assert.equal(taken.status, 0, taken.all)
+  // The corruption warning must stay meaningful: an intentional absence does not
+  // trip it, and only the present blob is pooled.
+  assert.doesNotMatch(taken.stderr, /not on the volume/)
+  const manifest = manifestOf(backupDir, onlySnapshot(backupDir))
+  assert.deepEqual(manifest.media.map((m) => m.path), [present])
+  assert.deepEqual(manifest.missingFromVolume, [])
+  // Both rows still ride along in the database dump — reclamation removes the
+  // file, never the row.
+  assert.equal(manifest.database.counts.media, 2)
+})
+
+test('branding.json and its favicon round-trip through take and restore', (t) => {
+  const { dir, db } = volume(t)
+  db.close()
+  // Written into DATA_DIR exactly as lib/branding.mjs does: branding.json at the
+  // root, the favicon content-addressed under branding/. This is authored state
+  // with NO database row, so only the backup can carry it across a disaster.
+  const faviconBytes = Buffer.from('a tiny favicon')
+  const faviconName = `${createHash('sha256').update(faviconBytes).digest('hex')}.png`
+  writeFileSync(
+    join(dir, 'branding.json'),
+    JSON.stringify({ navTitle: { 'zh-CN': '轴伊按钮' }, channel: { href: 'https://example.test' }, faviconPath: faviconName }),
+  )
+  mkdirSync(join(dir, 'branding'), { recursive: true })
+  writeFileSync(join(dir, 'branding', faviconName), faviconBytes)
+
+  const backupDir = tempDir(t, 'joi-backup-out-')
+  const taken = run(dir, backupDir)
+  assert.equal(taken.status, 0, taken.all)
+  const stamp = onlySnapshot(backupDir)
+  const manifest = manifestOf(backupDir, stamp)
+  assert.deepEqual(manifest.branding, { favicon: faviconName })
+  assert.deepEqual(manifest.brandingMissingFavicon, [])
+
+  const into = tempDir(t, 'joi-backup-restore-')
+  rmSync(into, { recursive: true, force: true })
+  const restored = run(dir, backupDir, ['--restore', stamp, '--into', into])
+  assert.equal(restored.status, 0, restored.all)
+  // Both come back byte-identical, so the restored site keeps its identity.
+  assert.deepEqual(readFileSync(join(into, 'branding.json')), readFileSync(join(dir, 'branding.json')))
+  assert.deepEqual(readFileSync(join(into, 'branding', faviconName)), faviconBytes)
+  // And --verify holds the snapshot to it.
+  assert.equal(run(dir, backupDir, ['--verify']).status, 0)
+})
+
+test('a branding favicon the volume has lost is reported, and does not stop the backup', (t) => {
+  const { dir, db } = volume(t)
+  db.close()
+  // branding.json names a favicon whose file is gone — the wallpaper story, one
+  // notch softer: the site falls back to the bundle icon rather than breaking.
+  const faviconName = `${'a'.repeat(64)}.png`
+  writeFileSync(join(dir, 'branding.json'), JSON.stringify({ faviconPath: faviconName }))
+
+  const backupDir = tempDir(t, 'joi-backup-out-')
+  const taken = run(dir, backupDir)
+  assert.equal(taken.status, 0, taken.all)
+  const manifest = manifestOf(backupDir, onlySnapshot(backupDir))
+  assert.deepEqual(manifest.branding, { favicon: faviconName })
+  assert.deepEqual(manifest.brandingMissingFavicon, [faviconName])
+})
+
 test('pruning a snapshot collects the wallpapers no surviving manifest names', async (t) => {
   const { dir, db } = volume(t)
   const options = { themeCssFile: join(dir, 'theme.css'), wallpaperDir: join(dir, 'wallpaper') }

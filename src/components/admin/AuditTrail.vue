@@ -22,7 +22,31 @@
                 <span class="adm-label">{{ $t("admin.audit.filterSubject") }}</span>
                 <input type="text" class="adm-input adm-mono" v-model="subjectId" @change="reload">
             </label>
+            <label>
+                <span class="adm-label">{{ $t("admin.audit.filterActor") }}</span>
+                <!-- The name filter matches the display name recorded on the entry.
+                     It is disabled while a specific person is pinned by open_id
+                     (clicking a "who" cell), because the two would fight over the
+                     same column. -->
+                <input type="text" class="adm-input" v-model="actorName" @change="reload"
+                       :disabled="actorOpenId !== ''">
+            </label>
+            <label>
+                <span class="adm-label">{{ $t("admin.audit.filterKind") }}</span>
+                <select class="adm-select" v-model="actorKind" @change="reload">
+                    <option value="">{{ $t("admin.audit.anyKind") }}</option>
+                    <option v-for="k in ACTOR_KINDS" :key="k" :value="k">{{ $t("admin.audit.kind." + k) }}</option>
+                </select>
+            </label>
         </div>
+
+        <!-- When a specific person is pinned by open_id, say so and offer to
+             clear it — the open_id is not something a reader keeps in their head. -->
+        <p v-if="actorOpenId" class="adm-note">
+            {{ $t("admin.audit.filteringByActor", { who: actorFilterLabel }) }}
+            <span class="adm-mono adm-sub">{{ actorOpenId }}</span>
+            <button type="button" class="adm-btn-link" @click="clearActorFilter">{{ $t("admin.audit.clearActor") }}</button>
+        </p>
 
         <p v-if="callError" class="adm-note adm-note-bad">{{ callError }}</p>
         <p v-if="!busy && entries.length === 0" class="adm-empty">{{ $t("admin.audit.empty") }}</p>
@@ -42,7 +66,15 @@
                     <tr v-for="entry in entries" :key="entry.id">
                         <td class="adm-num">{{ entry.occurredAt }}</td>
                         <td class="adm-wrap">
-                            {{ entry.actorDisplayName }}
+                            <!-- The name is a button: one click pins this exact
+                                 person by their open_id, which is more precise
+                                 than the name filter when two people share a name.
+                                 A system actor has no open_id and stays plain. -->
+                            <button type="button" class="adm-btn-link" v-if="entry.actorOpenId"
+                                    @click="filterByActor(entry.actorOpenId, entry.actorDisplayName)">
+                                {{ entry.actorDisplayName }}
+                            </button>
+                            <span v-else>{{ entry.actorDisplayName }}</span>
                             <div class="adm-sub adm-mono">{{ entry.actorKind }}</div>
                         </td>
                         <td>
@@ -109,28 +141,67 @@ import Component from 'vue-class-component'
 const VERBS = [
     'admin.item.approve',
     'admin.item.reject',
+    'admin.item.revise',
     'admin.clip.edit',
-    'admin.group.create',
     'admin.clip.publish',
+    'admin.clip.retire',
+    'admin.clip.restore',
+    'admin.group.create',
     'admin.catalog.write',
+    'admin.media.collect',
+    'admin.branding.write',
+    'admin.branding.favicon',
+    'admin.theme.save',
+    'admin.theme.deactivate',
+    'admin.theme.wallpaper',
+    'admin.invite.confirm',
+    'admin.revoke',
     'admin.refused',
 ]
 
 const PAGE_SIZE = 50
+
+/**
+ * The actor kinds audit_log's CHECK constraint permits. A closed set the server
+ * validates too — an unknown kind is refused there — so this is a convenience
+ * list, not the authority.
+ */
+const ACTOR_KINDS = ['owner', 'submitter', 'system']
 
 @Component({
     inject: ['adminApi'],
 })
 class AuditTrail extends Vue {
     VERBS = VERBS
+    ACTOR_KINDS = ACTOR_KINDS
     entries = []
     nextCursor = null
     busy = false
     callError = ''
     verb = ''
     subjectId = ''
+    // Filter by WHO. `actorName` is a contains match on the recorded display
+    // name; `actorOpenId` pins one exact person (set by clicking a name); they
+    // are mutually exclusive and open_id wins. `actorKind` narrows to a role.
+    actorName = ''
+    actorOpenId = ''
+    actorKind = ''
+    actorFilterLabel = ''
 
     created() {
+        this.reload()
+    }
+
+    filterByActor(openId, displayName) {
+        this.actorOpenId = openId
+        this.actorFilterLabel = displayName || openId
+        this.actorName = ''
+        this.reload()
+    }
+
+    clearActorFilter() {
+        this.actorOpenId = ''
+        this.actorFilterLabel = ''
         this.reload()
     }
 
@@ -150,6 +221,11 @@ class AuditTrail extends Vue {
         const query = ['limit=' + PAGE_SIZE]
         if (this.verb !== '') query.push('verb=' + encodeURIComponent(this.verb))
         if (this.subjectId.trim() !== '') query.push('subjectId=' + encodeURIComponent(this.subjectId.trim()))
+        // open_id wins over name — a pinned person is more specific than a name
+        // match, and sending both would filter on both columns at once.
+        if (this.actorOpenId !== '') query.push('actorOpenId=' + encodeURIComponent(this.actorOpenId))
+        else if (this.actorName.trim() !== '') query.push('actorName=' + encodeURIComponent(this.actorName.trim()))
+        if (this.actorKind !== '') query.push('actorKind=' + encodeURIComponent(this.actorKind))
         if (cursor) query.push('cursor=' + encodeURIComponent(cursor))
         try {
             const response = await this.adminApi.get('/api/admin/audit?' + query.join('&'))

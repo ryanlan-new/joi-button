@@ -10,12 +10,12 @@
                         <span class="icon-bar"></span>
                         <span class="icon-bar"></span>
                     </button>
-                    <router-link class="navbar-brand" to="/">{{ $t("info.title") }}</router-link>
+                    <router-link class="navbar-brand" to="/"><img :src="brandIconUrl" height="18" alt="" style="vertical-align:middle"/>&nbsp;{{ navTitle }}</router-link>
                 </div>
 
                 <div class="collapse navbar-collapse" id="bs-navbar-collapse">
                     <ul class="nav navbar-nav">
-                        <li><a href="https://space.bilibili.com/61639371" target="_blank"><img src="resources/bili_favicon.ico" height="18" style="vertical-align:middle"/>&nbsp;&nbsp;{{$t("info.yt_channel")}}</a></li>
+                        <li><a :href="channelHref" target="_blank" rel="noopener"><img src="resources/bili_favicon.ico" height="18" style="vertical-align:middle"/>&nbsp;&nbsp;{{ channelLabel }}</a></li>
                     </ul>
                     <!-- Order within this group, left to right: submit, account,
                          language.
@@ -480,9 +480,35 @@ class App extends Vue {
     authState = 'unknown';
     submitter = null;
     loggingOut = false;
+    // Editable site branding (STORY-068), or null until /branding.json answers —
+    // and it stays null when that file is absent (a deploy with nothing edited),
+    // which is why every reader below falls back to a bundled default.
+    branding = null;
 
     get apiConfigured(){
         return API_ENABLED;
+    }
+    // The navbar title, its icon, and the channel link. Each prefers the edited
+    // value for the current language and falls back to the string compiled into
+    // the bundle, so a site with no branding.json renders exactly as it shipped.
+    get navTitle(){
+        const v = this.branding && this.branding.navTitle && this.branding.navTitle[this.currentLang];
+        return (typeof v === 'string' && v !== '') ? v : this.$t('info.title');
+    }
+    get channelLabel(){
+        const c = this.branding && this.branding.channel;
+        const v = c && c.label && c.label[this.currentLang];
+        return (typeof v === 'string' && v !== '') ? v : this.$t('info.yt_channel');
+    }
+    get channelHref(){
+        const c = this.branding && this.branding.channel;
+        return (c && typeof c.href === 'string' && c.href !== '') ? c.href : 'https://space.bilibili.com/61639371';
+    }
+    get brandIconUrl(){
+        // The little mark before the title is the site favicon: the custom one
+        // when set, otherwise the icon the bundle already ships.
+        if (this.branding && this.branding.faviconPath) return '/branding/' + this.branding.faviconPath;
+        return 'resources/bili_favicon.ico';
     }
     get currentLang(){
         return this.$i18n.locale;
@@ -508,11 +534,51 @@ class App extends Vue {
         // undefined. The player's handlers below are assigned for the same
         // reason — none of this wants to be reactive.
         this._identityTicket = 0;
+        // The <title> the bundle shipped (index.html's trilingual default),
+        // captured before any branding is applied. applyBranding restores it when
+        // the current language has no custom docTitle, so switching to a language
+        // with an empty docTitle cannot strand the previous language's title.
+        this._defaultDocTitle = (typeof document !== 'undefined') ? document.title : '';
         if (API_ENABLED) this.refreshIdentity();
+        this.loadBranding();
     }
     chlang(v){
         this.$i18n.locale = v;
         localStorage.setItem("lang", v);
+        // navTitle/channelLabel are computed and re-render on their own; the
+        // document <title> is not reactive, so re-apply it for the new language.
+        this.applyBranding();
+    }
+    async loadBranding(){
+        // Served by nginx at a fixed root path (location = /branding.json). A 404
+        // is the normal "nothing edited yet" answer and simply leaves the bundle
+        // defaults in place; a parse or network failure does the same.
+        try {
+            const res = await fetch('/branding.json', { credentials: 'same-origin' });
+            if (!res.ok) return;
+            this.branding = await res.json();
+            this.applyBranding();
+        } catch (ignored) {
+            // keep the compiled-in defaults
+        }
+    }
+    applyBranding(){
+        if (typeof document === 'undefined') return;
+        const b = this.branding;
+        if (!b) return;
+        const dt = b.docTitle && b.docTitle[this.currentLang];
+        // Empty for this language means "use the bundle default", so put the
+        // captured default back rather than leaving whatever a previous language
+        // set — otherwise zh→en with only zh filled keeps the zh title in the tab.
+        if (typeof dt === 'string' && dt !== '') document.title = dt;
+        else if (this._defaultDocTitle) document.title = this._defaultDocTitle;
+        if (b.faviconPath) {
+            const href = '/branding/' + b.faviconPath;
+            const links = document.querySelectorAll(
+                'link[rel~="icon"], link[rel="shortcut icon"], link[rel="apple-touch-icon"], link[rel="mask-icon"]',
+            );
+            links.forEach((el) => el.setAttribute('href', href));
+        }
     }
     mounted(){
         // A tiny protocol rather than a shared ref: pages decide WHAT to play and

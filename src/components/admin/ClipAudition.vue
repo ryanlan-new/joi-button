@@ -104,11 +104,18 @@
 
     ATTRIBUTION. `player:ended`'s payload describes the media element, not the
     clip, so an `ended` still has to be matched to a clip by knowing which one is
-    loaded. Two things keep that honest: this component is keyed by item id and
-    destroyed when the desk moves on, and beforeDestroy pauses the element — a
-    paused element never fires `ended`, so an in-flight play can never be
-    credited to the next item.
+    loaded. Three things keep that honest. beforeDestroy pauses the element — a
+    paused element never fires `ended`, so an in-flight play can never be credited
+    to the next item. Only an audition with playback in flight adopts an `ended`
+    (adoptsEnded). And because the recycle bin (STORY-076) can leave a SECOND
+    audition mounted — the queue's survives under v-show while the bin's mounts,
+    so "destroyed when the desk moves on" is no longer guaranteed — each play is
+    tagged with an owner id and an audition stands down the instant another owner
+    seizes the shared player (standsDownFor). It is therefore out of the
+    playing/stalled phase before the other clip's `ended` arrives, and cannot
+    credit that clip to its own item.
 -->
+
 
 <style lang="scss">
 .adm-root .adm-audition .adm-volume { display: flex; flex-direction: column; }
@@ -137,7 +144,14 @@ import Component from 'vue-class-component'
 
 // The decision this component gates on, extracted so it can be tested:
 // test/audition-gate.test.mjs drives it in both directions.
-import { judgeEnded } from './audition-gate.mjs'
+import { adoptsEnded, judgeEnded, standsDownFor } from './audition-gate.mjs'
+
+// A process-unique id per live audition. The one shared player element carries no
+// idea of which audition started it, so `player:play`/`player:ended` are tagged
+// with this and each instance can tell its own playback from another's. Needed
+// because two auditions can be mounted at once (the queue's survives under
+// v-show while the recycle bin's mounts), so the DOM no longer guarantees one.
+let auditionSeq = 0
 
 /**
  * How long past the file's own length to wait before saying so.
@@ -197,11 +211,12 @@ class ClipAudition extends Vue {
     }
 
     mounted() {
+        this._auditionId = ++auditionSeq
         this.onEnded = (played) => {
             // Only credit an `ended` to a clip we are actually playing. An idle
             // component has nothing in flight and must not adopt somebody
             // else's event.
-            if (this.phase !== 'playing' && this.phase !== 'stalled') return
+            if (!adoptsEnded(this.phase)) return
             this.stopTicker()
 
             const verdict = judgeEnded(played, this.durationSeconds)
@@ -217,11 +232,24 @@ class ClipAudition extends Vue {
             this.phase = 'heard'
             this.$emit('heard', this.itemId)
         }
+        // Another audition seizing the shared player means our playback is gone —
+        // one element, one playhead. Stand down so we never adopt the new clip's
+        // `ended` and credit it to OUR item (the cross-desk contamination the
+        // recycle bin opened up: a queue desk left playing under v-show while the
+        // bin plays a longer clip would otherwise be marked heard).
+        this.onOtherPlay = (payload) => {
+            if (!standsDownFor(this.phase, payload && payload.owner, this._auditionId)) return
+            this.stopTicker()
+            this.elapsedMs = 0
+            this.phase = 'idle'
+        }
         this.$gConst.globalbus.$on('player:ended', this.onEnded)
+        this.$gConst.globalbus.$on('player:play', this.onOtherPlay)
     }
 
     beforeDestroy() {
         this.$gConst.globalbus.$off('player:ended', this.onEnded)
+        this.$gConst.globalbus.$off('player:play', this.onOtherPlay)
         this.stopTicker()
         // Leaving the desk must not leave audio running under the next page,
         // and a paused element cannot fire `ended` into the next item's gate.
@@ -236,6 +264,9 @@ class ClipAudition extends Vue {
         this.$gConst.globalbus.$emit('player:play', {
             src: this.absoluteSrc(),
             volume: this.volume / 100,
+            // Tags the playback so any OTHER live audition stands down and does not
+            // later adopt this clip's `ended`. App.vue ignores the extra field.
+            owner: this._auditionId,
         })
         this.elapsedMs = 0
         this.phase = 'playing'

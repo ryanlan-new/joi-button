@@ -10,7 +10,7 @@
 import { readFileSync } from 'node:fs';
 
 /** Version this code writes.  Bump on every schema change. */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 /**
  * Oldest catalogue parser that can still read a document produced at
@@ -121,6 +121,18 @@ export const POST_BASELINE_STEPS = [
               CHECK ((state = 'confirmed') = (confirmed_at IS NOT NULL))
           ) STRICT;
           CREATE INDEX IF NOT EXISTS admin_invites_pending ON admin_invites (state, expires_at);`,
+    },
+    {
+        version: 5,
+        // Media reclamation (JOI-BUTTON-STORY-077).  collected_at marks a blob
+        // whose bytes the sweep has removed from the PVC while keeping its row —
+        // batch_items and clips reference media ON DELETE RESTRICT, so the row
+        // cannot go.  NULL = present.  The CHECK is repeated from the baseline
+        // verbatim; SQLite enforces an ADD COLUMN check on new writes only, which
+        // is fine — the column is born NULL everywhere.  MIN_COMPATIBLE stays 1:
+        // a catalogue reader never looks at media.collected_at.
+        sql: `ALTER TABLE media ADD COLUMN collected_at TEXT
+                CHECK (collected_at IS NULL OR collected_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z');`,
     },
 ];
 

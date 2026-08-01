@@ -19,6 +19,11 @@ on:
         type: string
   push:
     branches: [ "main" ]
+    # A version tag (vMAJOR.MINOR.PATCH) publishes an image tagged with that
+    # version AND triggers the deploy-to-prod job below. Pushing to main only
+    # builds/publishes; it never deploys. So `git tag v1.2.3 && git push --tags`
+    # is the single, deliberate gesture that ships to production.
+    tags: [ "v*.*.*" ]
 
 # Least privilege: read the source, write packages. Nothing else.
 # `packages: write` scopes the built-in GITHUB_TOKEN for GHCR; no PAT secret is
@@ -107,6 +112,9 @@ jobs:
             if [ -n "${INPUT_TAG:-}" ]; then
               echo "${image}:${INPUT_TAG}"
             fi
+            # On a version tag push, publish the version (vX.Y.Z) as an image tag
+            # so deploy-to-prod can pin the exact version it ships.
+            case "$REF" in refs/tags/*) echo "${image}:${REF#refs/tags/}" ;; esac
             echo "TAGS_EOF"
             # The API image carries the SAME tag scheme as web. One working tree,
             # one tag: deploy-k3s.sh pins both images from a single TAG, so "which
@@ -121,6 +129,7 @@ jobs:
             if [ -n "${INPUT_TAG:-}" ]; then
               echo "${api_image}:${INPUT_TAG}"
             fi
+            case "$REF" in refs/tags/*) echo "${api_image}:${REF#refs/tags/}" ;; esac
             echo "API_TAGS_EOF"
           } >> "$GITHUB_OUTPUT"
 
@@ -262,3 +271,64 @@ jobs:
             printf '%s\n' "$TAGS" | sed 's/^/- `/; s/$/`/'
             printf '%s\n' "$API_TAGS" | sed 's/^/- `/; s/$/`/'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # Ship a version tag to production.
+  #
+  # Runs ONLY on a `v*.*.*` tag push, and ONLY after build-and-push has published
+  # both images for that tag. A push to main builds images but never deploys —
+  # tags deploy them. It ssh's to the node, checks out the tag (so the deploy
+  # scripts match the version), and applies from the registry pinned to this tag.
+  #
+  # SECRETS IT NEEDS (repo Settings → Secrets and variables → Actions):
+  #   PROD_SSH_KEY      private key of a deploy keypair whose PUBLIC key is in the
+  #                     node's ~/.ssh/authorized_keys
+  #   PROD_SSH_HOST     the node's address
+  #   PROD_SSH_USER     the ssh user on the node
+  #   PROD_KNOWN_HOSTS  the node's host key (`ssh-keyscan -H <host>`); pins the
+  #                     server identity. If unset, the key is trusted on first use.
+  #
+  # THE NODE must let that user run kubectl NON-interactively (a sudo password
+  # prompt has nowhere to read from here): either passwordless sudo for k3s, or a
+  # readable kubeconfig plus `KUBECTL=kubectl` in deploy/deploy.env.
+  # ---------------------------------------------------------------------------
+  deploy-to-prod:
+    needs: build-and-push
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy ${{ github.ref_name }} to prod over ssh
+        env:
+          SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+          SSH_HOST: ${{ secrets.PROD_SSH_HOST }}
+          SSH_USER: ${{ secrets.PROD_SSH_USER }}
+          KNOWN_HOSTS: ${{ secrets.PROD_KNOWN_HOSTS }}
+          DEPLOY_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          # DEPLOY_TAG lands in a remote shell command below, so accept only a
+          # plain vMAJOR.MINOR.PATCH — nothing that could carry a shell metachar.
+          case "$DEPLOY_TAG" in
+            v[0-9]*.[0-9]*.[0-9]*) : ;;
+            *) echo "::error::refusing to deploy non-version tag '$DEPLOY_TAG'"; exit 1 ;;
+          esac
+          : "${SSH_KEY:?PROD_SSH_KEY secret is not set}"
+          : "${SSH_HOST:?PROD_SSH_HOST secret is not set}"
+          : "${SSH_USER:?PROD_SSH_USER secret is not set}"
+
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+          if [ -n "${KNOWN_HOSTS:-}" ]; then
+            printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+            host_check="-o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
+          else
+            host_check="-o StrictHostKeyChecking=accept-new"
+          fi
+
+          echo "Deploying ${DEPLOY_TAG} to ${SSH_HOST} ..."
+          # DEPLOY_TAG is validated above; it is expanded here (client side) on purpose.
+          # shellcheck disable=SC2029,SC2086
+          ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes $host_check "${SSH_USER}@${SSH_HOST}" \
+            "set -e; cd ~/joi-button; git fetch --quiet --tags --force origin; git -c advice.detachedHead=false checkout --quiet --force 'refs/tags/${DEPLOY_TAG}'; IMAGE_SOURCE=registry TAG='${DEPLOY_TAG}' bash deploy/deploy-k3s.sh apply"
+          echo "Deployed ${DEPLOY_TAG}."

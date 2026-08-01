@@ -26,14 +26,19 @@
                 </div>
             </div>
             <div class="cate-body">
-                <span>{{ voice.name ? $t("action.playing") + $t("voice." + voice.name ) : $t("action.noplay") }}</span>
+                <span>{{ voice.id ? $t("action.playing") + $t("voice." + voice.id ) : $t("action.noplay") }}</span>
             </div>
         </div>
-        <div v-for="category in voices" v-bind:key="category.categoryName">
-            <div class="cate-header">{{ $t("voicecategory." + category.categoryName) }}</div>
+        <!-- Keyed and looked up on `id`, never on the caption. An id is the
+             server's immutable primary key; the caption is submitter-authored
+             text that changes, is different in three languages, and is not
+             unique. Keying on it made Vue reuse the wrong button when two clips
+             happened to be named the same thing. -->
+        <div v-for="category in voices" v-bind:key="category.id">
+            <div class="cate-header">{{ $t("voicecategory." + category.id) }}</div>
             <div class="cate-body">
-                <button class="btn btn-new" :class="{ 'is-playing': voice.name === voiceItem.name }" v-for="voiceItem in category.voiceList" v-bind:key="voiceItem.name" @click="play(voiceItem)">
-                    {{ $t("voice." + voiceItem.name )}}
+                <button class="btn btn-new" :class="{ 'is-playing': voice.id === clip.id }" v-for="clip in category.clips" v-bind:key="clip.id" @click="play(clip)">
+                    {{ $t("voice." + clip.id )}}
                 </button>
             </div>
         </div>
@@ -117,7 +122,12 @@
 <script>
 import Vue from 'vue'
 import Component from 'vue-class-component'
-import VoiceList from '../voices.json'
+// Not '../voices.json'. This page used to import that file directly, while
+// src/main.js imported it a second time to build the i18n messages — two owners
+// of one catalogue, which is survivable for a build-time constant and is not
+// survivable once the catalogue arrives over the network. src/catalog.mjs is the
+// single owner now; this page reads what it installed.
+import { catalog } from '../catalog.mjs'
 
 @Component({
     watch: {
@@ -127,7 +137,6 @@ import VoiceList from '../voices.json'
     }
 })
 class HomePage extends Vue {
-    voices = VoiceList.voices;
     autoCheck = false;
     overlapCheck = false;
     loopCheck = false;
@@ -135,6 +144,13 @@ class HomePage extends Vue {
     voice = {};
     currentVolume = 80;
 
+    // A computed and not a data property. `catalog.groups` is REPLACED when a
+    // document is installed, so a copy taken once at construction would keep
+    // rendering the array it was handed. vue-class-component turns a getter into
+    // a computed, so this tracks the replacement.
+    get voices() {
+        return catalog.groups;
+    }
     get currentAudioVolume() {
         return  this.currentVolume / 100
     }
@@ -149,8 +165,17 @@ class HomePage extends Vue {
         this.$gConst.globalbus.$off('player:ended', this.handleEnded);
     }
     play(item){
+        // `item.src` rather than "voices/" + item.path: where the audio lives is
+        // the catalogue's business (its mediaBaseUrl), and the published
+        // document is free to move it. This page no longer builds a URL.
         if (this.overlapCheck) {
-            let audio = new Audio("voices/" + item.path);
+            // The one media element this page still owns, and the only one the
+            // App.vue player protocol cannot express: overlap deliberately
+            // starts a clip WITHOUT stopping the last one, and the protocol has
+            // a single element behind it. Left exactly as it was — changing it
+            // means adding a verb to the bus in App.vue, which is not this
+            // change.
+            let audio = new Audio(item.src);
             audio.volume = this.currentAudioVolume;
             this.voice = item;
             audio.play()
@@ -159,7 +184,7 @@ class HomePage extends Vue {
             this.voice = item;
             this.currVoice = item;
             this.$gConst.globalbus.$emit('player:play', {
-                src: "voices/" + item.path,
+                src: item.src,
                 volume: this.currentAudioVolume,
             });
         }
@@ -178,8 +203,20 @@ class HomePage extends Vue {
         }
     }
     random() {
-        let tempList = this.voices[this._randomNum(0, this.voices.length - 1)];
-        this.play(tempList.voiceList[this._randomNum(0, tempList.voiceList.length - 1)]);
+        // Still two stages — pick a heading, then a clip under it — because that
+        // is what this button has always done, and it is what keeps a category
+        // of one as likely to be heard as a category of ten.
+        //
+        // What is new is that a group can be EMPTY: v_catalog_groups publishes
+        // every active group without joining clips, so a group whose clips are
+        // all still unpublished is part of the document and gets a heading. The
+        // old two-stage pick would have landed on it and played `undefined`.
+        let playable = this.voices.filter(category => category.clips.length > 0);
+        if (playable.length === 0) {
+            return;
+        }
+        let category = playable[this._randomNum(0, playable.length - 1)];
+        this.play(category.clips[this._randomNum(0, category.clips.length - 1)]);
     }
     autoPlay(){
         if (this.overlapCheck || this.loopCheck) {

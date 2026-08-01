@@ -5,7 +5,8 @@
   "scripts": {
     "serve": "vue-cli-service serve",
     "build": "vue-cli-service build",
-    "contrast": "node deploy/contrast-check.mjs"
+    "contrast": "node deploy/contrast-check.mjs",
+    "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
     "@vue/cli": "^5.0.8",

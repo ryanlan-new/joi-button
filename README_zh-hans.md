@@ -13,6 +13,7 @@
 ## 相关链接：
 
 * [Joi 的 Bilibili 频道](https://space.bilibili.com/61639371)
+* [项目技术与功能文档](docs/project-tech-and-function.md)
 
 ## 贡献
 

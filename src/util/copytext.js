@@ -46,11 +46,12 @@ export default function copyTextToClipboard(text) {
 
     let successful = false;
     try {
+        // The returned boolean is the whole report, and the caller renders it:
+        // execCommand answers false when the browser refuses to copy. The two
+        // console.log calls that used to be here failed the production no-console
+        // rule the moment this file stopped being dead code and got imported.
         successful = document.execCommand('copy');
-        let msg = successful ? 'successful' : 'unsuccessful';
-        console.log('Copying text command was ' + msg);
     } catch (err) {
-        console.log('Oops, unable to copy');
         successful = false;
     }
 

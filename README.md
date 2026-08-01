@@ -13,6 +13,7 @@ A Voice Button Website dedicated to VirtuaReal Liver Joi.
 ## Related Links:
 
 * [Joi's Bilibili channel](https://space.bilibili.com/61639371)
+* [Project technical and functional notes](docs/project-tech-and-function.md)
 
 ## Contributing
 

@@ -17,7 +17,79 @@
                     <ul class="nav navbar-nav">
                         <li><a href="https://space.bilibili.com/61639371" target="_blank"><img src="resources/bili_favicon.ico" height="18" style="vertical-align:middle"/>&nbsp;&nbsp;{{$t("info.yt_channel")}}</a></li>
                     </ul>
+                    <!-- Order within this group, left to right: submit, account,
+                         language.
+
+                         .navbar-right floats the whole <ul> to the right edge and
+                         the items inside it flow left to right, so the LAST item
+                         is the one pinned to the corner and the group grows
+                         LEFTWARDS. The language dropdown keeps that corner: it is
+                         the only control a non-Chinese visitor has to find, it has
+                         been there since the site existed, and a display name of
+                         unpredictable width must not be allowed to move it.
+                         Submit leads because it is the entry the page is
+                         advertising; the account control sits next to it because
+                         it is the state that decides what submit will do.
+
+                         Below 768px the same DOM order becomes top to bottom
+                         inside the hamburger, which pushes the language menu from
+                         row 2 of 2 to row 4 of 4. That is the cost of this
+                         ordering and it is paid knowingly, because measured at
+                         375x812 nothing moves out of reach: the open collapse is
+                         185px with both submenus shut, 270px with the account
+                         menu open and 285px with the language menu open, against
+                         the 340px max-height Bootstrap puts on a fixed-top
+                         collapse. Only the (unreachable) case of both submenus
+                         open at once hits the cap, and Bootstrap closes one when
+                         the other opens.
+                         The one place it does clip: Bootstrap drops that cap to
+                         200px at `max-device-width:480px and orientation:
+                         landscape`, so a small phone held sideways scrolls the
+                         open language menu. overflow-y is already auto there, so
+                         it scrolls rather than truncating. -->
                     <ul class="nav navbar-nav navbar-right">
+                        <!-- A v-if on a BUILD-TIME CONSTANT (src/api.mjs), not on
+                             a probe's answer. A build made with VUE_APP_API=off
+                             never renders a control that would need a server and
+                             never asks a server whether it exists. Every other
+                             build renders them: the flag defaults to on, because
+                             the one deployment this site has always has an API and
+                             a forgotten variable must not silently remove the way
+                             in. -->
+                        <template v-if="apiConfigured">
+                            <li><router-link to="/submit">{{ $t("nav.submit") }}</router-link></li>
+                            <!-- Nothing is rendered while `unknown` is in flight.
+                                 Showing "log in" first and swapping it for a name
+                                 a moment later tells a signed-in visitor they are
+                                 signed out, which is the one thing this control
+                                 exists to get right. -->
+                            <li v-if="authState === 'anonymous'">
+                                <!-- Today this is /submit as well, because the
+                                     verification wizard is the head of that page
+                                     and there is no standalone /login. They are
+                                     still two controls: one advertises the
+                                     feature, the other is for a returning
+                                     submitter who only wants their session back
+                                     and should not be told to "submit" anything.
+                                     The day /login exists, only this one moves. -->
+                                <router-link to="/submit">{{ $t("nav.login") }}</router-link>
+                            </li>
+                            <li v-else-if="authState === 'signed-in'" class="dropdown">
+                                <a href="javascript:;" class="dropdown-toggle" data-toggle="dropdown" role="button" aria-haspopup="true" aria-expanded="false">
+                                    <span class="sr-only">{{ $t("nav.account") }}</span>
+                                    <!-- A VALUE, never a key: the display name is
+                                         whatever the submitter is called in the
+                                         live room. -->
+                                    <span class="account-name" :title="submitter.displayName">{{ submitter.displayName }}</span>
+                                    <span class="caret"></span>
+                                </a>
+                                <ul class="dropdown-menu">
+                                    <li><router-link to="/my">{{ $t("nav.myClips") }}</router-link></li>
+                                    <li role="separator" class="divider"></li>
+                                    <li><button type="button" class="dropdown-action" :disabled="loggingOut" @click="logout">{{ $t("nav.logout") }}</button></li>
+                                </ul>
+                            </li>
+                        </template>
                         <li class="dropdown">
                             <a href="javascript:;" class="dropdown-toggle" data-toggle="dropdown" role="button" aria-haspopup="true" aria-expanded="false">{{$t("info.lang")}} <country-flag :country=changeFlag size='small'/> {{$t("lang." + currentLang)}} <span class="caret"></span></a>
                             <ul class="dropdown-menu">
@@ -45,7 +117,26 @@
         <footer class="footer">
             <div class="container-fluid footer-content">
                 <div class="pull-right">
-                    <div class="text-right"><a href="https://github.com/ryanlan-new/joi-button" target="_blank">{{$t("info.toGithub")}} <img src="https://img.shields.io/github/stars/monoai/luna-button.svg?style=social"/></a></div>
+                    <!-- This line replaced "participate in translation, add audio
+                         (also accept mp3 files by mail to <a personal address>),
+                         or make suggestions on Github". Three separate rulings
+                         retired it: submissions go through the database rather
+                         than a pull request, the community translation channel
+                         is dropped (translation stays manual and in-house), and
+                         a personal email address does not belong on a public
+                         page. What is left is the one thing the sentence was
+                         really for — telling a visitor with a clip where to
+                         put it — and it points at the page that now exists.
+
+                         Guarded by the same build-time constant as the navbar
+                         group: a VUE_APP_API=off build has no submit page, and
+                         inviting someone to a route that redirects home is
+                         worse than saying nothing. -->
+                    <div class="text-right" v-if="apiConfigured"><router-link to="/submit">{{$t("info.footerSubmit")}}</router-link></div>
+                    <!-- The badge counts stars on ryanlan-new/joi-button. It used
+                         to count monoai/luna-button — the upstream this was
+                         forked from — so the number shown was somebody else's. -->
+                    <div class="text-right"><a href="https://github.com/ryanlan-new/joi-button" target="_blank">{{$t("info.toGithub")}} <img src="https://img.shields.io/github/stars/ryanlan-new/joi-button.svg?style=social"/></a></div>
                     <div class="text-right">{{$t("info.notOfficial")}}</div>
                 </div>
                 <!--<div><p>Me testing out something</p></div>-->
@@ -142,6 +233,62 @@ body{
 .dropdown-menu > li > a:focus{
     color: var(--cocoa-700);
     background-color: var(--surface-alt);   /* 11.45:1 */
+}
+/* The account menu's one ACTION.
+   Logging out is not a destination, so it is a <button> rather than the
+   <a href="javascript:;"> the language items use: an anchor with no href is not
+   operable with Space, and it announces itself to a screen reader as a link to
+   somewhere. Bootstrap dresses `.dropdown-menu > li > a` and nothing else, so
+   the button is given the same metrics here instead of being made to look like a
+   menu item by accident. Colours are the ones already measured two rules up. */
+.dropdown-menu > li > .dropdown-action{
+    display: block;
+    width: 100%;
+    clear: both;
+    padding: 3px 20px;
+    font: inherit;
+    font-weight: normal;
+    line-height: 1.42857143;
+    text-align: left;
+    white-space: nowrap;
+    background: none;
+    border: 0;
+    color: var(--cocoa-700);                /* 12.49:1 on white */
+}
+.dropdown-menu > li > .dropdown-action:hover,
+.dropdown-menu > li > .dropdown-action:focus{
+    color: var(--cocoa-700);
+    background-color: var(--surface-alt);   /* 11.45:1 */
+}
+.dropdown-menu > li > .dropdown-action:focus-visible{
+    /* Inset, unlike every other focus ring on the site. This item is 100% of the
+       menu's width, so a ring at outline-offset:2px is drawn outside the panel
+       and clipped by it — the one place where the site's usual +2 would remove
+       the ring instead of separating it. 14.23:1 against the item's own fill,
+       13.05:1 against the hover fill — both computed with deploy/contrast-check's
+       own formula. Neither pair is IN that gate, because the gate reads a fixed
+       list; if the ring token ever moves, these two numbers move silently. */
+    outline: 3px solid var(--cocoa-900);
+    outline-offset: -3px;
+}
+/* A real attribute, so the control is genuinely inert while the request is in
+   flight rather than looking inert and still firing. */
+.dropdown-menu > li > .dropdown-action[disabled]{
+    opacity: .8;
+    cursor: default;
+}
+/* A display name is submitter-authored and can be any length. Clipping it keeps
+   a 40-character nickname from pushing the language menu off the right edge and
+   the brand off the left; the full string stays in the DOM, so a screen reader
+   still reads it and the title attribute still shows it. 12em is about twelve
+   CJK characters at the navbar's 14px. */
+.account-name{
+    display: inline-block;
+    max-width: 12em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: middle;
 }
 .navbar {
     min-height: 55px;
@@ -279,9 +426,29 @@ body{
 <script>
 import Vue from 'vue'
 import Component from 'vue-class-component'
+// Imported rather than left to vue.config.js's ProvidePlugin. The plugin does
+// supply a free `$`, but a free variable is invisible at the top of the file and
+// stops working the moment this component is read by anything that is not that
+// webpack config. Same module, same instance — main.js does `global.$ = $` from
+// this same package before it imports bootstrap, so the .collapse plugin is on
+// the object this name resolves to.
+import $ from 'jquery'
+import { API_ENABLED, apiUrl } from './api.mjs'
 import Modal from './components/modal.vue'
 import CountryFlag from 'vue-country-flag'
 //import fetchpost from './util/fetchpost'
+
+/**
+ * Where the API lives, and whether this build may reach it: src/api.mjs owns
+ * both, for the whole app.
+ *
+ * It used to be answered here AND in src/catalog.mjs, from the same environment
+ * variable, with two different readings of the empty string — so a deployment
+ * that followed catalog.mjs's written instruction got a live catalogue and no
+ * way to sign in. One predicate now, in one file, with the argument for a
+ * build-time constant (rather than a /health probe on every visit) written out
+ * there.
+ */
 
 @Component({
     components:{
@@ -290,6 +457,19 @@ import CountryFlag from 'vue-country-flag'
     }
 })
 class App extends Vue {
+    // 'unknown' until /api/me answers. It is a third state and not a default of
+    // 'anonymous', because "we have not asked yet" and "you are not signed in"
+    // are different facts and the bar must not render the second while it only
+    // knows the first. (The server draws the same distinction one level down:
+    // routes/public.mjs keeps `room-unreachable` separate from `waiting` so that
+    // our side being deaf is never shown as the visitor not having spoken.)
+    authState = 'unknown';
+    submitter = null;
+    loggingOut = false;
+
+    get apiConfigured(){
+        return API_ENABLED;
+    }
     get currentLang(){
         return this.$i18n.locale;
     }
@@ -308,6 +488,13 @@ class App extends Vue {
         //eslint-disable-next-line
         console.log("Um?");
         this.$i18n.locale = localStorage.getItem("lang") || this.$i18n.locale;
+        // Set on the instance rather than declared as a class field: Vue treats
+        // a leading underscore as reserved and will not proxy such a key from
+        // _data onto the component, so a field named this way is silently
+        // undefined. The player's handlers below are assigned for the same
+        // reason — none of this wants to be reactive.
+        this._identityTicket = 0;
+        if (API_ENABLED) this.refreshIdentity();
     }
     chlang(v){
         this.$i18n.locale = v;
@@ -333,6 +520,37 @@ class App extends Vue {
         bus.$on('player:volume', this._onVolume);
         // Kept for compatibility with the original 'play' event name.
         bus.$on('play', this._onPlay);
+
+        // The other half of the identity protocol, and the only thing another
+        // page has to know: after anything that changes the session — a
+        // verification that completed, a logout somewhere else — emit
+        // 'auth:changed'. The bar then RE-READS /api/me. It is deliberately not
+        // an event that carries the new identity: a page cannot hand this
+        // component a name the server would not confirm.
+        this._onAuthChanged = () => { if (API_ENABLED) this.refreshIdentity(); };
+        bus.$on('auth:changed', this._onAuthChanged);
+
+        // Two things that are not bugs today and both become bugs the moment a
+        // second route exists.
+        this._removeAfterEach = this.$router.afterEach((to, from) => {
+            // Below 768px every one of these controls is inside the collapse,
+            // and nothing in Bootstrap closes it when the page underneath
+            // changes: you tap "submit", the route swaps, and the menu is still
+            // hanging open over a page you cannot see. hide() returns early
+            // when the element does not carry `in`, so at desktop widths — and
+            // on the very first navigation, before the plugin has ever been
+            // instantiated — this costs nothing and cannot toggle it open.
+            $('#bs-navbar-collapse').collapse('hide');
+            // Nothing here scrolls. Landing mid-page after a navigation is real,
+            // but the fix is scrollBehavior in router.js, which is the only place
+            // that receives `savedPosition` and can therefore tell a link click
+            // from a Back button; doing it here would clobber the browser's own
+            // restore on every Back. Recorded for whoever writes it: a scroll to
+            // a specific element must target `el.offsetTop - 80`, because body
+            // carries padding-top:70px against a 55px fixed bar, so a naive
+            // scroll to offsetTop puts the target under the navbar.
+            if (API_ENABLED && to.path !== from.path) this.refreshIdentity();
+        });
     }
     beforeDestroy(){
         const bus = this.$gConst.globalbus;
@@ -341,9 +559,106 @@ class App extends Vue {
         bus.$off('player:replay', this._onReplay);
         bus.$off('player:volume', this._onVolume);
         bus.$off('play', this._onPlay);
+        bus.$off('auth:changed', this._onAuthChanged);
+        // afterEach returns its own remover in vue-router 3. This component is
+        // the app shell and is never destroyed in practice, but a hook that
+        // outlives its closure is exactly the leak the player just moved here to
+        // stop having.
+        if (this._removeAfterEach) this._removeAfterEach();
     }
     onPlayerEnded(){
-        this.$gConst.globalbus.$emit('player:ended');
+        // The payload exists for the review desk's listen-before-approve gate.
+        //
+        // A truncated file on the shared volume does NOT fail to fire `ended` —
+        // it fires it EARLY, at whatever length the browser managed to decode.
+        // Measured against this repo's own media: the whole file ends at 18.49s,
+        // and the same bytes cut to 35% end at 6.22s, with `ended` in both
+        // cases. So an `ended` on its own says "playback stopped", not "the clip
+        // was heard", and a gate that reads it as the latter opens after a third
+        // of the audio — which is the one thing that gate exists to prevent.
+        //
+        // What the listener needs is what the element actually played, so it can
+        // compare that against the length recorded in the database when the file
+        // was accepted. Both numbers travel; ClipAudition decides.
+        const p = this.$refs.player;
+        this.$gConst.globalbus.$emit('player:ended', p === undefined || p === null
+            ? null
+            : { currentTime: p.currentTime, duration: p.duration });
+    }
+
+    /**
+     * Ask the server who this browser is. GET /api/me answers
+     * { submitter: null } or { submitter: { displayName, … } } — see
+     * server/routes/public.mjs — and never 401s, so an anonymous visitor is a
+     * 200 with a null, not an error.
+     */
+    refreshIdentity(){
+        // Two navigations in quick succession are two GETs, and the slower one
+        // must not land on top of the newer answer. Falsifiable: without the
+        // ticket, log out and immediately navigate, and the in-flight reply from
+        // before the logout restores the name.
+        const ticket = ++this._identityTicket;
+        const stale = () => ticket !== this._identityTicket;
+        fetch(apiUrl('/api/me'), {
+            // The session cookie is HttpOnly, host-only and SameSite=Lax
+            // (server/app.mjs), so it can only travel to this same origin — which
+            // is where apiUrl() points, by construction. Asking for credentials
+            // explicitly is what would turn a future cross-origin deployment into
+            // a visible failure instead of a permanently anonymous site.
+            credentials: 'include',
+            headers: { 'Accept': 'application/json' },
+        })
+            .then((response) => (response.ok ? response.json() : null))
+            .then((body) => {
+                if (stale()) return;
+                const submitter = body === null ? null : (body.submitter || null);
+                this.submitter = submitter;
+                this.authState = submitter === null ? 'anonymous' : 'signed-in';
+            })
+            .catch(() => {
+                if (stale()) return;
+                // The API is unreachable, which is not the same as being signed
+                // out — so this falls back to rendering a way IN rather than a
+                // claim about the visitor. "Log in" is a control; "you are not
+                // signed in" would be a statement we cannot support.
+                this.submitter = null;
+                this.authState = 'anonymous';
+            });
+    }
+
+    logout(){
+        if (this.loggingOut) return;
+        this.loggingOut = true;
+        fetch(apiUrl('/api/logout'), { method: 'POST', credentials: 'include' })
+            .then((response) => {
+                this.loggingOut = false;
+                if (!response.ok) {
+                    // The server did not confirm, so the cookie may well still be
+                    // live. Showing "log in" now would be the dangerous direction
+                    // — someone on a shared machine walking away from a session
+                    // that is still open is the entire reason this control
+                    // exists. Re-read instead of asserting.
+                    this.refreshIdentity();
+                    return;
+                }
+                this.submitter = null;
+                this.authState = 'anonymous';
+                // For every other page holding session-derived state — and for
+                // this one: the listener in mounted() turns this into a second
+                // /api/me, which is how the logout gets confirmed rather than
+                // assumed.
+                this.$gConst.globalbus.$emit('auth:changed');
+                // /my and /submit both require identity. Staying put would leave
+                // the visitor on a page whose next request is a 401. The guard is
+                // not decoration: vue-router 3 rejects a push to the route you
+                // are already on, and an unhandled rejection is what that looks
+                // like from the home page.
+                if (this.$route.path !== '/') this.$router.push('/');
+            })
+            .catch(() => {
+                this.loggingOut = false;
+                this.refreshIdentity();
+            });
     }
 }
 

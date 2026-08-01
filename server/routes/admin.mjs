@@ -114,6 +114,14 @@ import { CAPTION_MAX_LENGTH, escapeForI18n, validateCaption } from '../lib/text-
 import { THEME_TOKENS, wallpaperUrl } from '../lib/theme.mjs'
 import { ThemeStoreError, deactivate, readActiveTheme, saveTheme } from '../lib/theme-store.mjs'
 import { WallpaperError, storeWallpaper } from '../lib/wallpaper.mjs'
+import {
+  BrandingError,
+  brandingPathsFrom,
+  faviconUrl,
+  readBranding,
+  storeFavicon,
+  writeBranding,
+} from '../lib/branding.mjs'
 // The parser belongs to the module that WRITES batch_items.submitter_note. One
 // definition of what those bytes mean, owned by the writer.
 import { readSubmitterNote } from './public.mjs'
@@ -271,6 +279,24 @@ export default async function adminRoutes(fastify, options = {}) {
     ),
   )
 
+  // The catalogue library: list every clip, and take one down / put it back.
+  // No delete route — retire is the removal (see listClips's header).
+  fastify.get('/api/admin/clips', async (request, reply) =>
+    answered(reply, () => listClips(db, { mediaBaseUrl })),
+  )
+
+  fastify.post('/api/admin/clips/:id/retire', async (request, reply) =>
+    guarded(reply, request.adminIdentity, db, now, () =>
+      retireClip(db, paths, request.params.id, { actor: request.adminIdentity, now }),
+    ),
+  )
+
+  fastify.post('/api/admin/clips/:id/restore', async (request, reply) =>
+    guarded(reply, request.adminIdentity, db, now, () =>
+      restoreClip(db, paths, request.params.id, { actor: request.adminIdentity, now }),
+    ),
+  )
+
   fastify.get('/api/admin/audit', async (request, reply) =>
     answered(reply, () => readAuditPage(db, request.query ?? {})),
   )
@@ -376,7 +402,7 @@ export default async function adminRoutes(fastify, options = {}) {
   fastify.post('/api/admin/theme/wallpaper', async (request, reply) =>
     themeGuarded(reply, request.adminIdentity, db, now, async () => {
       const actor = request.adminIdentity
-      const upload = await readWallpaperUpload(request)
+      const upload = await readSingleFileUpload(request, 'wallpaper')
       const stored = await storeWallpaper(upload, { wallpaperDir: themePaths.wallpaperDir })
 
       record(db, {
@@ -412,6 +438,71 @@ export default async function adminRoutes(fastify, options = {}) {
       }
     }),
   )
+
+  // --- site branding (JOI-BUTTON-STORY-068) --------------------------------
+  // Navbar title, document title, channel link, favicon — editable without a
+  // rebuild, delivered the way the theme and catalogue are: this API writes one
+  // file to DATA_DIR and the web pod serves it read-only at a stable URL. Paths
+  // are DERIVED from catalog.json's directory, so there is no new config key.
+  // Absent in a harness that registers no catalogFile; the routes are then simply
+  // not present, the same way the invite routes are.
+  const brandingPaths = typeof paths.catalogFile === 'string' ? brandingPathsFrom(paths.catalogFile) : null
+
+  if (brandingPaths) {
+    fastify.get('/api/admin/branding', async (request, reply) =>
+      answered(reply, async () => ({ branding: await readBranding(brandingPaths.brandingFile) })),
+    )
+
+    fastify.post('/api/admin/branding', async (request, reply) =>
+      guarded(reply, request.adminIdentity, db, now, async () => {
+        const actor = request.adminIdentity
+        const branding = await writeBranding(brandingPaths.brandingFile, request.body ?? {})
+        record(db, {
+          actorKind: 'owner',
+          actorOpenId: actor.openId,
+          actorDisplayName: actor.displayName,
+          verb: 'admin.branding.write',
+          subject: { kind: 'branding', id: null },
+          before: null,
+          after: {
+            navTitle: branding.navTitle,
+            docTitle: branding.docTitle,
+            channel: branding.channel,
+            faviconPath: branding.faviconPath,
+          },
+          consequence: null,
+          succeeded: true,
+          occurredAt: toCanonicalTimestamp(now()),
+        })
+        return { branding }
+      }),
+    )
+
+    fastify.post('/api/admin/branding/favicon', async (request, reply) =>
+      guarded(reply, request.adminIdentity, db, now, async () => {
+        const actor = request.adminIdentity
+        const upload = await readSingleFileUpload(request, 'favicon')
+        const stored = await storeFavicon(upload, { faviconDir: brandingPaths.faviconDir })
+        // Persist the favicon onto the branding document in the same call, so an
+        // upload is live immediately rather than only after a separate save.
+        const current = await readBranding(brandingPaths.brandingFile)
+        const branding = await writeBranding(brandingPaths.brandingFile, { ...current, faviconPath: stored.path })
+        record(db, {
+          actorKind: 'owner',
+          actorOpenId: actor.openId,
+          actorDisplayName: actor.displayName,
+          verb: 'admin.branding.favicon',
+          subject: { kind: 'favicon', id: stored.path },
+          before: current.faviconPath === null ? null : { faviconPath: current.faviconPath },
+          after: { faviconPath: stored.path, bytes: stored.bytes, format: stored.format },
+          consequence: `favicon:${stored.path}`,
+          succeeded: true,
+          occurredAt: toCanonicalTimestamp(now()),
+        })
+        return { branding, favicon: { path: stored.path, url: faviconUrl(stored.path) } }
+      }),
+    )
+  }
 
   // -------------------------------------------------------------------------
   // Admins and invitations (JOI-BUTTON-STORY-055/056)
@@ -590,6 +681,20 @@ function replyForError(reply, error) {
  */
 export function httpStatusFor(error) {
   if (error instanceof AdminError) return error.status
+  if (error instanceof BrandingError) {
+    switch (error.code) {
+      case 'too_large':
+        return 413
+      case 'unsupported_format':
+      case 'not_multipart':
+        return 415
+      case 'read_failed':
+      case 'bad_argument':
+        return 500 // a defect, not the operator's input
+      default:
+        return 400 // invalid_request, empty, file_missing …
+    }
+  }
   if (error instanceof CatalogError) {
     // media_missing is the operator's problem to fix and is stated as a
     // conflict; the rest are defects in this code or in the database's shape.
@@ -609,11 +714,19 @@ function errorBody(error) {
   if (error instanceof CatalogError) {
     return { error: error.code, message: error.message, details: error.details }
   }
+  if (error instanceof BrandingError) {
+    return { error: error.code, message: error.message, details: error.details }
+  }
   return { error: 'refused', message: error.message, details: null }
 }
 
 function isReportable(error) {
-  return error instanceof AdminError || error instanceof CatalogError || httpStatusFor(error) === 409
+  return (
+    error instanceof AdminError ||
+    error instanceof CatalogError ||
+    error instanceof BrandingError ||
+    httpStatusFor(error) === 409
+  )
 }
 
 function recordRefusal(db, actor, now, error) {
@@ -1574,6 +1687,134 @@ function withoutDocument(result) {
 }
 
 // ---------------------------------------------------------------------------
+// GET /api/admin/clips  +  retire / restore
+//
+// The catalogue library: every clip the site has, in whatever state, so an admin
+// can take one down or put it back WITHOUT going through the submission queue.
+// Retiring sets state 'retired', which writeCatalog omits, so the button leaves
+// the site; restoring sets it back to 'published'. Both then rewrite catalog.json
+// through publishCatalogue's own writer with promote:false — so no pending draft
+// is dragged live as a side effect of taking one clip down — which is the single
+// place that turns clip state into what the site serves.
+//
+// There is DELIBERATELY no hard delete here. clips.media_sha256 and
+// batch_items.clip_id are both ON DELETE RESTRICT, and the schema's own comment
+// is explicit that a clip which must truly go needs a decision about what its
+// approving item then says — a statement written for that purpose, not a DELETE.
+// Retire is the removal that respects that, and it is reversible.
+
+export function listClips(db, { mediaBaseUrl = MEDIA_BASE_URL } = {}) {
+  const rows = db.prepare(`
+    SELECT c.id, c.label, c.state, c.sort_order, c.created_at, c.published_at, c.retired_at,
+           c.group_id, g.display_name AS group_name, g.state AS group_state,
+           m.sha256, m.storage_path, m.duration_seconds, m.bytes, m.ext, m.content_type,
+           (SELECT count(*) FROM clip_captions cc WHERE cc.clip_id = c.id) AS caption_count
+    FROM clips c
+    JOIN groups g ON g.id = c.group_id
+    JOIN media m ON m.sha256 = c.media_sha256
+    ORDER BY g.sort_order, g.id, c.sort_order, c.id
+  `).all()
+  return {
+    clips: rows.map((row) => ({
+      id: row.id,
+      label: row.label,
+      state: row.state,
+      group: { id: row.group_id, name: row.group_name, state: row.group_state },
+      createdAt: row.created_at,
+      publishedAt: row.published_at,
+      retiredAt: row.retired_at,
+      captionCount: row.caption_count,
+      media: {
+        sha256: row.sha256,
+        audioUrl: `${mediaBaseUrl}${row.storage_path}`,
+        durationSeconds: row.duration_seconds,
+        bytes: row.bytes,
+        ext: row.ext,
+        contentType: row.content_type,
+      },
+    })),
+    counts: {
+      total: rows.length,
+      published: rows.filter((r) => r.state === 'published').length,
+      retired: rows.filter((r) => r.state === 'retired').length,
+      draft: rows.filter((r) => r.state === 'draft').length,
+    },
+  }
+}
+
+export function retireClip(db, paths, clipId, { actor, now = () => new Date() } = {}) {
+  return setClipState(db, paths, clipId, {
+    from: 'published',
+    to: 'retired',
+    verb: 'admin.clip.retire',
+    stampColumn: 'retired_at',
+    clearColumn: null,
+    refusal: (state) => `clip ${clipId} is ${state}, not published; only a published clip can be retired`,
+    actor,
+    now,
+  })
+}
+
+export function restoreClip(db, paths, clipId, { actor, now = () => new Date() } = {}) {
+  return setClipState(db, paths, clipId, {
+    from: 'retired',
+    to: 'published',
+    verb: 'admin.clip.restore',
+    stampColumn: 'published_at',
+    clearColumn: 'retired_at',
+    refusal: (state) => `clip ${clipId} is ${state}, not retired; only a retired clip can be restored`,
+    actor,
+    now,
+  })
+}
+
+// One transition, then one catalogue rewrite. The state change and its audit
+// entry are in an immediate transaction (the same shape publish uses); the
+// catalogue write happens after, through publishCatalogue, which records its own
+// admin.catalog.write with the digest. `stampColumn`/`clearColumn` are a fixed
+// pair of column names chosen by the two callers above, never caller input.
+function setClipState(db, paths, clipId, { from, to, verb, stampColumn, clearColumn, refusal, actor, now }) {
+  requireActor(actor)
+  const at = toCanonicalTimestamp(now())
+  const clip = db.prepare('SELECT id, state FROM clips WHERE id = ?').get(clipId)
+  if (!clip) throw new AdminError(`no clip ${clipId}`, { code: 'not_found', status: 404 })
+  if (clip.state !== from) {
+    throw new AdminError(refusal(clip.state), { code: 'conflict', status: 409, details: { state: clip.state } })
+  }
+
+  const apply = db.transaction(() => {
+    const sets = ['state = @to', `${stampColumn} = @at`]
+    if (clearColumn) sets.push(`${clearColumn} = NULL`)
+    db.prepare(`UPDATE clips SET ${sets.join(', ')} WHERE id = @id AND state = @from`)
+      .run({ to, at, id: clipId, from })
+    record(db, {
+      actorKind: 'owner',
+      actorOpenId: actor.openId,
+      actorDisplayName: actor.displayName,
+      verb,
+      subject: { kind: 'clip', id: clipId },
+      before: { state: from },
+      after: { state: to },
+      // The catalogue write has not happened yet; the admin.catalog.write entry
+      // publishCatalogue records below carries the digest.
+      consequence: null,
+      succeeded: true,
+      occurredAt: at,
+    })
+  })
+  apply.immediate()
+
+  const published = publishCatalogue(db, paths, { actor, now, promote: false })
+  return {
+    clipId,
+    state: to,
+    catalog: published.catalog,
+    catalogChanged: published.catalog ? published.catalog.catalogChanged : null,
+    warnings: published.warnings,
+  }
+}
+
+// ---------------------------------------------------------------------------
 // GET /api/admin/audit
 
 /**
@@ -1601,6 +1842,17 @@ export function readAuditPage(db, query = {}) {
   if (isPresent(query.actorOpenId)) {
     clauses.push('actor_id = @actorOpenId')
     params.actorOpenId = String(query.actorOpenId)
+  }
+  if (isPresent(query.actorName)) {
+    // Filter by the display name AS RECORDED on the entry (detail.actorDisplayName)
+    // — exactly the name this table shows — rather than a live join to the current
+    // submitters/admins name. So an entry keeps matching the name it was written
+    // under even after that person is renamed, and there is no join to keep in
+    // step. A contains match; the caller sends a plain string and the % and the
+    // escaping of any %/_/\ the name itself contains are added here.
+    const needle = String(query.actorName).replace(/[\\%_]/g, (c) => `\\${c}`)
+    clauses.push("json_extract(detail, '$.actorDisplayName') LIKE @actorName ESCAPE '\\'")
+    params.actorName = `%${needle}%`
   }
   if (isPresent(query.actorKind)) {
     const actorKind = String(query.actorKind)
@@ -1908,9 +2160,9 @@ function themeRefusalFor(error) {
  * and lib/wallpaper.mjs checks the same ceiling again, because a limit enforced
  * only by the transport disappears the day somebody calls the library.
  */
-async function readWallpaperUpload(request) {
+async function readSingleFileUpload(request, noun = 'file') {
   if (typeof request.isMultipart !== 'function' || !request.isMultipart()) {
-    throw new AdminError('Send the wallpaper as a multipart form with one file part named "file".', {
+    throw new AdminError(`Send the ${noun} as a multipart form with one file part named "file".`, {
       code: 'not_multipart',
       status: 415,
     })

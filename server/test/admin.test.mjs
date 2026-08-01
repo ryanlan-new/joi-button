@@ -205,11 +205,21 @@ test('the plugin puts ONE gate in front of every route it registers, and registe
       'GET /api/admin/item/:id',
       'POST /api/admin/item/:id',
       'POST /api/admin/publish',
+      // The catalogue library: list, and retire/restore a clip (STORY-065).
+      'GET /api/admin/clips',
+      'POST /api/admin/clips/:id/retire',
+      'POST /api/admin/clips/:id/restore',
       'GET /api/admin/audit',
       'GET /api/admin/theme',
       'POST /api/admin/theme',
       'DELETE /api/admin/theme',
       'POST /api/admin/theme/wallpaper',
+      // Site branding (STORY-068). These register whenever a catalogFile is
+      // supplied (branding paths derive from its directory) — this call passes
+      // one, so they are present here.
+      'GET /api/admin/branding',
+      'POST /api/admin/branding',
+      'POST /api/admin/branding/favicon',
       // Admin roster management. These register unconditionally. The FOUR invite
       // routes (POST /api/admin/invites, GET/confirm/cancel) register only when a
       // danmakuSource is wired — this call passes none, so they are absent here;

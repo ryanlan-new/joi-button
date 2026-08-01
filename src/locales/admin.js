@@ -36,13 +36,43 @@
 export default {
   'zh-CN': {
     admin: {
+      admins: {
+        title: '管理员',
+        subtitle: '谁能进这个后台。种子管理员来自部署配置，删不掉；其余是在线邀请来的。',
+        refresh: '刷新',
+        you: '你',
+        seed: '种子',
+        invited: '受邀',
+        seedNote: '来自部署配置，不可在此移除',
+        remove: '移除',
+        removing: '移除中…',
+        removeConfirm: '确定移除管理员 {id}？他会立刻失去后台权限。',
+        inviteTitle: '邀请新管理员',
+        inviteLead: '生成一句话，让对方到本站直播间当普通弹幕发出去；对方发出后，你再确认。',
+        startInvite: '生成邀请',
+        opening: '正在接直播间…',
+        postThis: '让对方把下面这句话发到直播间：',
+        openRoom: '打开直播间',
+        copied: '已复制',
+        connecting: '正在连直播间，稍等…',
+        expiresIn: '剩余 {s} 秒',
+        claimedBy: '这句话被下面这个身份认领了：',
+        confirmWarn: '确认前请核对：这是不是你要加的那个人？确认后对方立即成为管理员。',
+        confirm: '确认，设为管理员',
+        confirming: '正在确认…',
+        confirmedNow: '{id} 现在是管理员了。',
+        expired: '这句话已过期，重新生成一个。',
+        done: '完成',
+        cancel: '取消'
+      },
       nav: {
         title: '审核台',
         twoStage: '通过 ≠ 上线，发布是另外一步',
         queue: '队列',
         publish: '发布',
         audit: '记录',
-        theme: '主题'
+        theme: '主题',
+        admins: '管理员'
       },
       common: {
         refresh: '刷新',
@@ -269,13 +299,43 @@ export default {
 
   'en-US': {
     admin: {
+      admins: {
+        title: 'Admins',
+        subtitle: 'Who can reach this desk. Seed admins come from the deployment config and cannot be removed; the rest were invited online.',
+        refresh: 'Refresh',
+        you: 'you',
+        seed: 'seed',
+        invited: 'invited',
+        seedNote: 'from the deployment config, not removable here',
+        remove: 'Remove',
+        removing: 'Removing…',
+        removeConfirm: 'Remove admin {id}? They lose the desk immediately.',
+        inviteTitle: 'Invite a new admin',
+        inviteLead: "Generate a phrase for them to post as an ordinary danmaku in this site's live room; after they post it, you confirm.",
+        startInvite: 'Create an invite',
+        opening: 'Connecting to the room…',
+        postThis: 'Have them post this phrase in the live room:',
+        openRoom: 'Open the live room',
+        copied: 'copied',
+        connecting: 'Connecting to the room, one moment…',
+        expiresIn: '{s}s left',
+        claimedBy: 'This phrase was claimed by:',
+        confirmWarn: 'Before confirming, check this is the person you meant. Confirming makes them an admin at once.',
+        confirm: 'Confirm — make admin',
+        confirming: 'Confirming…',
+        confirmedNow: '{id} is an admin now.',
+        expired: 'This phrase expired. Create a new one.',
+        done: 'Done',
+        cancel: 'Cancel'
+      },
       nav: {
         title: 'Review desk',
         twoStage: 'Approved is not live. Publishing is a separate step.',
         queue: 'Queue',
         publish: 'Publish',
         audit: 'Log',
-        theme: 'Theme'
+        theme: 'Theme',
+        admins: 'Admins'
       },
       common: {
         refresh: 'Refresh',
@@ -502,13 +562,43 @@ export default {
 
   'ja-JP': {
     admin: {
+      admins: {
+        title: '管理者',
+        subtitle: 'この管理画面に入れる人。シード管理者はデプロイ設定由来で削除できません。他はオンラインで招待された人です。',
+        refresh: '更新',
+        you: 'あなた',
+        seed: 'シード',
+        invited: '招待',
+        seedNote: 'デプロイ設定由来、ここでは削除不可',
+        remove: '削除',
+        removing: '削除中…',
+        removeConfirm: '管理者 {id} を削除しますか？すぐに管理画面へ入れなくなります。',
+        inviteTitle: '新しい管理者を招待',
+        inviteLead: 'フレーズを生成し、当サイトの配信部屋にふつうの弾幕として流してもらいます。流したら、あなたが確認します。',
+        startInvite: '招待を作成',
+        opening: '配信部屋に接続中…',
+        postThis: 'このフレーズを配信部屋に流してもらってください：',
+        openRoom: '配信部屋を開く',
+        copied: 'コピーしました',
+        connecting: '配信部屋に接続中です。少々お待ちを…',
+        expiresIn: '残り {s} 秒',
+        claimedBy: 'このフレーズは次の身分に取得されました：',
+        confirmWarn: '確認の前に、招きたい相手かどうか確かめてください。確認すると即座に管理者になります。',
+        confirm: '確認して管理者にする',
+        confirming: '確認中…',
+        confirmedNow: '{id} は管理者になりました。',
+        expired: 'このフレーズは期限切れです。新しく作成してください。',
+        done: '完了',
+        cancel: 'キャンセル'
+      },
       nav: {
         title: 'レビュー台',
         twoStage: '承認しただけでは公開されません',
         queue: '一覧',
         publish: '公開',
         audit: '記録',
-        theme: 'テーマ'
+        theme: 'テーマ',
+        admins: '管理者'
       },
       common: {
         refresh: '読み直す',

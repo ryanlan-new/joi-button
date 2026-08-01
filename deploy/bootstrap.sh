@@ -36,6 +36,8 @@ DEPLOY_ENV="${DEPLOY_ENV:-$REPO_ROOT/deploy/deploy.env}"
 
 # shellcheck source=deploy/bootstrap/collect-env.sh
 source "$REPO_ROOT/deploy/bootstrap/collect-env.sh"
+# shellcheck source=deploy/bootstrap/domain.sh
+source "$REPO_ROOT/deploy/bootstrap/domain.sh"
 
 hr()   { printf '\n\033[1m=== %s ===\033[0m\n' "$1" >&2; }
 say()  { printf '  %s\n' "$1" >&2; }
@@ -46,19 +48,24 @@ step_env() {
   collect_env
 }
 
+step_domain() {
+  hr 'Step 2 — domain'
+  collect_domain
+}
+
 # The remaining steps are built next; run them individually as they land. Until
 # then the whole-sequence run stops here rather than pretend to have done more.
 step_todo() {
-  hr 'Steps 2–6 — coming next'
-  say 'domain guidance, TLS (Let'\''s Encrypt / own cert), apply, first-admin, self-check.'
-  say 'Run deploy/bootstrap.sh env now to (re)write deploy/runtime.env.'
+  hr 'Steps 3–6 — coming next'
+  say 'TLS (Let'\''s Encrypt / your own cert), apply, first-admin, self-check.'
 }
 
 main() {
   case "${1:-all}" in
-    env) step_env ;;
-    all) step_env; step_todo ;;
-    *)   die "unknown step '${1}' (use: env | all)" ;;
+    env)    step_env ;;
+    domain) step_domain ;;
+    all)    step_env; step_domain; step_todo ;;
+    *)      die "unknown step '${1}' (use: env | domain | all)" ;;
   esac
 }
 

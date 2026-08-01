@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: MIT
+#
+# joi-button — ClusterIP service in front of the API pod.
+#
+# Same shape as joi-button-web: port 80 on the service, 8080 in the container,
+# because the container runs unprivileged (uid 101) and cannot bind a low port.
+#
+# ClusterIP and nothing else. This service is reachable from inside the cluster
+# and from the ingress; it is not a NodePort and not a LoadBalancer. The only
+# public path to it is the `/api` rule in ingress.yaml, which is what makes
+# "where can a request to this API come from" a question with one answer.
+apiVersion: v1
+kind: Service
+metadata:
+  name: joi-button-api
+  namespace: joi-button
+  labels:
+    app.kubernetes.io/name: joi-button-api
+    app.kubernetes.io/part-of: joi-button
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: joi-button-api
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 8080

@@ -5,11 +5,12 @@
 #
 #   Usage:  deploy/deploy-k3s.sh [import|apply|all]
 #
-#     import   build the web image for linux/amd64, stream it into the cluster's
-#              containerd WITHOUT a registry, then ask the cluster whether it arrived
-#     apply    render deploy/k8s (replacing the literal 'replace-me' image tag on
-#              stdout only) and apply it through the remote's kubectl, then wait for
-#              the rollout
+#     import   build BOTH images (web and api) for linux/amd64, stream each into the
+#              cluster's containerd WITHOUT a registry, then ask the cluster whether
+#              they arrived
+#     apply    build the runtime Secret from deploy/runtime.env, render deploy/k8s
+#              (replacing the literal 'replace-me' image tags on stdout only) and apply
+#              it through the remote's kubectl, then wait for both rollouts
 #     all      import, then apply  (this is also the default when no argument is given)
 #
 #   SITE-SPECIFIC VALUES LIVE OUTSIDE THIS REPOSITORY.
@@ -23,10 +24,24 @@
 #     REMOTE                 ssh host alias of the k3s node          (import, apply)
 #     APP_HOST               hostname the Ingress serves             (apply)
 #
+#   Also required for `apply`, and NOT an environment variable:
+#     deploy/runtime.env     the API's credentials and settings. Copy
+#                            deploy/runtime.env.example and fill it in; it is
+#                            git-ignored. `apply` turns it into the Secret
+#                            `joi-button-runtime` that the API pod reads with
+#                            envFrom, and refuses to proceed without it — a pod
+#                            whose envFrom names a missing Secret never starts,
+#                            and reports that as a rollout timeout naming nothing.
+#                            The values travel over ssh into kubectl's stdin; they
+#                            are never written to the node's disk and never printed.
+#                            Override the path with RUNTIME_ENV_FILE=...
+#
 #   Optional:
 #     LB_ADDRESS             ingress load-balancer address, used only to print a
 #                            DNS-independent curl at the end
 #     IMAGE_REPO             default ghcr.io/ryanlan-new/joi-button/web
+#     API_IMAGE_REPO         default ghcr.io/ryanlan-new/joi-button/api
+#     RUNTIME_ENV_FILE       default deploy/runtime.env
 #     TAG                    default dev-<short git sha of HEAD>
 #     NAMESPACE              default joi-button
 #     KUBECTL                default "sudo k3s kubectl"           (see the note below)
@@ -65,11 +80,22 @@
 set -euo pipefail
 
 DEFAULT_IMAGE_REPO="ghcr.io/ryanlan-new/joi-button/web"
+DEFAULT_API_IMAGE_REPO="ghcr.io/ryanlan-new/joi-button/api"
 DEFAULT_NAMESPACE="joi-button"
 PLACEHOLDER_IMAGE="${DEFAULT_IMAGE_REPO}:replace-me"
+PLACEHOLDER_API_IMAGE="${DEFAULT_API_IMAGE_REPO}:replace-me"
 PLACEHOLDER_HOST="replace-me.invalid"
 
 DEPLOYMENT_NAME="joi-button-web"
+API_DEPLOYMENT_NAME="joi-button-api"
+
+# The Secret the API pod reads with envFrom. It is BUILT FROM deploy/runtime.env
+# on every apply rather than committed as a manifest: a committed template with
+# blank values would be applied alongside everything else and would overwrite the
+# real credentials with blanks, which is a deploy that silently unsets the
+# signing key and every Bilibili credential. Same reasoning as the deploy.env
+# split — the repository is public and states no secrets of its own.
+SECRET_NAME="joi-button-runtime"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -89,6 +115,8 @@ if [[ -f "${ENV_FILE}" ]]; then
 fi
 
 IMAGE_REPO="${IMAGE_REPO:-${DEFAULT_IMAGE_REPO}}"
+API_IMAGE_REPO="${API_IMAGE_REPO:-${DEFAULT_API_IMAGE_REPO}}"
+RUNTIME_ENV_FILE="${RUNTIME_ENV_FILE:-${SCRIPT_DIR}/runtime.env}"
 REMOTE="${REMOTE:-}"
 APP_HOST="${APP_HOST:-}"
 LB_ADDRESS="${LB_ADDRESS:-}"
@@ -175,10 +203,15 @@ if [[ -z "${TAG:-}" ]]; then
 fi
 
 IMAGE_REF="${IMAGE_REPO}:${TAG}"
+# ONE tag across both images. They are built from one working tree and they share
+# a volume layout and an API contract, so a deploy that pinned them separately
+# would make "which pair is running" a question with two answers.
+API_IMAGE_REF="${API_IMAGE_REPO}:${TAG}"
 
 log "repo root:  ${REPO_ROOT}"
 log "mode:       ${MODE}"
-log "image:      ${IMAGE_REF}"
+log "web image:  ${IMAGE_REF}"
+log "api image:  ${API_IMAGE_REF}"
 log "remote:     ${REMOTE}"
 log "namespace:  ${NAMESPACE}"
 log "kubectl:    ${KUBECTL}"
@@ -192,6 +225,7 @@ do_import() {
   docker buildx version >/dev/null 2>&1 || fail "docker buildx is required (docker buildx version failed)."
 
   [[ -f Dockerfile ]] || fail "Dockerfile not found in ${REPO_ROOT}; nothing to build."
+  [[ -f Dockerfile.api ]] || fail "Dockerfile.api not found in ${REPO_ROOT}; the API image cannot be built."
 
   log "Preflighting ssh and passwordless sudo on ${REMOTE} ..."
   ssh -n "${REMOTE}" 'true' || fail "cannot ssh to ${REMOTE}."
@@ -226,24 +260,57 @@ do_import() {
       fail "the image failed its runtime contract; not shipping it to the cluster."
   fi
 
-  # Ask the local authority what was actually built. A silently arm64 image would only
-  # fail on the cluster, as an exec format error inside a CrashLoopBackOff.
-  local built_arch
-  built_arch="$(docker image inspect --format '{{.Architecture}}' "${IMAGE_REF}")"
+  assert_amd64_then_import "${IMAGE_REF}"
+
+  # ---- the API image -----------------------------------------------------
+  # Built AFTER the web image and its smoke test, so a broken frontend fails the
+  # run before a second multi-minute build starts.
+  #
+  # No --platform=$BUILDPLATFORM inside Dockerfile.api: `npm ci` there compiles
+  # better-sqlite3, a native addon, so its builder stage must run as the TARGET
+  # architecture. On an arm64 laptop that means QEMU and several minutes; on the
+  # amd64 node it is native. See the header of Dockerfile.api.
+  #
+  # There is no smoke test for this image, and that is a gap stated rather than
+  # papered over: starting it needs a database volume and a full credential set,
+  # which is what the cluster provides and a `docker run` here does not. The API
+  # is covered instead by 320 tests over the assembled fastify app, and by the
+  # /api/readyz assertion do_apply makes against the running pod — readyz opens a
+  # savepoint on the real database and rolls it back, so it cannot be green over
+  # a volume that is missing or read-only.
+  log "Building ${API_IMAGE_REF} for linux/amd64 (native addon: this stage is NOT cross-compiled) ..."
+  docker buildx build \
+    --platform linux/amd64 \
+    -f Dockerfile.api \
+    -t "${API_IMAGE_REF}" \
+    --provenance=false \
+    --load \
+    .
+
+  assert_amd64_then_import "${API_IMAGE_REF}"
+}
+
+# Ask the local authority what was actually built, ship it, then ask the cluster
+# whether it arrived. Both questions go to the party that owns the answer: a
+# silently arm64 image would otherwise only surface on the node as an exec format
+# error inside a CrashLoopBackOff, and `docker save | ssh` exiting 0 proves the
+# pipe ran, not that containerd kept anything.
+assert_amd64_then_import() {
+  local ref="$1"
+  local built_arch matched
+
+  built_arch="$(docker image inspect --format '{{.Architecture}}' "${ref}")"
   [[ "${built_arch}" == "amd64" ]] ||
     fail "built image architecture is '${built_arch}', but the cluster node is amd64."
-  log "Built ${IMAGE_REF} (architecture ${built_arch})."
+  log "Built ${ref} (architecture ${built_arch})."
 
-  log "Streaming the image into ${REMOTE}'s containerd (no registry involved) ..."
+  log "Streaming ${ref} into ${REMOTE}'s containerd (no registry involved) ..."
   # Remote side is single-quoted so nothing here is re-expanded by the remote shell.
-  docker save "${IMAGE_REF}" | ssh "${REMOTE}" 'sudo k3s ctr images import -'
+  docker save "${ref}" | ssh "${REMOTE}" 'sudo k3s ctr images import -'
 
-  # The pipe's exit status proves the pipe ran, not that the image is in the cluster's
-  # image store. Proving arrival means asking the thing it was supposed to arrive at.
-  log "Verifying with the cluster that ${IMAGE_REF} is present ..."
-  local matched
-  if ! matched="$(ssh -n "${REMOTE}" "sudo k3s ctr images ls -q | grep -F -- '${IMAGE_REF}'")"; then
-    fail "the cluster does not list ${IMAGE_REF} after import. Do not proceed to apply: with imagePullPolicy IfNotPresent the pods would fail to start."
+  log "Verifying with the cluster that ${ref} is present ..."
+  if ! matched="$(ssh -n "${REMOTE}" "sudo k3s ctr images ls -q | grep -F -- '${ref}'")"; then
+    fail "the cluster does not list ${ref} after import. Do not proceed to apply: with imagePullPolicy IfNotPresent the pods would fail to start."
   fi
   log "Cluster confirms: ${matched}"
 }
@@ -284,7 +351,17 @@ SED_ARGS=()
 
 set_sed_args_for() {
   local file="$1"
-  SED_ARGS=(-e "s|${PLACEHOLDER_IMAGE}|${IMAGE_REF}|g" -e "s|${PLACEHOLDER_HOST}|${APP_HOST}|g")
+  # The API substitution goes FIRST. Both placeholders end in ':replace-me' and
+  # the repository paths differ only in their last segment (.../web vs .../api),
+  # so order would not matter for a literal `s|…|…|` — but if the web pattern
+  # were ever loosened to something that also matches the API line, the tighter
+  # rule having already fired is what keeps the API pod from being pinned to the
+  # nginx image. Cheap, and the failure it prevents is silent.
+  SED_ARGS=(
+    -e "s|${PLACEHOLDER_API_IMAGE}|${API_IMAGE_REF}|g"
+    -e "s|${PLACEHOLDER_IMAGE}|${IMAGE_REF}|g"
+    -e "s|${PLACEHOLDER_HOST}|${APP_HOST}|g"
+  )
   # Renaming the namespace is only attempted when the operator actually asked for a
   # different one; the default path touches the image tag and nothing else.
   if [[ "${NAMESPACE}" != "${DEFAULT_NAMESPACE}" ]]; then
@@ -318,7 +395,40 @@ assert_no_placeholder() {
 }
 
 remote_generation() {
-  ssh -n "${REMOTE}" "${KUBECTL} -n '${NAMESPACE}' get deploy ${DEPLOYMENT_NAME} -o jsonpath='{.metadata.generation}' 2>/dev/null || true"
+  local deployment="$1"
+  ssh -n "${REMOTE}" "${KUBECTL} -n '${NAMESPACE}' get deploy ${deployment} -o jsonpath='{.metadata.generation}' 2>/dev/null || true"
+}
+
+# Build the runtime Secret from deploy/runtime.env and apply it.
+#
+# ORDER MATTERS: this runs after the namespace exists and BEFORE the workloads.
+# api-deployment.yaml reads it with envFrom, and a pod whose envFrom names an
+# absent Secret does not start — it sits in CreateContainerConfigError, which
+# rollout status reports as a plain timeout with no mention of the secret.
+#
+# The values never touch the remote disk. They travel over the ssh pipe into
+# kubectl's stdin and from there to the API server; nothing is written to a file
+# on the node, and nothing is echoed here. `--dry-run=client -o yaml | apply` is
+# what makes this idempotent — `create secret` alone fails the second time.
+apply_runtime_secret() {
+  [[ -f "${RUNTIME_ENV_FILE}" ]] ||
+    fail "${RUNTIME_ENV_FILE} does not exist, so the API pod would have no credentials, no session key and no admin list — it would not start. Copy deploy/runtime.env.example to deploy/runtime.env and fill it in (it is git-ignored), or set RUNTIME_ENV_FILE=... to point elsewhere."
+
+  require_cmd node
+
+  log "Building Secret ${SECRET_NAME} from ${RUNTIME_ENV_FILE} (values are never printed) ..."
+  local rendered
+  # Command substitution, so a failure in the normaliser stops the deploy rather
+  # than piping an empty stream into kubectl and creating an EMPTY Secret — which
+  # would look like a successful apply and take the API down at the next restart.
+  rendered="$(node "${SCRIPT_DIR}/runtime-env-to-secret.mjs" "${RUNTIME_ENV_FILE}")" ||
+    fail "deploy/runtime-env-to-secret.mjs refused ${RUNTIME_ENV_FILE} (see the message above); nothing was applied."
+  [[ -n "${rendered}" ]] ||
+    fail "deploy/runtime-env-to-secret.mjs produced no output for ${RUNTIME_ENV_FILE}."
+
+  # shellcheck disable=SC2029
+  printf '%s\n' "${rendered}" | ssh "${REMOTE}" \
+    "${KUBECTL} -n '${NAMESPACE}' create secret generic '${SECRET_NAME}' --from-env-file=/dev/stdin --dry-run=client -o yaml | ${KUBECTL} apply -f -"
 }
 
 do_apply() {
@@ -328,6 +438,8 @@ do_apply() {
   # the apply would ship whatever literal is in the files. Refuse instead.
   grep -R -F -q -- "${PLACEHOLDER_IMAGE}" "${MANIFEST_DIR}" ||
     fail "no manifest under ${MANIFEST_DIR} (relative to ${REPO_ROOT}) contains the placeholder '${PLACEHOLDER_IMAGE}'; nothing would be pinned to ${TAG}."
+  grep -R -F -q -- "${PLACEHOLDER_API_IMAGE}" "${MANIFEST_DIR}" ||
+    fail "no manifest under ${MANIFEST_DIR} contains the API placeholder '${PLACEHOLDER_API_IMAGE}'; the API Deployment would keep whatever image literal is in the file rather than ${API_IMAGE_REF}."
   grep -R -F -q -- "${PLACEHOLDER_HOST}" "${MANIFEST_DIR}" ||
     fail "no manifest under ${MANIFEST_DIR} contains the Ingress host placeholder '${PLACEHOLDER_HOST}'; the applied Ingress would carry whatever hostname is literally in the file, not ${APP_HOST}."
 
@@ -344,13 +456,16 @@ do_apply() {
   # spec, so proceeding on a tag that resolves nowhere trades a serving site for
   # ImagePullBackOff. Deploying a registry-hosted image is legitimate — it just
   # has to be said out loud.
-  if ! ssh -n "${REMOTE}" "sudo k3s ctr images ls -q | grep -F -- '${IMAGE_REF}'" >/dev/null 2>&1; then
-    if [[ "${ALLOW_REGISTRY_PULL:-0}" == "1" ]]; then
-      warn "${IMAGE_REF} is not on ${REMOTE}; proceeding because ALLOW_REGISTRY_PULL=1. The kubelet must be able to pull it (public GHCR package or an imagePullSecret)."
-    else
-      fail "${IMAGE_REF} is not in ${REMOTE}'s image store, and the running Deployment would be replaced by one that cannot start. Either run 'deploy/deploy-k3s.sh import' to build and stream this tag in, or re-run with ALLOW_REGISTRY_PULL=1 if the kubelet is meant to pull it from the registry."
+  local ref
+  for ref in "${IMAGE_REF}" "${API_IMAGE_REF}"; do
+    if ! ssh -n "${REMOTE}" "sudo k3s ctr images ls -q | grep -F -- '${ref}'" >/dev/null 2>&1; then
+      if [[ "${ALLOW_REGISTRY_PULL:-0}" == "1" ]]; then
+        warn "${ref} is not on ${REMOTE}; proceeding because ALLOW_REGISTRY_PULL=1. The kubelet must be able to pull it (public GHCR package or an imagePullSecret)."
+      else
+        fail "${ref} is not in ${REMOTE}'s image store, and the running Deployment would be replaced by one that cannot start. Either run 'deploy/deploy-k3s.sh import' to build and stream this tag in, or re-run with ALLOW_REGISTRY_PULL=1 if the kubelet is meant to pull it from the registry."
+      fi
     fi
-  fi
+  done
 
   local ns_stream="" rest_stream=""
   if [[ ${#MANIFESTS_NS[@]} -gt 0 ]]; then
@@ -362,10 +477,11 @@ do_apply() {
     assert_no_placeholder "manifests" "${rest_stream}"
   fi
 
-  # Read the Deployment's generation before anything is applied. Comparing it afterwards
-  # is what tells us whether the apply actually changed the spec.
-  local gen_before gen_after
-  gen_before="$(remote_generation)"
+  # Read each Deployment's generation before anything is applied. Comparing it
+  # afterwards is what tells us whether the apply actually changed that spec.
+  local web_gen_before api_gen_before
+  web_gen_before="$(remote_generation "${DEPLOYMENT_NAME}")"
+  api_gen_before="$(remote_generation "${API_DEPLOYMENT_NAME}")"
 
   if [[ -n "${ns_stream}" ]]; then
     log "Applying namespace manifest(s) ..."
@@ -379,6 +495,9 @@ do_apply() {
     ssh -n "${REMOTE}" "${KUBECTL} create namespace '${NAMESPACE}' --dry-run=client -o yaml | ${KUBECTL} apply -f -"
   fi
 
+  # Between the namespace and the workloads. See apply_runtime_secret.
+  apply_runtime_secret
+
   if [[ -n "${rest_stream}" ]]; then
     log "Applying workload manifests to namespace ${NAMESPACE} ..."
     # shellcheck disable=SC2029
@@ -390,21 +509,18 @@ do_apply() {
     log "No separate workload manifests; all objects came from the Namespace-carrying manifest(s)."
   fi
 
-  gen_after="$(remote_generation)"
-  if [[ -z "${gen_after}" ]]; then
-    fail "deployment ${DEPLOYMENT_NAME} does not exist in namespace ${NAMESPACE} after the apply; the manifests under ${MANIFEST_DIR} do not define it."
-  fi
+  restart_if_spec_unchanged "${DEPLOYMENT_NAME}" "${web_gen_before}"
+  restart_if_spec_unchanged "${API_DEPLOYMENT_NAME}" "${api_gen_before}"
 
-  if [[ -n "${gen_before}" && "${gen_before}" == "${gen_after}" ]]; then
-    if [[ "${RESTART_IF_UNCHANGED}" == "1" ]]; then
-      log "Deployment spec unchanged (generation ${gen_after}); restarting the rollout so re-imported bytes for ${TAG} are actually picked up."
-      ssh -n "${REMOTE}" "${KUBECTL} -n '${NAMESPACE}' rollout restart deploy/${DEPLOYMENT_NAME}"
-    else
-      warn "Deployment spec unchanged (generation ${gen_after}) and RESTART_IF_UNCHANGED=0: running pods keep their current image bytes even if you just re-imported tag ${TAG}."
-    fi
-  fi
+  # The API first. It is the one with a Recreate strategy and a database
+  # migration on its startup path, so it is both the slower and the likelier of
+  # the two to fail — and a failure here should be reported before the web
+  # rollout spends the rest of the timeout succeeding at serving a site whose API
+  # is down.
+  log "Waiting for the API rollout (timeout ${ROLLOUT_TIMEOUT}) ..."
+  ssh -n "${REMOTE}" "${KUBECTL} -n '${NAMESPACE}' rollout status deploy/${API_DEPLOYMENT_NAME} --timeout=${ROLLOUT_TIMEOUT}"
 
-  log "Waiting for the rollout (timeout ${ROLLOUT_TIMEOUT}) ..."
+  log "Waiting for the web rollout (timeout ${ROLLOUT_TIMEOUT}) ..."
   ssh -n "${REMOTE}" "${KUBECTL} -n '${NAMESPACE}' rollout status deploy/${DEPLOYMENT_NAME} --timeout=${ROLLOUT_TIMEOUT}"
 
   # A green rollout means the probes passed. /healthz is a filesystem-independent
@@ -419,11 +535,62 @@ do_apply() {
     *) fail "the pod is ready but GET / does not contain the app root element; the document root is empty or wrong." ;;
   esac
 
-  local deployed_image
-  deployed_image="$(ssh -n "${REMOTE}" "${KUBECTL} -n '${NAMESPACE}' get deploy ${DEPLOYMENT_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}'" 2>/dev/null || true)"
-  [[ "${deployed_image}" == "${IMAGE_REF}" ]] ||
-    fail "the Deployment now runs '${deployed_image}', not the '${IMAGE_REF}' this run pinned."
-  log "Deployment pins ${deployed_image}."
+  # The API's readiness probe already passed, and asking again from here proves
+  # something the probe cannot: that the answer is the one THIS script's pair of
+  # images produces. /api/readyz opens a savepoint on the real database and rolls
+  # it back, so it cannot be green over a missing or read-only volume — which is
+  # the failure a shared PVC actually has.
+  log "Asserting the API answers its own readiness document ..."
+  local ready_body
+  # busybox wget, from the alpine base — same tool the web assertion above uses.
+  # It exits non-zero and prints nothing on the 503 that readyz answers with when
+  # the database probe fails, so a failed probe reaches the case below as an
+  # empty string and is refused there.
+  ready_body="$(ssh -n "${REMOTE}" "${KUBECTL} -n '${NAMESPACE}' exec deploy/${API_DEPLOYMENT_NAME} -- wget -qO- http://127.0.0.1:8080/api/readyz" 2>/dev/null || true)"
+  # The DATABASE check specifically, not the envelope's own "status". readyz
+  # returns `status: ok` only when the database probe did, so matching the
+  # envelope would work — but it would also match if the readiness contract were
+  # ever loosened to report ok while a check underneath it failed. This asserts
+  # the check that costs something: probeDatabase opens a savepoint on the real
+  # file and rolls it back, so it goes red on a volume that is absent, read-only
+  # or holding a database this build cannot open.
+  case "${ready_body}" in
+    *'"database":{"status":"ok"'*) log "API readiness document reports the database check green." ;;
+    '') fail "GET /api/readyz from inside the API pod returned nothing; readyz answers 503 (and wget prints nothing) when the database probe fails." ;;
+    *) fail "the API pod is ready by its probe but /api/readyz does not report a green database check: ${ready_body}" ;;
+  esac
+
+  assert_deployed_image "${DEPLOYMENT_NAME}" "${IMAGE_REF}"
+  assert_deployed_image "${API_DEPLOYMENT_NAME}" "${API_IMAGE_REF}"
+}
+
+# With imagePullPolicy IfNotPresent, re-importing new bytes under an
+# already-deployed tag leaves the Deployment spec byte-identical: the apply is a
+# no-op, no pod restarts, and `rollout status` reports success while the OLD
+# bytes keep serving. Comparing the generation across the apply is what detects
+# that, and an explicit restart is what fixes it.
+restart_if_spec_unchanged() {
+  local deployment="$1" gen_before="$2" gen_after
+  gen_after="$(remote_generation "${deployment}")"
+  if [[ -z "${gen_after}" ]]; then
+    fail "deployment ${deployment} does not exist in namespace ${NAMESPACE} after the apply; the manifests under ${MANIFEST_DIR} do not define it."
+  fi
+  [[ -n "${gen_before}" && "${gen_before}" == "${gen_after}" ]] || return 0
+
+  if [[ "${RESTART_IF_UNCHANGED}" == "1" ]]; then
+    log "${deployment} spec unchanged (generation ${gen_after}); restarting the rollout so re-imported bytes for ${TAG} are actually picked up."
+    ssh -n "${REMOTE}" "${KUBECTL} -n '${NAMESPACE}' rollout restart deploy/${deployment}"
+  else
+    warn "${deployment} spec unchanged (generation ${gen_after}) and RESTART_IF_UNCHANGED=0: running pods keep their current image bytes even if you just re-imported tag ${TAG}."
+  fi
+}
+
+assert_deployed_image() {
+  local deployment="$1" expected="$2" deployed
+  deployed="$(ssh -n "${REMOTE}" "${KUBECTL} -n '${NAMESPACE}' get deploy ${deployment} -o jsonpath='{.spec.template.spec.containers[0].image}'" 2>/dev/null || true)"
+  [[ "${deployed}" == "${expected}" ]] ||
+    fail "${deployment} now runs '${deployed}', not the '${expected}' this run pinned."
+  log "${deployment} pins ${deployed}."
 }
 
 # ---------------------------------------------------------------------------

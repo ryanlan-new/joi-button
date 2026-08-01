@@ -240,6 +240,11 @@ export async function boot(t, {
     dataDir,
     mediaDir: join(dataDir, 'media'),
     catalogFile: join(dataDir, 'catalog.json'),
+    // Laid out exactly as config.mjs derives it from DATA_DIR: a SIBLING of
+    // media/, because the web pod publishes media/ and staging inside it would
+    // put in-flight uploads on the public site. Tests assert the emptiness of
+    // this directory, so the layout has to be the real one.
+    stagingDir: join(dataDir, 'incoming'),
   })
 
   const clock = createTestClock(T0)
@@ -264,7 +269,11 @@ export async function boot(t, {
   //    that can disagree.
   const { config, report } = clearedConfig(
     {
-      storage: { mediaDir: paths.mediaDir, catalogFile: paths.catalogFile },
+      storage: {
+        mediaDir: paths.mediaDir,
+        catalogFile: paths.catalogFile,
+        stagingDir: paths.stagingDir,
+      },
       limits,
       danmaku: {
         mode: 'development',

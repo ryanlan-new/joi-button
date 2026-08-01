@@ -3,8 +3,6 @@
   "version": "2.5.0",
   "private": true,
   "scripts": {
-    "predeploy": "npm run build",
-    "deploy": "gh-pages -d dist",
     "serve": "vue-cli-service serve",
     "build": "vue-cli-service build",
     "contrast": "node deploy/contrast-check.mjs"

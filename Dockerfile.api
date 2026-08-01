@@ -1,0 +1,104 @@
+# joi-button — the submission/review API (server/): fastify on Node, SQLite on a PVC.
+#
+# Build:
+#   docker buildx build --platform linux/amd64 -f Dockerfile.api \
+#     -t ghcr.io/ryanlan-new/joi-button/api:replace-me .
+#
+# ---------------------------------------------------------------------------
+# WHY THIS FILE DOES NOT USE --platform=$BUILDPLATFORM, AND THE WEB ONE DOES
+# ---------------------------------------------------------------------------
+# Dockerfile's builder stage is pinned to the BUILD platform because its output —
+# dist/ — is architecture-independent static text. This one must NOT be: `npm ci`
+# here compiles better-sqlite3, a native addon, and the .node file it produces is
+# ELF for one architecture and one libc. Built on the build host and copied into
+# a linux/amd64 runtime, it would be an arm64 object in an x86-64 image and the
+# API would die on its first `require` with an "invalid ELF header".
+#
+# So the builder stage is left on the DEFAULT (target) platform. Cross-building
+# from an arm64 laptop therefore runs the compile under QEMU, which is slow but
+# correct. On the amd64 node it is native and takes seconds — which is the
+# recommended path here, and the one deploy/deploy-k3s.sh documents.
+
+# ---------------------------------------------------------------------------
+# stage 1 — install production dependencies (this is where the native build happens)
+# ---------------------------------------------------------------------------
+# node:22-alpine. NOT node:20: Node 20 left maintenance on 2026-04-30, and
+# server/package.json already declares `"engines": {"node": ">=22.0.0"}` — the
+# server uses no Node-22-only API today, but shipping a runtime the manifest
+# says is unsupported is a claim nobody is checking.
+#
+# musl, and the toolchain is installed rather than hoped for: better-sqlite3's
+# install script is `prebuild-install || node-gyp rebuild --release`, so it first
+# tries to download a prebuilt binary and falls back to compiling. Neither half
+# can be relied on alone — the download needs egress the build may not have, and
+# the compile needs python3/make/g++, which node:alpine does not carry. Both are
+# provided, so whichever branch runs, it completes.
+FROM node:22-alpine AS deps
+
+# --virtual, and removed at the end of the same RUN: these exist only for the
+# node-gyp fallback and must not be in a layer the runtime stage copies from.
+# (It copies /app/node_modules only, so this is belt and braces — but the layer
+# is also what gets pushed if anyone ever targets this stage directly.)
+WORKDIR /app
+
+COPY server/package.json server/package-lock.json ./
+
+# --omit=dev is honest here rather than aspirational: server/package.json has no
+# devDependencies at all (the test suite is node:test, which ships with Node), so
+# this installs exactly the four runtime packages the lockfile pins.
+#
+# --ignore-scripts is deliberately NOT passed: better-sqlite3's install script IS
+# the build. Passing it would produce a node_modules tree with no compiled addon
+# and no error, and the failure would surface at runtime as a missing binding.
+RUN apk add --no-cache --virtual .build-deps python3 make g++ \
+ && npm ci --omit=dev --no-audit --no-fund \
+ && node -e "const db=require('better-sqlite3')(':memory:');db.exec('CREATE TABLE t(x)');db.prepare('INSERT INTO t VALUES (?)').run(1);if(db.prepare('SELECT x FROM t').get().x!==1)process.exit(1);console.log('better-sqlite3 addon OK: sqlite '+db.prepare('SELECT sqlite_version() v').get().v)" \
+ && apk del .build-deps \
+ && npm cache clean --force
+
+# The `node -e` above is not decoration. `npm ci` exits 0 when the addon is
+# missing but the package is present (prebuild-install failing and node-gyp being
+# absent used to produce exactly that), so the only way to know the addon is
+# usable is to open a database and run a statement through it. It fails the build
+# instead of the pod.
+
+# ---------------------------------------------------------------------------
+# stage 2 — runtime
+# ---------------------------------------------------------------------------
+FROM node:22-alpine
+
+LABEL org.opencontainers.image.title="joi-button api" \
+      org.opencontainers.image.source="https://github.com/ryanlan-new/joi-button" \
+      org.opencontainers.image.description="Submission, review and catalogue API (fastify + SQLite) on 8080"
+
+WORKDIR /app
+
+# node_modules from the builder — including the compiled addon, which was built
+# against this exact base image's musl and Node ABI.
+COPY --from=deps /app/node_modules ./node_modules
+
+# The application. server/ only: nothing in the frontend tree is read at runtime,
+# and deploy/ is excluded by .dockerignore precisely so an operator's filled-in
+# deploy/runtime.env can never be baked into a layer. In the pod the same names
+# arrive through envFrom, and config.mjs treats the absent file as normal.
+COPY server/ ./
+
+# 8080, matching config.mjs's DEFAULTS.port and the web container's port, so the
+# two workloads are described the same way in the manifests.
+EXPOSE 8080
+
+# uid/gid 101 — the SAME identity nginx runs as in the web image, and that is the
+# point rather than a coincidence. Both pods mount the one `joi-button-data` PVC:
+# this one read-write, the web one read-only. If they ran as different ids, the
+# two pods' `fsGroup` settings would fight over the volume root's group ownership
+# on every restart, and whichever lost would find the tree unreadable or
+# unwritable. One id, no fight. See deploy/k8s/api-deployment.yaml.
+#
+# Numeric, not a name: `node:alpine` has a `node` user at 1000 and no user at
+# 101, and a numeric USER needs no passwd entry. Kubernetes also compares
+# runAsUser numerically, so a name here would be a second source of truth.
+USER 101
+
+# No HEALTHCHECK: the k8s probes hit /api/healthz and /api/readyz, which app.mjs
+# serves and which distinguish "process alive" from "database reachable".
+CMD ["node", "server.mjs"]

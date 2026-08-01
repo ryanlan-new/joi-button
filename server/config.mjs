@@ -108,6 +108,11 @@ const DERIVED_FROM_DATA_DIR = Object.freeze({
   dbFile: 'joi.db',
   mediaDir: 'media',
   catalogFile: 'catalog.json',
+  // A SIBLING of media/, never a child of it. The web pod publishes mediaDir at
+  // /media/ with `immutable` caching; staging inside it would make every
+  // in-flight upload publicly fetchable and then permanently cached. A sibling
+  // is still on the same volume, which is what rename() requires.
+  stagingDir: 'incoming',
 })
 
 /**
@@ -130,6 +135,7 @@ export const ENV_SOURCES = Object.freeze({
   'storage.dataDir': Object.freeze(['DATA_DIR']),
   'storage.mediaDir': Object.freeze(['MEDIA_DIR', 'DATA_DIR']),
   'storage.catalogFile': Object.freeze(['CATALOG_FILE', 'DATA_DIR']),
+  'storage.stagingDir': Object.freeze(['STAGING_DIR', 'DATA_DIR']),
 
   'limits.maxClipsPerBatch': Object.freeze(['MAX_CLIPS_PER_BATCH']),
   'limits.maxFileBytes': Object.freeze(['MAX_FILE_BYTES']),
@@ -304,6 +310,7 @@ export function loadConfig({ env: processEnv = process.env, envFile = DEFAULT_EN
   const mediaDir = read.string('storage.mediaDir') ?? join(dataDir, DERIVED_FROM_DATA_DIR.mediaDir)
   const catalogFile =
     read.string('storage.catalogFile') ?? join(dataDir, DERIVED_FROM_DATA_DIR.catalogFile)
+  const stagingDir = read.string('storage.stagingDir') ?? join(dataDir, DERIVED_FROM_DATA_DIR.stagingDir)
 
   const nodeEnv = read.string('nodeEnv')
   const sessionSecret = read.secret('session.secret')
@@ -350,7 +357,7 @@ export function loadConfig({ env: processEnv = process.env, envFile = DEFAULT_EN
       instanceMode: nodeEnv === 'development' ? 'development' : 'production',
     },
 
-    storage: { dataDir, mediaDir, catalogFile },
+    storage: { dataDir, mediaDir, catalogFile, stagingDir },
 
     limits: {
       // The ruled ceilings live in env-guard's roster (1..10 and 1..5 MiB); this

@@ -144,12 +144,17 @@ async function boot(
   { turnstileSwitch = 'auto', simulate, roomId = ROOM_ID, maxFileBytes, maxPendingCodes } = {},
 ) {
   const db = openDatabase(t, { mode: 'development', now: T0 })
-  const mediaDir = mkdtempSync(join(tmpdir(), 'joi-public-media-'))
-  t.after(() => rmSync(mediaDir, { recursive: true, force: true }))
+  // dataDir with media/ and incoming/ inside it, mirroring config.mjs's own
+  // derivation. Staging is a SIBLING of the published tree, never a child: the
+  // web pod serves mediaDir at /media/ with a one-year immutable label.
+  const dataDir = mkdtempSync(join(tmpdir(), 'joi-public-media-'))
+  const mediaDir = join(dataDir, 'media')
+  const stagingDir = join(dataDir, 'incoming')
+  t.after(() => rmSync(dataDir, { recursive: true, force: true }))
 
   const clock = createTestClock(T0)
   const { config } = clearedConfig({
-    storage: { mediaDir, catalogFile: join(mediaDir, 'catalog.json') },
+    storage: { mediaDir, stagingDir, catalogFile: join(dataDir, 'catalog.json') },
     ...(maxFileBytes === undefined ? {} : { limits: { maxClipsPerBatch: 10, maxFileBytes } }),
     danmaku: {
       mode: 'development',
@@ -177,7 +182,7 @@ async function boot(
   await app.ready()
   t.after(() => app.close())
 
-  return { app, db, source, clock, config, mediaDir }
+  return { app, db, source, clock, config, mediaDir, stagingDir }
 }
 
 /** Boot, log in through a real danmaku, and seed one group to file clips under. */
@@ -548,7 +553,7 @@ test('a development pass is recorded as bypassed and never as a real one', async
 })
 
 test('a failed challenge refuses and persists nothing at all', async (t) => {
-  const { app, cookie, db, mediaDir } = await loggedIn(t, { simulate: 'rejected' })
+  const { app, cookie, db, mediaDir, stagingDir } = await loggedIn(t, { simulate: 'rejected' })
   const answer = await post(app, '/api/submit', {
     cookie,
     parts: [
@@ -562,11 +567,11 @@ test('a failed challenge refuses and persists nothing at all', async (t) => {
   assert.equal(answer.json().error.code, 'challenge_failed')
   assert.equal(db.prepare('SELECT count(*) AS n FROM batches').get().n, 0)
   assert.equal(db.prepare('SELECT count(*) AS n FROM media').get().n, 0)
-  assert.deepEqual(readdirSync(join(mediaDir, 'tmp')), [], 'the refused upload was left on disk')
+  assert.deepEqual((existsSync(stagingDir) ? readdirSync(stagingDir) : []), [], 'the refused upload was left on disk')
 })
 
 test('item 3 failing does not lose items 1, 2, 4 and 5', async (t) => {
-  const { app, cookie, db, mediaDir } = await loggedIn(t, { turnstileSwitch: 'off' })
+  const { app, cookie, db, mediaDir, stagingDir } = await loggedIn(t, { turnstileSwitch: 'off' })
   const items = [1, 2, 3, 4, 5].map((n) => anItem({ key: `k${n}`, name: `Clip ${n}` }))
   const parts = [metadata(items)]
   for (const n of [1, 2, 4, 5]) {
@@ -595,7 +600,7 @@ test('item 3 failing does not lose items 1, 2, 4 and 5', async (t) => {
     assert.ok(existsSync(join(mediaDir, row.storage_path)), `a media row points at bytes that are not there: ${row.storage_path}`)
   }
   // Swept before the response, not after it, so this is a fact and not a race.
-  assert.deepEqual(readdirSync(join(mediaDir, 'tmp')), [])
+  assert.deepEqual((existsSync(stagingDir) ? readdirSync(stagingDir) : []), [])
 })
 
 test('an oversized file loses only itself', async (t) => {
@@ -892,12 +897,14 @@ test('one submitter never sees another submitter\'s history', async (t) => {
 async function assembled(t, { maxFileBytes = 5 * 1024 * 1024 } = {}) {
   const { createApp, createSessionCookie, SESSION_COOKIE_NAME } = await import('../app.mjs')
   const db = openDatabase(t, { mode: 'development', now: T0 })
-  const mediaDir = mkdtempSync(join(tmpdir(), 'joi-public-app-'))
-  t.after(() => rmSync(mediaDir, { recursive: true, force: true }))
+  const dataDir = mkdtempSync(join(tmpdir(), 'joi-public-app-'))
+  const mediaDir = join(dataDir, 'media')
+  const stagingDir = join(dataDir, 'incoming')
+  t.after(() => rmSync(dataDir, { recursive: true, force: true }))
 
   const clock = createTestClock(T0)
   const { config } = clearedConfig({
-    storage: { mediaDir, catalogFile: join(mediaDir, 'catalog.json') },
+    storage: { mediaDir, stagingDir, catalogFile: join(dataDir, 'catalog.json') },
     limits: { maxClipsPerBatch: 10, maxFileBytes },
     danmaku: { mode: 'development', roomId: ROOM_ID, codeTtlMinutes: 10, clock },
     turnstile: { mode: 'development', switch: 'off' },
@@ -923,7 +930,7 @@ async function assembled(t, { maxFileBytes = 5 * 1024 * 1024 } = {}) {
   })
   await app.ready()
   t.after(() => app.close())
-  return { app, db, danmaku, clock, mediaDir, createSessionCookie, cookieName: SESSION_COOKIE_NAME }
+  return { app, db, danmaku, clock, mediaDir, stagingDir, createSessionCookie, cookieName: SESSION_COOKIE_NAME }
 }
 
 test('the plugin registers onto a server that already has multipart, and keeps its per-item rule there', async (t) => {

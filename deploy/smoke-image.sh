@@ -39,10 +39,34 @@ FAIL=0
 cleanup() { docker rm -f "$NAME" >/dev/null 2>&1 || true; }
 trap cleanup EXIT INT TERM
 
-# An optional stand-in for the API's shared volume. When present the two
-# locations that serve it are asserted; when absent the site must still work,
-# which is itself a requirement (a first deploy has no API yet).
+# An optional stand-in for the API's shared volume. When present the locations
+# that serve it are asserted; when absent the site must still work, which is
+# itself a requirement (a first deploy has no API yet).
+#
+#   SMOKE_SHARED_DIR=<path>   use this directory
+#   SMOKE_SHARED=1            make one in a temp directory and remove it after
+#
+# THE FIXTURES ARE SEEDED HERE, NOT EXPECTED FROM THE CALLER. A caller who
+# supplied a directory missing `media/deadbeef01234567.mp3` would see
+# "published media is served" fail for the wrong reason, and — worse — a caller
+# who forgot `media/tmp/staged0123456789.mp3` would see the staging assertion
+# PASS against a file that does not exist. That is the exact shape of false
+# green this script exists to prevent, so it writes what it is about to assert
+# on. Files it already finds are left alone.
 SHARED_DIR="${SMOKE_SHARED_DIR:-}"
+if [ -z "$SHARED_DIR" ] && [ "${SMOKE_SHARED:-0}" = "1" ]; then
+  SHARED_DIR="$(mktemp -d)"
+  trap 'cleanup; rm -rf "$SHARED_DIR"' EXIT INT TERM
+fi
+if [ -n "$SHARED_DIR" ]; then
+  mkdir -p "${SHARED_DIR}/media/tmp"
+  [ -e "${SHARED_DIR}/catalog.json" ] || printf '{"version":1,"groups":[],"clips":[]}\n' > "${SHARED_DIR}/catalog.json"
+  # Not real audio: nginx serves bytes and never parses them. What matters is
+  # that the file exists, so a 404 means the location refused it rather than
+  # that there was nothing there.
+  [ -e "${SHARED_DIR}/media/deadbeef01234567.mp3" ] || printf 'published\n' > "${SHARED_DIR}/media/deadbeef01234567.mp3"
+  [ -e "${SHARED_DIR}/media/tmp/staged0123456789.mp3" ] || printf 'staged\n' > "${SHARED_DIR}/media/tmp/staged0123456789.mp3"
+fi
 
 RUN_ARGS=(
   --name "$NAME" -d
@@ -159,8 +183,10 @@ echo "--- no build output hardcodes the GitHub Pages prefix (INC-002)"
 # rewrite was a MITIGATION for two files that hardcoded the prefix; INC-002 fixed
 # the cause — the background moved into webpack's asset pipeline and the web
 # manifest's icon became relative to the manifest URL — so the correct guard is
-# now that nothing in the served output reintroduces it. The nginx rewrite block
-# stays until STORY-046 retires it; it simply has nothing left to catch.
+# now that nothing in the served output reintroduces it. STORY-046 then retired
+# GitHub Pages outright: vue.config.js's production default is '/' and the nginx
+# rewrite block is gone, so these two refutations are no longer belt-and-braces
+# behind a mitigation — they are the check.
 CSS_HREF="$(body / | sed -n 's/.*href="\([^"]*app\.[^"]*\.css\)".*/\1/p' | head -1)"
 [ -n "$CSS_HREF" ] || { echo "NO_APP_STYLESHEET_IN_INDEX"; exit 92; }
 refute "index.html has no /joi-button/ asset path" "/joi-button/"              "$(body / | tr '"' '\n' | grep -E '^/joi-button/')"
@@ -191,6 +217,13 @@ if [ -n "$SHARED_DIR" ]; then
   check  "published media is served"              "200"                        "$(code /media/deadbeef01234567.mp3)"
   check  "published media is immutable"           "immutable"                  "$(hdr /media/deadbeef01234567.mp3)"
   check  "a missing media file is 404"            "404"                        "$(code /media/absent0123456789.mp3)"
+  # A REAL file, put there by the caller, that must not be served. Uploads stage
+  # in /srv/shared/incoming/ now, so this path is empty in normal operation —
+  # which is exactly why the fixture has to exist for the assertion to mean
+  # anything. Without the `location ^~ /media/tmp/` block this returns 200 and
+  # the label `immutable`, i.e. an unreviewed clip published for a year.
+  check  "staged upload under /media/tmp/ is refused" "404"                     "$(code /media/tmp/staged0123456789.mp3)"
+  refute "a refused staged upload is not frozen"      "immutable"               "$(hdr /media/tmp/staged0123456789.mp3)"
   refute "the shared volume is not writable here" "WRITABLE"                   "$(docker exec "$NAME" sh -c 'touch /srv/shared/probe 2>/dev/null && echo WRITABLE || echo readonly' 2>&1)"
 else
   echo "--- no shared volume mounted: the site must still work without the API"

@@ -19,7 +19,13 @@ export function makeConfig({
 } = {}) {
   return {
     database: { file: '/srv/joi/joi.db', ...database },
-    storage: { mediaDir: '/srv/joi/media', catalogFile: '/srv/joi/catalog.json', ...storage },
+    storage: {
+      mediaDir: '/srv/joi/media',
+      catalogFile: '/srv/joi/catalog.json',
+      // A sibling of mediaDir, not a child: the web pod publishes mediaDir.
+      stagingDir: '/srv/joi/incoming',
+      ...storage,
+    },
     limits: { maxClipsPerBatch: 10, maxFileBytes: 5 * MiB, ...limits },
     danmaku: { mode: 'development', codeTtlMinutes: 10, ...danmaku },
     turnstile: { mode: 'development', switch: 'auto', ...turnstile },

@@ -420,6 +420,16 @@ export default async function publicRoutes(fastify, options = {}) {
   const maxClipsPerBatch = config.limits?.maxClipsPerBatch ?? 10
   const maxFileBytes = config.limits?.maxFileBytes ?? 5 * 1024 * 1024
   const mediaDir = required(config.storage?.mediaDir, 'config.storage.mediaDir')
+  // Staging lives OUTSIDE mediaDir, and that is a security property rather than
+  // tidiness. It used to be `join(mediaDir, 'tmp')`, which put in-flight uploads
+  // inside the exact tree the web pod publishes: deploy/nginx.conf aliases
+  // /media/ to that directory and labels everything under it `immutable` for a
+  // year, so an unreviewed clip was fetchable at a guessable content-addressed
+  // URL for the length of its own upload — and once fetched, cached for a year
+  // with no way to withdraw it. `incoming/` is a sibling of `media/` on the same
+  // volume, so rename() is still within one filesystem (an EXDEV rename would
+  // throw and lose the upload), and nothing serves it.
+  const stagingDir = required(config.storage?.stagingDir, 'config.storage.stagingDir')
   const roomId = Number.isInteger(config.danmaku?.roomId) && config.danmaku.roomId > 0
     ? config.danmaku.roomId
     : null
@@ -1056,7 +1066,7 @@ export default async function publicRoutes(fastify, options = {}) {
     }
     if (!request.isMultipart()) return refuse(reply, 415, 'multipart_required')
 
-    const tmpDir = join(mediaDir, 'tmp')
+    const tmpDir = stagingDir
     await mkdir(tmpDir, { recursive: true })
 
     // The list is owned HERE and handed in, not returned. A files-limit error

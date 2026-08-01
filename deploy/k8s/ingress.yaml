@@ -40,6 +40,30 @@ spec:
     - host: replace-me.invalid
       http:
         paths:
+          # /api FIRST in the list, though the order in the file is not what
+          # decides it: the Ingress spec says the LONGEST matching path wins for
+          # pathType Prefix, and traefik implements that by computing a rule
+          # priority from the matcher's length. It is written first anyway so a
+          # reader does not have to know that to predict the routing.
+          #
+          # Prefix, and every route the API serves is under /api — routes/admin.mjs
+          # even refuses to be registered with a fastify `prefix`, because its
+          # routes carry their full paths and a prefix would move all of them to
+          # /api/admin/api/admin/* where each would 404 silently. So this one
+          # rule is the whole API surface, and a route that is not under /api is
+          # unreachable from outside rather than reachable by another name.
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: joi-button-api
+                port:
+                  number: 80
+          # Everything else is the static site — including /media/ and
+          # /catalog.json, which nginx serves off the shared volume rather than
+          # proxying to the API. That is deliberate: the read path stays up while
+          # the API pod is restarting or gone, and a Recreate rollout of the API
+          # (see api-deployment.yaml) does not take the site down with it.
           - path: /
             pathType: Prefix
             backend:

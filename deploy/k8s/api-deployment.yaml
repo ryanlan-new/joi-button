@@ -1,0 +1,203 @@
+# SPDX-License-Identifier: MIT
+#
+# joi-button — the submission/review API: fastify on Node, SQLite on the shared
+# PVC, built by Dockerfile.api.
+#
+# This is the WRITE side of `joi-button-data`. The web pod mounts the same claim
+# read-only and serves catalog.json and the published media straight off it, so
+# these two workloads share a volume rather than an HTTP hop. Two consequences
+# that are easy to miss and expensive to discover:
+#
+#   * They must land on the SAME NODE. k3s's default local-path StorageClass is
+#     node-local and the claim is RWO, so a second node in this cluster would
+#     silently split them and one of the two pods would never schedule. On a
+#     single-node cluster this is free; it is the first thing to revisit if a
+#     node ever joins. Nothing here pins them together — a nodeSelector would be
+#     a second fact to keep in sync with reality, and the single-node assumption
+#     is already written down in deploy/k8s/README.md.
+#   * They run as the SAME uid/gid (101). See the securityContext below.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: joi-button-api
+  namespace: joi-button
+  labels:
+    app.kubernetes.io/name: joi-button-api
+    app.kubernetes.io/part-of: joi-button
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy:
+    # Recreate, NOT RollingUpdate — and this one is not a preference.
+    #
+    # The authority for everything this API serves is a single SQLite file on an
+    # RWO volume. During a rolling update the old and new pods overlap, and two
+    # processes holding the same SQLite file open in WAL mode from separate
+    # containers is not a supported configuration: better-sqlite3 takes POSIX
+    # locks, which do coordinate between processes on one host, but the failure
+    # mode when they do not (a stale NFS-style lock, a volume remounted under a
+    # second mount namespace) is a corrupt database rather than an error. The
+    # cost of Recreate is a few seconds of 502 on /api/* during a deploy; the
+    # site itself keeps serving throughout, because the web pod reads the volume
+    # directly and does not depend on this one being up.
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: joi-button-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: joi-button-api
+        app.kubernetes.io/part-of: joi-button
+    spec:
+      # This pod never talks to the API server either.
+      automountServiceAccountToken: false
+      # Longer than the web pod's 30s: an in-flight upload of up to ten 5MB
+      # clips should be allowed to finish or be refused rather than cut, and
+      # SQLite's WAL checkpoint on close is worth waiting for.
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        # 101, the same id nginx runs as in the web image, because both pods
+        # mount `joi-button-data`. `fsGroup` makes kubelet chown the volume root
+        # to that group; two pods asking for two different groups would take
+        # turns chowning it on every restart, and whichever lost would find the
+        # tree unreadable or unwritable with no error anywhere but at the first
+        # open(). One id, no fight. Dockerfile.api sets the same number.
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api
+          image: ghcr.io/ryanlan-new/joi-button/api:replace-me
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: http
+              containerPort: 8080
+          # The secret is created by deploy/deploy-k3s.sh from deploy/runtime.env
+          # (`kubectl create secret generic --from-env-file`), not by a manifest
+          # in this repository. A committed Secret template with blank values
+          # would be applied on every `kubectl apply -f deploy/k8s/` and would
+          # OVERWRITE the real one with blanks — a deploy that silently unsets
+          # every credential. So the values live in one git-ignored file and
+          # reach the pod by name.
+          envFrom:
+            - secretRef:
+                name: joi-button-runtime
+          env:
+            # Not in the Secret: these are not secret, and putting them there
+            # would mean an operator editing a hostname has to touch the same
+            # file that holds the signing key.
+            #
+            # NODE_ENV is stated rather than defaulted. server/lib/env-guard.mjs
+            # treats an unset NODE_ENV as production — the safe direction — but
+            # an env-guard refusal that names a variable nobody set is a worse
+            # message than one that names a variable set to the wrong thing.
+            - name: NODE_ENV
+              value: production
+            - name: PORT
+              value: "8080"
+            - name: HOST
+              value: 0.0.0.0
+            # ABSOLUTE, and env-guard refuses a relative path in production for
+            # exactly this reason: a relative DATA_DIR resolves against the
+            # container's WORKDIR (/app, inside the read-only image) rather than
+            # against the volume, so the API would write its database into a
+            # filesystem it cannot write, or worse, into an ephemeral layer.
+            #
+            # From this one value config.mjs derives:
+            #   /srv/shared/joi.db        the database  (served by nothing)
+            #   /srv/shared/media         published clips (web pod: /media/)
+            #   /srv/shared/catalog.json  the catalogue   (web pod: /catalog.json)
+            #   /srv/shared/incoming      in-flight uploads (served by nothing)
+            # deploy/nginx.conf publishes exactly the two middle entries by name.
+            # It has no rule that could reach joi.db or incoming/, and there is a
+            # `location ^~ /media/tmp/` deny standing over the staging path this
+            # code used to use.
+            - name: DATA_DIR
+              value: /srv/shared
+            # One hop: traefik. With `true`, fastify would take the LEFTMOST
+            # X-Forwarded-For entry, which any client can write — and that
+            # address is what turnstile.verify() sends to siteverify as
+            # `remoteip`, where a spoofed value turns into a hard rejection for a
+            # legitimate visitor. config.mjs refuses `true` outright.
+            - name: TRUST_PROXY
+              value: "1"
+            # The ruled 10-minute code lifetime. It is ALSO the room session's
+            # lease, so the Open Platform socket closes when the last code
+            # expires — the ruling was that the room is listened to on demand,
+            # not around the clock.
+            - name: CODE_TTL_MINUTES
+              value: "10"
+            - name: LOG_LEVEL
+              value: info
+          resources:
+            requests:
+              # Larger than the web pod's: this one holds a SQLite connection,
+              # parses uploads and hashes them.
+              cpu: 25m
+              memory: 96Mi
+            limits:
+              cpu: 500m
+              # Ten concurrent 5MB uploads are streamed, not buffered whole
+              # (no route calls saveRequestFiles), so this is headroom for the
+              # process and its page cache rather than for the payload.
+              memory: 320Mi
+          # /api/healthz is a constant document: it proves the process is alive
+          # and answers nothing about the database. /api/readyz opens a
+          # savepoint and rolls it back, so it goes red when the volume is gone
+          # or read-only. Liveness must NOT use readyz — a database that is
+          # briefly unavailable would then restart the pod, which does not fix a
+          # volume and turns a degraded read into a crash loop.
+          startupProbe:
+            httpGet:
+              path: /api/readyz
+              port: http
+            initialDelaySeconds: 1
+            periodSeconds: 2
+            timeoutSeconds: 3
+            # Node boots in ~1s, but the first start on a fresh volume also runs
+            # the migration. 30 tries is ~60s.
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /api/readyz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /api/healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            - name: shared
+              mountPath: /srv/shared
+            # readOnlyRootFilesystem is on, and something in a Node process
+            # eventually wants a scratch path. Nothing in this application
+            # stages uploads through /tmp — busboy streams and the catalogue
+            # writes its temp file beside the target so rename() stays on one
+            # filesystem — so this is insurance rather than a requirement, and
+            # it is bounded so it can never be the thing that fills the node.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: shared
+          persistentVolumeClaim:
+            claimName: joi-button-data
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi

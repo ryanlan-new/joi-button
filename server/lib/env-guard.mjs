@@ -276,6 +276,11 @@ const REQUIREMENTS = Object.freeze([
     why: 'catalog.json on the shared PVC; the web pod serves this file.',
   },
   {
+    path: 'storage.stagingDir',
+    kind: 'path',
+    why: 'In-flight uploads, on the shared PVC and OUTSIDE mediaDir — the web pod publishes mediaDir, so staging inside it would expose unreviewed clips.',
+  },
+  {
     path: 'limits.maxClipsPerBatch',
     kind: 'integer',
     min: 1,

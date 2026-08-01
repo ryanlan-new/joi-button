@@ -28,10 +28,22 @@ docs
 
 # container plumbing: the Dockerfile is passed to the builder out of band, and
 # only nginx.conf is COPYed, so exclude the rest of deploy/ but re-admit it.
+#
+# `deploy/*` is what keeps the operator's filled-in deploy/runtime.env and
+# deploy/deploy.env — both git-ignored, both full of secrets — out of every build
+# context. Do not re-admit either one "just for the API image": the API reads
+# those names from envFrom in the pod, and config.mjs treats the missing file as
+# the normal case.
 Dockerfile
+Dockerfile.api
 .dockerignore
 deploy/*
 !deploy/nginx.conf
+
+# the API's working directory: a local development database, staged uploads and
+# published media. Excluded for the same reason as deploy/runtime.env — a
+# developer's .data/joi.db holds real submitter open_ids.
+server/.data
 
 # editor / OS noise
 .DS_Store

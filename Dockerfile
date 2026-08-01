@@ -38,9 +38,10 @@ RUN npm ci --no-audit --no-fund
 
 COPY . .
 
-# vue.config.js reads process.env.PUBLIC_PATH and falls back to the GitHub
-# Pages default (/joi-button/) in production.  The container build serves from
-# the domain root, so it passes '/'.
+# vue.config.js reads process.env.PUBLIC_PATH; since GitHub Pages was retired
+# its own default is '/' too, so this ARG now RESTATES the default rather than
+# overriding a different one.  It is kept because a subpath deployment would need
+# it and because the gate below has to have a value to compare against.
 ARG PUBLIC_PATH=/
 ENV PUBLIC_PATH=${PUBLIC_PATH}
 
@@ -48,15 +49,32 @@ ENV PUBLIC_PATH=${PUBLIC_PATH}
 # production itself, whereas exporting it before `npm ci` risks dropping the
 # devDependencies that provide vue-cli-service.
 #
-# The grep is a real gate, not decoration: if vue.config.js ever stops honouring
-# PUBLIC_PATH, the emitted index.html references /joi-button/js/* and the image
-# would silently serve asset URLs that 404 at the domain root.  It fails the
-# build instead.
+# THE GATE, and why it is no longer a grep for '/joi-button/'.
+# It used to be `grep -q '/joi-button/js/'`, which worked while that string was
+# vue.config.js's production default: a build that ignored PUBLIC_PATH emitted
+# it, and the grep caught it.  With the default now '/', that grep can never
+# match no matter what vue.config.js does — it would be a gate whose predicate
+# cannot be false, i.e. decoration that reads like protection.
+#
+# So the gate asks the question directly instead: does the prefix on the emitted
+# <script src> equal the PUBLIC_PATH we asked for?  It goes red if vue.config.js
+# stops honouring PUBLIC_PATH, if a subpath build is served at the root, or if a
+# root build is served under a subpath — including prefixes nobody has thought of
+# yet.  Exercised in all three directions before being committed: a real
+# PUBLIC_PATH=/ build reads '/' (green), a real PUBLIC_PATH=/sub/ build reads
+# '/sub/' (green — so it is not red-always), and the root build checked against
+# '/sub/', which is exactly "vue.config.js ignored PUBLIC_PATH", exits 1.
 RUN npm run build \
  && test -s dist/index.html \
  && test -d dist/voices \
- && if [ "${PUBLIC_PATH}" = "/" ] && grep -q '/joi-button/js/' dist/index.html; then \
-        echo "FATAL: build used publicPath=/joi-button/; PUBLIC_PATH=${PUBLIC_PATH} was ignored by vue.config.js" >&2; \
+ && emitted="$(sed -n 's|.*<script[^>]* src="\([^"]*\)/js/app\.[^"]*".*|\1/|p' dist/index.html | head -n1)" \
+ && if [ -z "${emitted}" ]; then \
+        echo "FATAL: no <script src=\".../js/app.<hash>.js\"> in dist/index.html; the build layout changed and this gate no longer measures anything." >&2; \
+        exit 1; \
+    fi \
+ && if [ "${emitted}" != "${PUBLIC_PATH}" ]; then \
+        echo "FATAL: asked for PUBLIC_PATH=${PUBLIC_PATH} but dist/index.html references assets under ${emitted}." >&2; \
+        echo "       vue.config.js is not honouring PUBLIC_PATH; every asset URL would 404 where this image is served." >&2; \
         exit 1; \
     fi
 

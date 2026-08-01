@@ -34,12 +34,31 @@ import {
 
 const MiB = 1024 * 1024
 
-/** The state of the shared directory: what landed, and what was left behind. */
-function onDisk(mediaDir) {
-  if (!existsSync(mediaDir)) return { entries: [], temp: [] }
-  const entries = readdirSync(mediaDir).sort()
-  const tempDir = join(mediaDir, 'tmp')
-  return { entries, temp: existsSync(tempDir) ? readdirSync(tempDir) : [] }
+/**
+ * The state of the shared volume: what landed, and what was left behind.
+ *
+ * Takes the whole `paths` object rather than mediaDir alone, because the two
+ * directories are deliberately siblings. Staging used to be `mediaDir/tmp`,
+ * inside the tree deploy/nginx.conf publishes at /media/ with a one-year
+ * `immutable` label — so an unreviewed clip was fetchable at a content-addressed
+ * URL while its own upload was in flight, and permanently cached by anyone who
+ * did. `published` is what the site serves; `temp` is what nothing serves.
+ */
+function onDisk(paths) {
+  const { mediaDir, stagingDir } = paths
+  const entries = existsSync(mediaDir) ? readdirSync(mediaDir).sort() : []
+  // Not merely "empty at the end": nothing may be under mediaDir that is not a
+  // published shard. If staging is ever moved back inside, this goes red on
+  // every batch rather than only on a leaked one.
+  assert.equal(
+    entries.includes('tmp'),
+    false,
+    'staging reappeared inside mediaDir, which the web pod publishes as /media/ with immutable caching',
+  )
+  return {
+    entries,
+    temp: existsSync(stagingDir) ? readdirSync(stagingDir) : [],
+  }
 }
 
 async function ready(t, options = {}) {
@@ -112,7 +131,7 @@ test('a required challenge with no token is refused, hands back the site key, an
   assert.equal(db.prepare('SELECT count(*) AS n FROM media').get().n, 0)
   // Swept BEFORE the response, not after it: "gone by the time the submitter is
   // told" is checkable, "gone shortly afterwards" is not.
-  assert.deepEqual(onDisk(paths.mediaDir).temp, [], 'the refused upload was left on disk')
+  assert.deepEqual(onDisk(paths).temp, [], 'the refused upload was left on disk')
 })
 
 test('the challenge is re-decided at submit time rather than taken from the client', async (t) => {
@@ -292,10 +311,14 @@ test('an eleventh file is refused by the framework, and not one of the ten befor
   assert.equal(db.prepare('SELECT count(*) AS n FROM batches').get().n, 0)
   assert.equal(db.prepare('SELECT count(*) AS n FROM batch_items').get().n, 0)
   assert.equal(db.prepare('SELECT count(*) AS n FROM media').get().n, 0)
-  const disk = onDisk(paths.mediaDir)
+  const disk = onDisk(paths)
   assert.deepEqual(disk.temp, [], 'the drained parts of a refused batch were left on the volume')
+  // No filter. It used to read `.filter((entry) => entry !== 'tmp')`, because
+  // staging was a child of mediaDir and its directory was legitimately present.
+  // Now nothing but published shards may be here at all, and onDisk() asserts
+  // that 'tmp' is not among them.
   assert.deepEqual(
-    disk.entries.filter((entry) => entry !== 'tmp'),
+    disk.entries,
     [],
     'a content-addressed blob landed for a batch that was refused whole',
   )
@@ -328,7 +351,7 @@ test('a 6 MB file is refused and loses only itself', async (t) => {
   const media = db.prepare('SELECT bytes FROM media').all()
   assert.equal(media.length, 1, 'the truncated prefix of an oversized file was stored')
   assert.ok(media[0].bytes < 5 * MiB)
-  assert.deepEqual(onDisk(paths.mediaDir).temp, [])
+  assert.deepEqual(onDisk(paths).temp, [])
 })
 
 test('a file whose bytes are not audio is refused however it is named', async (t) => {
@@ -402,7 +425,7 @@ test('item 3 failing leaves items 1, 2, 4 and 5 stored, and every item is answer
       `a media row points at bytes that are not there: ${row.storage_path}`,
     )
   }
-  assert.deepEqual(onDisk(paths.mediaDir).temp, [])
+  assert.deepEqual(onDisk(paths).temp, [])
 
   // …and the submitter is told the same thing when they come back for it.
   const mine = (await get(app, '/api/my/submissions', { cookie })).json()

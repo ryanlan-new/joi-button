@@ -205,9 +205,11 @@ somebody signed off.
   a hosts entry (`$LB_ADDRESS $APP_HOST`); adding a hosts entry needs root and is
   the operator's call. The `curl --resolve` and port-forward recipes above are the
   DNS-independent ways to confirm the deployment itself.
-- **This does not replace GitHub Pages.** The Pages workflow
-  (`.github/workflows/deploy.yml`, publishing `dist/` on push to `main`) is
-  untouched. The two deployments are not the same build: the container build
-  passes `PUBLIC_PATH=/` because it serves from the domain root, while the Pages
-  build keeps the default `/joi-button/`. A `dist/` built for one will load no
-  assets under the other.
+- **This replaced GitHub Pages; Pages is retired.** `.github/workflows/deploy.yml`
+  is deleted and `vue.config.js` now serves from `/` in every mode. The reason is
+  structural rather than preference: Pages serves static files and nothing else,
+  so a site with an API has nowhere to put `/api/*`. There is one deployment now,
+  and one publicPath. Old `ryanlan-new.github.io/joi-button/…` links are a
+  different origin and nothing here can redirect them — if that matters, the
+  Pages site has to be turned off in the repository's settings by hand, which is
+  the owner's action and not something a manifest can do.

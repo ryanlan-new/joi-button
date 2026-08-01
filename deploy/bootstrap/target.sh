@@ -135,13 +135,30 @@ install_k3s() {
   confirm_yes 'Install k3s now?' || die 'aborted — install k3s yourself, then re-run'
   run_on 'curl -sfL https://get.k3s.io | sudo sh -' >&2 \
     || die 'the k3s installer failed (check sudo and internet access)'
+
   note 'Waiting for the node to become Ready...'
-  local i
+  local i ready=0
   for i in $(seq 1 30); do
-    run_on 'sudo k3s kubectl get nodes 2>/dev/null | grep -qw Ready' && { note 'k3s is Ready.'; return; }
+    run_on 'sudo k3s kubectl get nodes 2>/dev/null | grep -qw Ready' && { ready=1; break; }
     sleep 4
   done
-  die 'k3s installed but the node did not become Ready in time; check `sudo k3s kubectl get nodes`'
+  [[ $ready == 1 ]] || die 'k3s installed but the node did not become Ready in time; check `sudo k3s kubectl get nodes`'
+  note 'Node is Ready.'
+
+  # k3s BUNDLES traefik and local-path, but its deploy/helm controller brings them
+  # up a bit AFTER the node goes Ready — traefik especially, via a helm-install Job
+  # that takes ~a minute. Without this wait the k3s prerequisite check in
+  # choose_target fires immediately and dies on "no traefik" for a cluster that is
+  # simply still finishing its own bootstrap. Wait for both to appear.
+  note 'Waiting for the bundled traefik ingress and local-path storage to come up...'
+  local up=0
+  for i in $(seq 1 60); do
+    if run_on 'sudo k3s kubectl -n kube-system get deploy traefik >/dev/null 2>&1' \
+       && run_on 'sudo k3s kubectl get storageclass local-path >/dev/null 2>&1'; then up=1; break; fi
+    sleep 4
+  done
+  [[ $up == 1 ]] && note 'traefik and local-path are up. k3s is ready.' \
+    || note 'traefik/local-path did not appear within the wait; the prerequisite check below will say if they are truly missing.'
 }
 
 install_docker() {

@@ -42,6 +42,12 @@ source "$REPO_ROOT/deploy/bootstrap/domain.sh"
 source "$REPO_ROOT/deploy/bootstrap/target.sh"
 # shellcheck source=deploy/bootstrap/tls.sh
 source "$REPO_ROOT/deploy/bootstrap/tls.sh"
+# shellcheck source=deploy/bootstrap/apply.sh
+source "$REPO_ROOT/deploy/bootstrap/apply.sh"
+# shellcheck source=deploy/bootstrap/first-admin.sh
+source "$REPO_ROOT/deploy/bootstrap/first-admin.sh"
+# shellcheck source=deploy/bootstrap/selfcheck.sh
+source "$REPO_ROOT/deploy/bootstrap/selfcheck.sh"
 
 hr()   { printf '\n\033[1m=== %s ===\033[0m\n' "$1" >&2; }
 say()  { printf '  %s\n' "$1" >&2; }
@@ -67,21 +73,36 @@ step_tls() {
   choose_tls
 }
 
-# The remaining steps are built next; run them individually as they land. Until
-# then the whole-sequence run stops here rather than pretend to have done more.
-step_todo() {
-  hr 'Steps 5–6 — coming next'
-  say "Target ${DEPLOY_TARGET:-?}, TLS ${TLS_MODE:-?}. Next: apply, first-admin, self-check."
+step_apply() {
+  hr 'Step 5 — build and deploy'
+  apply_target
 }
 
+step_first_admin() {
+  hr 'Step 6 — first admin'
+  bootstrap_first_admin
+}
+
+step_selfcheck() {
+  hr 'Step 7 — self-check'
+  self_check
+}
+
+# The `all` run threads the collected values (DEPLOY_TARGET, TLS_MODE, APP_HOST,
+# secrets) through in one shell; running a single step by name re-reads
+# deploy/deploy.env for the site values, but the credential/target steps that
+# only live in shell state must precede the ones that use them.
 main() {
   case "${1:-all}" in
-    env)    step_env ;;
-    domain) step_domain ;;
-    target) step_target ;;
-    tls)    step_tls ;;
-    all)    step_env; step_domain; step_target; step_tls; step_todo ;;
-    *)      die "unknown step '${1}' (use: env | domain | target | tls | all)" ;;
+    env)         step_env ;;
+    domain)      step_domain ;;
+    target)      step_target ;;
+    tls)         step_tls ;;
+    apply)       step_apply ;;
+    first-admin) step_first_admin ;;
+    selfcheck)   step_selfcheck ;;
+    all)         step_env; step_domain; step_target; step_tls; step_apply; step_first_admin; step_selfcheck ;;
+    *)           die "unknown step '${1}' (use: env|domain|target|tls|apply|first-admin|selfcheck|all)" ;;
   esac
 }
 

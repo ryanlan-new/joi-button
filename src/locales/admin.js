@@ -292,6 +292,8 @@ export default {
         retentionLeft: '还有 {days} 天',
         retentionDue: '待回收',
         retentionUnknown: '未知',
+        retentionReclaimed: '已回收',
+        retentionRetained: '保留中',
         revise: '改判',
         open: '正在看'
       },
@@ -642,6 +644,8 @@ export default {
         retentionLeft: '{days} days left',
         retentionDue: 'due for cleanup',
         retentionUnknown: 'unknown',
+        retentionReclaimed: 'reclaimed',
+        retentionRetained: 'retained',
         revise: 'Revise',
         open: 'Open'
       },
@@ -992,6 +996,8 @@ export default {
         retentionLeft: '残り {days} 日',
         retentionDue: '回収待ち',
         retentionUnknown: '不明',
+        retentionReclaimed: '回収済み',
+        retentionRetained: '保持中',
         revise: '再判定',
         open: '表示中'
       },

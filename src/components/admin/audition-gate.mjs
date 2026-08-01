@@ -119,9 +119,12 @@ export function adoptsEnded(phase) {
  * Must this audition stand down because another one seized the shared player?
  *
  * A `player:play` from a DIFFERENT owner means the one playhead is now on another
- * clip, so this audition's playback is gone. If it was in flight it must leave
- * 'playing'/'stalled', or it would later adopt the new clip's `ended` and credit
- * it to the wrong item. Its own `player:play` (same owner) is not a takeover.
+ * clip, so this audition's playback context is gone. 'paused' counts as well as
+ * 'playing'/'stalled': a paused audition's position is against a src the shared
+ * element no longer holds, so a bare `player:replay` (resume) would continue the
+ * OTHER clip and then adopt its `ended`. Standing down (→ idle) drops the stale
+ * resume and forces a fresh play. Its own `player:play` (same owner) is not a
+ * takeover.
  *
  * @param {string} phase this audition's current phase
  * @param {*} eventOwner the owner id carried by the player:play event
@@ -129,5 +132,5 @@ export function adoptsEnded(phase) {
  */
 export function standsDownFor(phase, eventOwner, selfId) {
   if (eventOwner === selfId) return false
-  return phase === 'playing' || phase === 'stalled'
+  return phase === 'playing' || phase === 'stalled' || phase === 'paused'
 }

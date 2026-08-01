@@ -134,15 +134,18 @@ test('only an audition with playback in flight adopts an ended', () => {
 
 test('an audition stands down when a DIFFERENT owner seizes the shared player, and only then', () => {
   // The bug this guards: the queue desk, left playing under v-show, must leave
-  // 'playing'/'stalled' when the recycle desk starts a clip — or it adopts that
-  // clip's `ended`. A takeover only counts against an in-flight audition...
-  assert.equal(standsDownFor('playing', 'recycle-audition', 'queue-audition'), true)
-  assert.equal(standsDownFor('stalled', 'recycle-audition', 'queue-audition'), true)
-  // ...not against one that is idle/paused/done (nothing to lose)...
-  for (const phase of ['idle', 'paused', 'heard', 'truncated']) {
+  // 'playing'/'stalled'/'paused' when the recycle desk starts a clip — or it
+  // adopts that clip's `ended` (playing/stalled), or resumes it (paused). A
+  // takeover counts against any audition with a live or suspended playback
+  // context...
+  for (const phase of ['playing', 'stalled', 'paused']) {
+    assert.equal(standsDownFor(phase, 'recycle-audition', 'queue-audition'), true, phase)
+  }
+  // ...not against one that is idle or done (nothing to lose)...
+  for (const phase of ['idle', 'heard', 'truncated']) {
     assert.equal(standsDownFor(phase, 'recycle-audition', 'queue-audition'), false, phase)
   }
   // ...and never against its OWN play, or every playFromStart would cancel itself.
   assert.equal(standsDownFor('playing', 'queue-audition', 'queue-audition'), false)
-  assert.equal(standsDownFor('stalled', 'queue-audition', 'queue-audition'), false)
+  assert.equal(standsDownFor('paused', 'queue-audition', 'queue-audition'), false)
 })

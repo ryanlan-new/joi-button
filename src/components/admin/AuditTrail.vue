@@ -141,10 +141,21 @@ import Component from 'vue-class-component'
 const VERBS = [
     'admin.item.approve',
     'admin.item.reject',
+    'admin.item.revise',
     'admin.clip.edit',
-    'admin.group.create',
     'admin.clip.publish',
+    'admin.clip.retire',
+    'admin.clip.restore',
+    'admin.group.create',
     'admin.catalog.write',
+    'admin.media.collect',
+    'admin.branding.write',
+    'admin.branding.favicon',
+    'admin.theme.save',
+    'admin.theme.deactivate',
+    'admin.theme.wallpaper',
+    'admin.invite.confirm',
+    'admin.revoke',
     'admin.refused',
 ]
 

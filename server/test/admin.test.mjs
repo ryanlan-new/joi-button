@@ -1015,8 +1015,39 @@ test('the recycle bin lists rejected items newest-first with the days left befor
   assert.equal(bin.retentionDays, 30)
   assert.deepEqual(bin.items.map((i) => i.itemId), [i2, i1], 'newest rejection first')
   assert.equal(bin.items[0].reviewerNote, 'second no')
-  assert.equal(bin.items[0].retentionDaysLeft, 29)
+  assert.deepEqual(bin.items[0].retention, { status: 'collectable', daysLeft: 29 })
   assert.ok(bin.items[0].media.audioUrl.endsWith(media2.storagePath))
+})
+
+test('the recycle bin reflects the blob GC state: reclaimed, retained, or a real countdown', (t) => {
+  const db = openDatabase(t)
+  const ids = seed(db)
+  db.prepare('DELETE FROM media WHERE sha256 = ?').run(ids.media2)
+
+  // A rejected item whose blob was already reclaimed by the GC.
+  const gone = putMedia(db, 'already-collected')
+  const goneItem = addItem(db, ids.batch, 1, gone)
+  // A rejected item whose SAME bytes are also referenced by a still-pending item
+  // in another live batch — so the sweep will never take it: 'retained'.
+  const shared = putMedia(db, 'still-referenced')
+  const rejShared = addItem(db, ids.batch, 2, shared)
+  submitBatch(db, ids.batch)
+  reviewItem(db, goneItem, { decision: 'reject', reason: 'no' }, { actor: ADMIN, now: at })
+  reviewItem(db, rejShared, { decision: 'reject', reason: 'no' }, { actor: ADMIN, now: at })
+  // The GC reclaimed the first blob (collected_at set).
+  db.prepare("UPDATE media SET collected_at = ? WHERE sha256 = ?").run(T10, gone.sha256)
+  // A second, still-pending submission of the shared bytes in a fresh live batch —
+  // built draft-first so adding the item does not trip the submitted-batch guard.
+  db.prepare("INSERT INTO batches (id, submitter_id, session_id, state, created_at) VALUES ('bat-live', ?, ?, 'draft', ?)")
+    .run(ids.submitter, ids.session, T0)
+  db.prepare('INSERT INTO batch_items (id, batch_id, position, media_sha256, proposed_label, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .run('bat-live-1', 'bat-live', 1, shared.sha256, 'Pending', T0)
+  db.prepare("UPDATE batches SET state = 'submitted', submitted_at = ? WHERE id = 'bat-live'").run(T0)
+
+  const bin = readRecycle(db, { now: at })
+  const byId = Object.fromEntries(bin.items.map((i) => [i.itemId, i.retention]))
+  assert.deepEqual(byId[goneItem], { status: 'reclaimed', daysLeft: null })
+  assert.deepEqual(byId[rejShared], { status: 'retained', daysLeft: null })
 })
 
 // ---------------------------------------------------------------------------

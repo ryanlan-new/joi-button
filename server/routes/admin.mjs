@@ -975,8 +975,13 @@ export function readRecycle(db, { mediaBaseUrl = MEDIA_BASE_URL, now = () => new
   const rows = db
     .prepare(`
       SELECT i.id, i.proposed_label, i.resolved_at, i.reviewer_note,
-             m.sha256, m.ext, m.bytes, m.duration_seconds, m.storage_path,
-             s.display_name AS submitter_name
+             m.sha256, m.ext, m.bytes, m.duration_seconds, m.storage_path, m.collected_at,
+             s.display_name AS submitter_name,
+             -- The GC ages a blob on the LATEST rejection of these exact bytes, and
+             -- only collects it while it is unreferenced. Read both here so the bin's
+             -- countdown matches what the sweep will actually do (STORY-076/077).
+             (SELECT max(x.resolved_at) FROM batch_items x WHERE x.media_sha256 = m.sha256) AS blob_last_reject,
+             EXISTS(SELECT 1 FROM v_unreferenced_media u WHERE u.sha256 = m.sha256) AS unreferenced
       FROM batch_items i
       JOIN media m ON m.sha256 = i.media_sha256
       JOIN batches b ON b.id = i.batch_id
@@ -1000,20 +1005,34 @@ export function readRecycle(db, { mediaBaseUrl = MEDIA_BASE_URL, now = () => new
       bytes: row.bytes,
       durationSeconds: row.duration_seconds,
     },
-    retentionDaysLeft: retentionDaysLeft(row.resolved_at, nowMs),
+    retention: retentionStatus(row, nowMs),
   }))
 
   return { items, count: items.length, retentionDays: RECYCLE_RETENTION_DAYS }
 }
 
-// Whole days between now and when the GC may reclaim this item's audio, floored
-// at 0 (an item already past the window reads "0", i.e. collectable now). null
-// when resolved_at cannot be parsed, so the bin can say "unknown" rather than
-// print a misleading number.
-function retentionDaysLeft(resolvedAt, nowMs) {
-  const rejectedMs = Date.parse(resolvedAt)
-  if (!Number.isFinite(rejectedMs)) return null
-  const deadline = rejectedMs + RECYCLE_RETENTION_DAYS * 24 * 60 * 60 * 1000
+// The blob's state from the media GC's point of view, computed the SAME way
+// listCollectable decides — so the bin never shows a countdown for a blob the GC
+// will not collect, nor a live row for one it already reclaimed:
+//   reclaimed  — audio already gone (collected_at set); not revisable.
+//   retained   — still referenced by a clip or a live pending item, so the sweep
+//                will never take it; no countdown.
+//   collectable— unreferenced and uncollected; days left anchored on the latest
+//                rejection of these exact bytes (max resolved_at), which is what
+//                listCollectable ages on.
+function retentionStatus(row, nowMs) {
+  if (row.collected_at !== null) return { status: 'reclaimed', daysLeft: null }
+  if (row.unreferenced !== 1) return { status: 'retained', daysLeft: null }
+  return { status: 'collectable', daysLeft: retentionDaysLeft(row.blob_last_reject, nowMs) }
+}
+
+// Whole days between now and when the GC may reclaim this blob's audio, floored
+// at 0 (past the window reads "0", i.e. collectable now). null when the anchor
+// cannot be parsed, so the bin can say "unknown" rather than a misleading number.
+function retentionDaysLeft(anchorAt, nowMs) {
+  const anchorMs = Date.parse(anchorAt)
+  if (!Number.isFinite(anchorMs)) return null
+  const deadline = anchorMs + RECYCLE_RETENTION_DAYS * 24 * 60 * 60 * 1000
   return Math.max(0, Math.ceil((deadline - nowMs) / (24 * 60 * 60 * 1000)))
 }
 

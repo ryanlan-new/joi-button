@@ -41,9 +41,8 @@
                     </thead>
                     <tbody>
                         <tr v-for="item in recycle.items" :key="item.itemId"
-                            class="adm-row-click"
-                            :class="{ 'is-selected': item.itemId === selectedItemId }"
-                            @click="$emit('select', item.itemId)">
+                            :class="{ 'adm-row-click': !isReclaimed(item), 'is-selected': item.itemId === selectedItemId }"
+                            @click="!isReclaimed(item) && $emit('select', item.itemId)">
                             <td class="adm-wrap">{{ item.proposedLabel }}</td>
                             <td class="adm-num">
                                 {{ $t("admin.queue.clipSize", {
@@ -57,13 +56,17 @@
                                 <span v-if="item.reviewerNote">{{ item.reviewerNote }}</span>
                                 <span v-else class="adm-sub">{{ $t("admin.recycle.noReason") }}</span>
                             </td>
-                            <td class="adm-num" :class="{ 'adm-warn': item.retentionDaysLeft === 0 }">
+                            <td class="adm-num" :class="{ 'adm-warn': isReclaimed(item) || item.retention.daysLeft === 0 }">
                                 {{ retentionText(item) }}
                             </td>
                             <td>
-                                <button type="button" class="adm-btn" @click.stop="$emit('select', item.itemId)">
+                                <button v-if="!isReclaimed(item)" type="button" class="adm-btn"
+                                        @click.stop="$emit('select', item.itemId)">
                                     {{ item.itemId === selectedItemId ? $t("admin.recycle.open") : $t("admin.recycle.revise") }}
                                 </button>
+                                <!-- Its audio is gone, so there is nothing to revise; the row stays as a
+                                     record but is not actionable. -->
+                                <span v-else class="adm-sub">{{ $t("admin.recycle.retentionReclaimed") }}</span>
                                 <span v-if="heardItemIds.indexOf(item.itemId) !== -1" class="adm-sub">
                                     {{ $t("admin.queue.heard") }}
                                 </span>
@@ -112,10 +115,19 @@ class RecycleQueue extends Vue {
         return Math.round(bytes / 1024)
     }
 
+    isReclaimed(item) {
+        return !!(item.retention && item.retention.status === 'reclaimed')
+    }
+
     retentionText(item) {
-        if (item.retentionDaysLeft === null) return this.$t('admin.recycle.retentionUnknown')
-        if (item.retentionDaysLeft === 0) return this.$t('admin.recycle.retentionDue')
-        return this.$t('admin.recycle.retentionLeft', { days: item.retentionDaysLeft })
+        const r = item.retention || {}
+        // reclaimed: audio already gone. retained: referenced, so the sweep never
+        // takes it. collectable: a real countdown the GC will honour.
+        if (r.status === 'reclaimed') return this.$t('admin.recycle.retentionReclaimed')
+        if (r.status === 'retained') return this.$t('admin.recycle.retentionRetained')
+        if (r.daysLeft === null || r.daysLeft === undefined) return this.$t('admin.recycle.retentionUnknown')
+        if (r.daysLeft === 0) return this.$t('admin.recycle.retentionDue')
+        return this.$t('admin.recycle.retentionLeft', { days: r.daysLeft })
     }
 }
 

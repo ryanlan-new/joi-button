@@ -50,10 +50,12 @@
 // ===========================================================================
 // THE BUNDLED SNAPSHOT IS A FLOOR, NOT A CACHE
 // ===========================================================================
-// src/voices.json is compiled into the JS chunk and is what the GitHub Pages
-// deployment has always served. It is normalised by the SAME function as the
-// fetched document, into the same shape, so the fallback path is not a second,
-// untested shape that only runs when something is already wrong.
+// src/voices.json is compiled into the JS chunk. It is the catalogue this site
+// served for its whole life as a static deployment, and it stays compiled in as
+// the floor under a failed fetch — and as what a `VUE_APP_API=off` build shows.
+// It is normalised by the SAME function as the fetched document, into the same
+// shape, so the fallback path is not a second, untested shape that only runs
+// when something is already wrong.
 //
 // Its ids are synthesised (slugified names) and will never equal the server's.
 // That is fine and it is why they may not be mixed: exactly one document is

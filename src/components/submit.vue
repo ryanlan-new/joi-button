@@ -543,9 +543,9 @@ const UI_LOCALES = ['zh-CN', 'en-US', 'ja-JP']
  * One JSON call, with the two failures this deployment can actually produce.
  *
  * `api_unavailable` is not defensive noise: deploy/nginx.conf answers an unknown
- * path with index.html (try_files $uri /index.html) and GitHub Pages answers
- * with 404.html, so a host that carries the site without the API answers
- * /api/me with HTML — and, in the nginx case, with a 200. Parsing that as JSON
+ * path with index.html (try_files $uri /index.html), so a host that carries the
+ * site without the API answers /api/me with HTML — and with a 200, which is the
+ * nastier half, because status alone looks like success. Parsing that as JSON
  * throws inside a promise nobody awaited; reading the content type turns it into
  * a sentence a visitor can act on.
  */

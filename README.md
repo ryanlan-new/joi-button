@@ -13,37 +13,40 @@ A Voice Button Website dedicated to VirtuaReal Liver Joi.
 ## Related Links:
 
 * [Joi's Bilibili channel](https://space.bilibili.com/61639371)
-* [Project technical and functional notes](docs/project-tech-and-function.md)
+* [Project technical and functional notes](docs/project-tech-and-function.md) — a snapshot of the site *before* the 2026-07 rebuild, kept as background; its deployment sections are no longer true
 
 ## Contributing
 
-Please fork this project for modification, and after completing the modification, initiate a Pull Request in this project.
+### Submitting a voice clip
 
-### Add or modify voice
+**Voice clips are no longer submitted by Pull Request.** Use the site's own
+submission page, linked from the header. It asks you to verify your identity
+once: the site issues a one-time code, you post it as a danmaku in Joi's live
+room, and the site reads your Bilibili open id from that message. Nothing
+appears on the site until the owner approves it in the review queue.
 
-**Description**: All voice meta information is stored in [src/voices.json](src/voices.json). To add or modify these voices, you need to modify this file accordingly.
+This is deliberate. Clips, and the descriptions that come with them, are
+somebody else's material, and a Pull Request writes them into this repository's
+permanent public history, where taking them back later means rewriting history
+for everyone who has ever cloned it. A database can forget a submission on
+request. Git is not built to.
 
-Voice is always in mp3 format and stored in [public/voices](public/voices). The corresponding URL is `voices/`.
+[src/voices.json](src/voices.json) and [public/voices](public/voices) are the
+**baseline** catalogue — the clips this site launched with, which
+`server/scripts/import-snapshot.mjs` seeds the database from once, at install
+time. Adding a file there will not put it on the site: the live catalogue is
+served from the database, not from this directory.
 
-For new voice, please use software such as MP3GainGUI for volume standardization. Currently the volume standardized value is 80.
+### Translation
 
-Please note that for this project, we specifically categorize the voices by this pattern: `CATEGORY_VOICENAME.mp3`. Example for a proper filename is `Cute Hummings_Ei?.mp3` where `Cute Hummings` represents the `Cute Hummings` Category while `Ei?` represents the voice name. It doesn't have to fully transcribe the line as long as it describes it for easy locating. Please check [voices.json](src/voices.json) for more information.
+Translations are maintained by the owner and are not open to contribution. The
+locale files are the three `.js` files in [src/locales](src/locales); per-clip
+names travel with the clip.
 
-Because this site uses a strong cache strategy, except for `index.html`, files with the same filename, even if modified, will **NEVER** be refreshed by the client. Therefore, the filename of the newly voice, whatever it is new or modified, **MUST** be different from any previous filename.
+### Code
 
-If you are modifying voice, delete the original file after modification.
-
-### Participate in translation
-
-Please help us translate to the available languages! (us_en/ja_jp/zh_cn)
-
-The language files for the main program are in three .js files named the language name in [src/locales](src/locales).
-
-The language files for voices are in [src/voices.json](src/voices.json).
-
-The country flags are located in [src/App.vue](src/App.vue) just in case a new language is implemented.
-
-The corresponding modification can be recognized by the program as a valid translation.
+Code changes are welcome as Pull Requests — please fork, change, and open one.
+For anything larger than a fix, an issue first saves us both the round trip.
 
 ## Deploying a local development environment
 
@@ -57,7 +60,9 @@ To deploy a local development environment, first install the latest version of N
 
 3. Run `npm run serve`. During the code modification process, this local development server can immediately reflect the results of the modification.
 
-4. To compile the files for deployment, run `npm run build`, which will generate the `dist` directory. This site is completely static, you can directly deploy the entire `dist` directory.
+4. To compile the frontend, run `npm run build`, which generates the `dist` directory.
+
+`dist/` is what the web container serves, but it is no longer the whole site: submission, review and the live catalogue are served by the API in [server/](server), which keeps its database and media on a shared volume. Running the two together is described in [deploy/k8s/README.md](deploy/k8s/README.md).
 
 > To contribute your code to this project, you don't have to compile locally. After passing the test in the development server and pushing it to Github, you can directly require a Pull Request to this project.
 

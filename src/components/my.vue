@@ -193,8 +193,8 @@ const PAGE_SIZE = 20
  * move to it.
  *
  * `api_unavailable` is the case worth keeping: nginx answers an unknown path
- * with index.html and GitHub Pages with 404.html, so a host without the API
- * answers /api/my/submissions with HTML rather than with a refusal.
+ * with index.html, so a host without the API answers /api/my/submissions with
+ * HTML rather than with a refusal.
  */
 async function callJson(url) {
     let response

@@ -13,37 +13,25 @@
 ## 相关链接：
 
 * [Joi 的 Bilibili 频道](https://space.bilibili.com/61639371)
-* [项目技术与功能文档](docs/project-tech-and-function.md)
+* [项目技术与功能文档](docs/project-tech-and-function.md) —— 2026-07 改造**之前**的快照，作为底稿保留；其中的部署部分已不成立
 
 ## 贡献
 
-请 fork 这个项目进行修改，完成修改后，在这个项目中发起 Pull Request。
+### 投稿语音
 
-### 添加或修改语音
+**语音不再通过 Pull Request 投稿。**请使用站点自己的投稿页（页首可进入）。投稿需要验证一次身份：站点发给你一个一次性口令，你把它作为弹幕发在 Joi 的直播间，站点从那条弹幕读到你的 Bilibili open id。投稿不会直接上线，要等站主在审核队列里通过。
 
-**描述**：所有语音的元信息都存储在 [src/voices.json](src/voices.json) 中。要添加或修改这些语音，您需要相应地修改此文件。
+这是刻意的设计。语音和随附的描述是别人的东西，而 Pull Request 会把它们写进这个仓库**永久且公开**的历史——事后想撤回，意味着让所有克隆过它的人一起重写历史。数据库可以应要求忘记一次投稿，git 不是为此建的。
 
-语音始终为 mp3 格式，存储在 [public/voices](public/voices) 中。对应的 URL 是 `voices/`。
+[src/voices.json](src/voices.json) 与 [public/voices](public/voices) 是**基线**目录——站点上线时自带的那批语音，由 `server/scripts/import-snapshot.mjs` 在安装时一次性播种进数据库。往这两处加文件不会让它出现在站上：线上目录由 API 从数据库提供，不再来自这个目录。
 
-对于新的语音，请使用 MP3GainGUI 等软件进行音量标准化。目前的音量标准化值为 80。
+### 翻译
 
-请注意，对于这个项目，我们特别按照这种模式对语音进行分类：`CATEGORY_VOICENAME.mp3`。一个合适的文件名示例是 `Cute Hummings_Ei?.mp3`，其中 `Cute Hummings` 代表 `Cute Hummings` 类别，而 `Ei?` 代表语音名称。它不必完全转录台词，只要便于查找即可。请查看 [voices.json](src/voices.json) 了解更多信息。
+翻译由站主自行维护，不开放投稿。语言文件是 [src/locales](src/locales) 下的三个 `.js`；每条语音的名称随语音本身走。
 
-由于该网站使用了强缓存策略，除了 `index.html`，具有相同文件名的文件，即使被修改，客户端也**永远**不会刷新。因此，无论是新的还是修改过的语音文件，其文件名**必须**与之前的任何文件名不同。
+### 代码
 
-如果您正在修改语音，请在修改后删除原始文件。
-
-### 参与翻译
-
-请帮助我们翻译成可用的语言！（us_en/ja_jp/zh_cn）
-
-主程序的语言文件位于 [src/locales](src/locales) 中三个以语言名称命名的 .js 文件中。
-
-语音的语言文件位于 [src/voices.json](src/voices.json) 中。
-
-国家旗帜位于 [src/App.vue](src/App.vue) 中，以防实现新语言。
-
-相应的修改可以被程序识别为有效的翻译。
+代码改动仍然欢迎走 Pull Request——fork、改、发起即可。比修 bug 更大的改动，建议先开一个 issue，省得两边都白跑一趟。
 
 ## 部署本地开发环境
 
@@ -57,7 +45,9 @@
 
 3. 运行 `npm run serve`。在代码修改过程中，本地开发服务器可以立即反映修改结果。
 
-4. 要编译文件以进行部署，请运行 `npm run build`，这将生成 `dist` 目录。该网站是完全静态的，您可以直接部署整个 `dist` 目录。
+4. 要编译前端，请运行 `npm run build`，这将生成 `dist` 目录。
+
+`dist/` 是 web 容器提供的内容，但它已经不是站点的全部：投稿、审核与线上目录由 [server/](server) 里的 API 提供，其数据库与媒体存放在一个共享卷上。两者如何一起跑，见 [deploy/k8s/README.md](deploy/k8s/README.md)。
 
 > 要将您的代码贡献给这个项目，您不必在本地编译。在开发服务器通过测试并推送到 Github 后，您可以直接请求对这个项目的 Pull Request。
 

@@ -430,6 +430,17 @@ export default async function publicRoutes(fastify, options = {}) {
   // volume, so rename() is still within one filesystem (an EXDEV rename would
   // throw and lose the upload), and nothing serves it.
   const stagingDir = required(config.storage?.stagingDir, 'config.storage.stagingDir')
+  // Read from `config`, NOT from an option of this plugin. routes/admin.mjs takes
+  // its own `adminOpenIds`, and if this file took a second copy the two could be
+  // registered with different lists — a navbar offering the desk to somebody the
+  // desk itself answers 404. One source, config.admin.openIds, which is what
+  // server.mjs already hands to admin.mjs.
+  //
+  // A Set of an empty list is the correct reading of "not configured yet": a
+  // fresh deployment has no open_id for anyone, because an open_id is obtained
+  // by logging in once through the danmaku flow. Nobody is an admin until the
+  // owner puts their own value in ADMIN_OPEN_IDS.
+  const adminOpenIds = new Set(config.admin?.openIds ?? [])
   const roomId = Number.isInteger(config.danmaku?.roomId) && config.danmaku.roomId > 0
     ? config.danmaku.roomId
     : null
@@ -1012,6 +1023,21 @@ export default async function publicRoutes(fastify, options = {}) {
       rejectedCount: row.rejected_count,
       blocked: row.blocked === 1,
       blockedReason: row.blocked_reason,
+      // Whether THIS session may reach the review desk.
+      //
+      // It exists so the navbar can offer the desk to the owner instead of
+      // making them remember a URL — the requirement was "show the admin page
+      // when the signed-in open_id is one of the configured ones", and without
+      // this the site has no way to know.
+      //
+      // It does NOT weaken routes/admin.mjs answering a stranger 404 rather
+      // than 403. That refusal exists so the desk's existence is not confirmed
+      // to somebody who is not an admin; this field is returned only to an
+      // authenticated session, only about ITSELF, and only ever says `false` to
+      // a non-admin — which is a thing they could already establish by asking
+      // for /admin. Nothing here tells anyone about anybody else, and the
+      // allow-list itself is never published.
+      admin: adminOpenIds.has(row.open_id),
     }
   }
 

@@ -22,8 +22,11 @@
 //      `!== undefined`.
 //   2. home.vue renders `$t('voicecategory.' + category.categoryName)` as the
 //      heading and `$t('voice.' + voiceItem.name)` as the button label.
-//   3. home.vue plays `new Audio('voices/' + item.path)` — a RELATIVE url,
-//      resolved against the page.
+//   3. home.vue plays `clip.src`, which the catalogue composes as
+//      `mediaBaseUrl + path`. For the clips COMPILED INTO THE BUNDLE that is
+//      still 'voices/' + path, the image's own static folder; for anything this
+//      API publishes it is '/media/' + path, the shared volume. Two trees, two
+//      prefixes, and the document carries which one it means.
 //   4. home.vue iterates the arrays in order: `v-for="category in voices"`, then
 //      `v-for="voiceItem in category.voiceList"`. Array order IS page order.
 //
@@ -47,10 +50,14 @@
 //   * ORDER. `groups` is the order the headings appear in, and the clips of one
 //     group are the order its buttons appear in. There is no sort field the
 //     consumer is expected to apply; the document is already in page order.
-//   * `mediaBaseUrl + clip.path` is the audio url, and both halves are RELATIVE.
-//     Today that composes to exactly the string home.vue already builds
-//     ('voices/' + path). An absolute url would bake in a scheme and host that
-//     only the ingress knows.
+//   * `mediaBaseUrl + clip.path` is the audio url. It is ROOT-RELATIVE
+//     ('/media/'), never scheme-relative and never absolute: an absolute url
+//     would bake in a scheme and host that only the ingress knows, and
+//     src/catalog.mjs refuses one outright.
+//     It used to be 'voices/', which was wrong in two ways at once — it named
+//     the image's own static folder rather than the volume the web pod
+//     publishes, and being path-relative it resolved against whatever ROUTE the
+//     visitor was on, so the same clip was a different URL on /admin than on /.
 //
 // Everything else (sha256, bytes, durationSeconds, contentType, sortOrder) is
 // informational: a consumer may show it, and nothing breaks if it ignores it.
@@ -126,18 +133,23 @@ import { dirname, join } from 'node:path'
 import { readSchemaStamp, toCanonicalTimestamp } from '../db/migrate.mjs'
 
 /**
- * The url prefix the audio is served under, as a RELATIVE path.
+ * '/media/', and both halves of that matter.
  *
- * 'voices/' and not '/voices/': home.vue builds `new Audio('voices/' + path)`
- * today, deploy/nginx.conf serves that location with `immutable` for a year, and
- * a relative prefix keeps working if the site is ever mounted under a sub-path
- * the API does not know about.
+ * WHERE: deploy/nginx.conf publishes the shared volume's media at
+ * `location ^~ /media/`, aliased to /srv/shared/media/. 'voices/' — what this
+ * was — is the image's OWN static folder, holding the clips compiled into the
+ * bundle. Nothing on the volume is reachable under that prefix, so every
+ * submitted clip 404'd: on the site, and in the review desk's audition panel,
+ * where the listen-before-approve gate would then never open.
  *
- * The year-long immutable promise is only honest because the filenames are
- * content-addressed: new bytes cannot reuse a name, because the name IS the
- * hash of the bytes.
+ * ROOT-relative: a leading slash. Without it the browser resolves the url
+ * against the DOCUMENT's path, so a clip is '/media/ab/cd/x.mp3' on '/' and
+ * '/admin/media/ab/cd/x.mp3' on '/admin'. src/catalog.mjs still refuses a
+ * mediaBaseUrl that is absolute or scheme-relative — a leading slash is neither,
+ * and it keeps every url on this origin, which is the property that check is
+ * protecting.
  */
-export const MEDIA_BASE_URL = 'voices/'
+export const MEDIA_BASE_URL = '/media/'
 
 export class CatalogError extends Error {
   constructor(message, code, details = null) {

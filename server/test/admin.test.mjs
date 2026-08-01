@@ -75,7 +75,17 @@ function pendingFixture(t) {
   const db = openDatabase(t)
   const ids = seed(db)
   const media = putMedia(db, 'pending-audio')
-  const itemId = addItem(db, ids.batch, 1, media, { groupId: ids.group })
+  const itemId = addItem(db, ids.batch, 1, media, {
+    groupId: ids.group,
+    // The real shape routes/public.mjs writes into this column: a caption, a
+    // free-text note and the name of a group the submitter is PROPOSING (which
+    // has no id yet, which is why it cannot live in proposed_group_id).
+    note: JSON.stringify({
+      caption: { locale: 'zh-CN', text: '他在煎蛋' },
+      note: '第一次投稿',
+      proposedGroup: '极地煎蛋',
+    }),
+  })
   submitBatch(db, ids.batch)
   return { db, ids, media, itemId }
 }
@@ -220,14 +230,39 @@ test('an allow-listed admin passes the gate, and stops passing it when the sessi
   assert.equal(await gate({ headers: { cookie: 'joi_session=revoked-token' } }), null)
 })
 
-test('an empty allow-list is refused at registration rather than answering 404 to its owner', (t) => {
-  const { db } = pendingFixture(t)
-  assert.throws(
-    () => createAdminGate({ db, adminOpenIds: [] }),
-    /allow-list is empty/,
-    'an unset ADMIN_OPEN_IDS produces exactly this, and it is indistinguishable from a working access check',
-  )
-  assert.throws(() => createAdminGate({ db, adminOpenIds: ['  ', ''] }), /allow-list is empty/)
+test('an empty allow-list builds a gate that admits nobody, rather than refusing to build', async (t) => {
+  // THIS TEST WAS INVERTED. It used to assert that an empty list THROWS, on the
+  // argument that an unset ADMIN_OPEN_IDS is "safe and useless" and should be
+  // refused loudly. The argument holds for the steady state and fails for the
+  // one state every deployment begins in: an open_id is issued per Open Platform
+  // project and there is no console that shows it — deploy/runtime.env.example
+  // says "You obtain your own by logging in once through the danmaku flow" — so
+  // on a first deploy the list is NECESSARILY empty. Throwing meant the API
+  // would not start, so the owner could not log in, so they could never learn
+  // the value. The documented first deploy could not be walked.
+  //
+  // What is asserted instead is the property that mattered: the gate exists and
+  // admits nobody. Fail-closed, and startable.
+  const { db, ids } = pendingFixture(t)
+  // A live session for the owner, so the two gates below are asked about a
+  // request that a configured list really does admit — otherwise "admits
+  // nobody" would be satisfied by a fixture nobody could pass either way.
+  bindSession(db, { id: 'ses-live', token: 'owner-token', submitterId: ids.submitter })
+  const ask = (gate) => gate({ headers: { cookie: 'joi_session=owner-token' } })
+
+  const gate = createAdminGate({ db, adminOpenIds: [], now: at })
+  assert.equal(typeof gate, 'function')
+  assert.equal(await ask(gate), null, 'an empty allow-list admitted somebody')
+  // Whitespace-only entries are the same as none.
+  assert.equal(await ask(createAdminGate({ db, adminOpenIds: ['  ', ''], now: at })), null)
+
+  // The same cookie IS admitted once the list is configured — so this is a gate
+  // that can go both ways rather than one that always answers null.
+  const configured = createAdminGate({ db, adminOpenIds: [ADMIN.openId], now: at })
+  assert.equal((await ask(configured)).openId, ADMIN.openId)
+
+  // A NON-array is still refused: that is a caller mistake, not a deployment
+  // state, and it has no bootstrap to protect.
   assert.throws(() => createAdminGate({ db, adminOpenIds: undefined }), /must be an array/)
 })
 
@@ -302,7 +337,23 @@ test('the queue shows only what is actually waiting, and each item with what a r
 
   const [item] = queue.batches[0].items
   assert.equal(item.itemId, itemId)
-  assert.equal(item.media.audioUrl, `voices/${media.storagePath}`)
+
+  // PARSED, never the raw column. batch_items.submitter_note is a JSON document
+  // and the desk used to render it as text, so a reviewer read
+  // `{"caption":{"locale":"zh-CN","text":"…"},"note":"…","proposedGroup":"…"}`
+  // in the notes column — while the column headed "which group they want" said
+  // "not specified", because proposed_group_id is null for a group that does not
+  // exist yet and the proposal only ever lived inside that blob.
+  assert.deepEqual(item.submitterNote, {
+    caption: { locale: 'zh-CN', text: '他在煎蛋' },
+    note: '第一次投稿',
+    proposedGroup: '极地煎蛋',
+  })
+  // The desk's audition panel plays this url. It has to name the volume the web
+  // pod publishes ('/media/'), not the image's own static folder ('voices/',
+  // what this was) — otherwise the audio 404s, no `ended` ever arrives, and the
+  // listen-before-approve gate can never open for anything a submitter sent.
+  assert.equal(item.media.audioUrl, `/media/${media.storagePath}`)
   assert.equal(item.media.bytes, media.bytes.length)
   assert.equal(item.media.durationSeconds, 2.25)
   // Stated, not silently dropped: nothing in this system measures amplitude and

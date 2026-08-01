@@ -68,6 +68,53 @@ async function reviewDesk(t) {
 // ---------------------------------------------------------------------------
 // the gate
 
+test('/api/me tells a session whether IT is an admin, and never anything about anyone else', async (t) => {
+  // The navbar shows the review desk on this field. Without it the site had no
+  // way to know, so the owner had to remember the URL — the requirement was that
+  // the page APPEARS for a configured open_id.
+  const { app, owner, visitor } = await reviewDesk(t)
+
+  const ownerMe = (await get(app, '/api/me', { cookie: owner })).json()
+  assert.equal(ownerMe.submitter.openId, OWNER.openId)
+  assert.equal(ownerMe.submitter.admin, true)
+
+  const visitorMe = (await get(app, '/api/me', { cookie: visitor })).json()
+  assert.equal(visitorMe.submitter.openId, VISITOR.openId)
+  assert.equal(
+    visitorMe.submitter.admin,
+    false,
+    'a submitter who is not on the allow-list was told they are an admin',
+  )
+
+  // The allow-list itself is never published, and neither is anybody else's
+  // standing. Both bodies mention exactly one open_id: the caller's own.
+  for (const [body, mine, theirs] of [
+    [visitorMe, VISITOR.openId, OWNER.openId],
+    [ownerMe, OWNER.openId, VISITOR.openId],
+  ]) {
+    const text = JSON.stringify(body)
+    assert.equal(text.includes(mine), true)
+    assert.equal(text.includes(theirs), false, 'a session was told about another submitter')
+  }
+
+  // An anonymous caller is told nothing at all — not even `admin: false`, which
+  // would be a shape a probe could count on.
+  const anonymous = (await get(app, '/api/me')).json()
+  assert.deepEqual(anonymous, { submitter: null })
+})
+
+test('with no ADMIN_OPEN_IDS configured, nobody is an admin — including the owner', async (t) => {
+  // The safe reading of "not configured": an open_id is only obtainable by
+  // logging in once through the danmaku flow, so a fresh deployment has none.
+  const ctx = await boot(t, { turnstileSwitch: 'off', adminOpenIds: [] })
+  const owner = await login(ctx, OWNER)
+
+  assert.equal((await get(ctx.app, '/api/me', { cookie: owner })).json().submitter.admin, false)
+  // And the desk agrees, which is the point: the flag and the gate must not be
+  // able to disagree about the same session.
+  assert.equal((await get(ctx.app, '/api/admin/queue', { cookie: owner })).statusCode, 404)
+})
+
 test("the owner reaches the admin surface with the cookie the login route minted, under the name both files default to", async (t) => {
   const { app, owner } = await reviewDesk(t)
 

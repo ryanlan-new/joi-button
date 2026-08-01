@@ -85,6 +85,20 @@
                                 </a>
                                 <ul class="dropdown-menu">
                                     <li><router-link to="/my">{{ $t("nav.myClips") }}</router-link></li>
+                                    <!-- Only for a session /api/me reported as an
+                                         admin. The requirement was that the desk
+                                         APPEARS when the signed-in open_id is one
+                                         of the configured ones, and without that
+                                         field the site had no way to know — the
+                                         owner had to remember the URL.
+
+                                         It is not an access control and does not
+                                         pretend to be: the desk is behind
+                                         routes/admin.mjs, which answers a stranger
+                                         404 whether or not this <li> rendered. All
+                                         hiding it buys is that nobody else is shown
+                                         a door that is not theirs. -->
+                                    <li v-if="submitter.admin"><router-link to="/admin">{{ $t("nav.reviewDesk") }}</router-link></li>
                                     <li role="separator" class="divider"></li>
                                     <li><button type="button" class="dropdown-action" :disabled="loggingOut" @click="logout">{{ $t("nav.logout") }}</button></li>
                                 </ul>

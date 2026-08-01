@@ -287,8 +287,10 @@ test('the whole path: identity from the room, a batch of three, a review, and a 
   assert.equal(document.clips.length, 2)
 
   // Every path the document names resolves to bytes of the size it claims, under
-  // the RELATIVE prefix home.vue already composes ('voices/' + path).
-  assert.equal(document.mediaBaseUrl, 'voices/')
+  // the prefix deploy/nginx.conf publishes the shared volume at. Root-relative,
+  // so the same clip is the same url on every route — a path-relative prefix
+  // resolves against the DOCUMENT, and the review desk lives on /admin.
+  assert.equal(document.mediaBaseUrl, '/media/')
   for (const clip of document.clips) {
     const file = join(paths.mediaDir, clip.path)
     assert.ok(existsSync(file), `catalog.json names ${clip.path}, which is not on the volume`)

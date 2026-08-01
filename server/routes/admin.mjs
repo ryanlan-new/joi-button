@@ -105,6 +105,9 @@ import {
 } from '../lib/audit.mjs'
 import { CatalogError, MEDIA_BASE_URL, checkMedia, writeCatalog } from '../lib/catalog.mjs'
 import { CAPTION_MAX_LENGTH, escapeForI18n, validateCaption } from '../lib/text-safety.mjs'
+// The parser belongs to the module that WRITES batch_items.submitter_note. One
+// definition of what those bytes mean, owned by the writer.
+import { readSubmitterNote } from './public.mjs'
 
 /** Matches groups.id / clips.id in schema.sql, which are the vue-i18n keys. */
 const ID_PATTERN = /^[a-z0-9_-]{1,64}$/
@@ -166,6 +169,18 @@ export default async function adminRoutes(fastify, options = {}) {
     resolveIdentity: options.resolveIdentity,
     now,
   })
+
+  // Said on every boot, not once at install: an empty list is correct on a first
+  // deploy and a mistake on any later one, and this plugin cannot tell which it
+  // is looking at. What it can do is make sure the state is never silent.
+  if (Array.isArray(options.adminOpenIds) &&
+      options.adminOpenIds.filter((value) => String(value).trim() !== '').length === 0) {
+    fastify.log.warn(
+      'admin routes: ADMIN_OPEN_IDS is empty, so every admin route answers 404 to everyone including you. ' +
+        'This is expected on a FIRST deploy: sign in through the danmaku flow, read your open_id from ' +
+        'GET /api/me, put it in ADMIN_OPEN_IDS and redeploy. On any later deploy it means the value was lost.',
+    )
+  }
 
   fastify.addHook('onRequest', async (request, reply) => {
     const identity = await gate(request)
@@ -325,16 +340,30 @@ export function createAdminGate({ db, adminOpenIds, cookieName = DEFAULT_COOKIE_
     throw new Error('admin routes: options.adminOpenIds must be an array of open_id values (ADMIN_OPEN_IDS)')
   }
   const allow = new Set(adminOpenIds.map((value) => String(value).trim()).filter((value) => value !== ''))
-  if (allow.size === 0) {
-    // Safe and useless: nobody is an admin, so nothing can ever be reviewed or
-    // published, and the surface answers 404 to its owner. That is what an unset
-    // ADMIN_OPEN_IDS produces, so it is refused loudly here instead of being
-    // discovered as "the admin page is broken".
-    throw new Error(
-      'admin routes: the admin allow-list is empty. Set ADMIN_OPEN_IDS to the open_id values allowed ' +
-        'into the backend; with none, every admin route answers 404 to everyone including you.',
-    )
-  }
+
+  // AN EMPTY ALLOW-LIST IS ACCEPTED, and this used to throw.
+  //
+  // The refusal's reasoning was right about the steady state — nobody is an
+  // admin, nothing can be reviewed or published, and the surface answers 404 to
+  // its own owner — and wrong about the one state every deployment starts in.
+  // An open_id is issued by the Open Platform per PROJECT and there is no
+  // console that shows it; deploy/runtime.env.example says so outright: "You
+  // obtain your own by logging in once through the danmaku flow." So on a first
+  // deploy the owner cannot know the value, the list is necessarily empty, and
+  // throwing here meant the API would not start — which meant they could not log
+  // in, which meant they could never learn the value. The documented procedure
+  // could not be walked.
+  //
+  // It now starts, with every admin route answering 404 to everyone. That is
+  // fail-CLOSED, it is exactly what the bootstrap needs, and the owner reads
+  // their open_id off /api/me (publicSubmitter returns the session's own), puts
+  // it in ADMIN_OPEN_IDS and redeploys.
+  //
+  // The cost, stated: a deploy that ACCIDENTALLY clears ADMIN_OPEN_IDS now loses
+  // the desk quietly instead of failing at boot. That is the better of the two —
+  // the old behaviour took the whole API down for the same mistake, which took
+  // submissions and login with it, while the desk 404ing is immediately visible
+  // to the one person who uses it. adminRoutes logs it at warn on every boot.
 
   const lookup = resolveIdentity ?? defaultIdentityResolver(db, cookieName, now)
 
@@ -513,7 +542,22 @@ function itemView(row, mediaBaseUrl) {
     createdAt: row.created_at,
     proposedLabel: row.proposed_label,
     proposedGroupId: row.proposed_group_id,
-    submitterNote: row.submitter_note,
+    // PARSED, not the raw column. batch_items.submitter_note holds a JSON
+    // document — the caption the submitter wrote, their free-text note, and the
+    // name of a group they are proposing — and shipping the string put the desk
+    // in the position of parsing it in a template. It did not: both the queue
+    // and the item pane rendered the literal
+    // `{"caption":{"locale":"zh-CN","text":"…"},"note":"…","proposedGroup":"…"}`
+    // at the reviewer, and the proposed group name never appeared in the column
+    // headed "which group they want", which said "not specified" because
+    // proposed_group_id is null for a group that does not exist yet.
+    //
+    // readSubmitterNote is routes/public.mjs's own parser — the module that
+    // WRITES the column — so there is one definition of what these bytes mean
+    // and it belongs to the writer. It is total: anything it cannot read becomes
+    // three nulls rather than an exception, because a note that was written by
+    // an older build must not be able to take the review desk down.
+    submitterNote: readSubmitterNote(row.submitter_note),
     media: {
       sha256: row.sha256,
       audioUrl: `${mediaBaseUrl}${row.storage_path}`,

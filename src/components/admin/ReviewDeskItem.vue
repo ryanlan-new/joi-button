@@ -24,10 +24,29 @@
                     <dt>{{ $t("admin.desk.proposedName") }}</dt>
                     <dd>{{ detail.item.proposedLabel }}</dd>
                     <dt>{{ $t("admin.desk.proposedGroup") }}</dt>
-                    <dd class="adm-mono">{{ detail.item.proposedGroupId || $t("admin.queue.noGroup") }}</dd>
-                    <template v-if="detail.item.submitterNote">
+                    <!-- An EXISTING group arrives as an id; one the submitter is
+                         proposing has no id yet and travels in the note. Both are
+                         shown, and they are visually distinct — a mono id is a
+                         thing that exists, prose is a request. -->
+                    <dd v-if="detail.item.proposedGroupId" class="adm-mono">{{ detail.item.proposedGroupId }}</dd>
+                    <dd v-else-if="detail.item.submitterNote && detail.item.submitterNote.proposedGroup">
+                        {{ $t("admin.queue.proposedGroup", { name: detail.item.submitterNote.proposedGroup }) }}
+                    </dd>
+                    <dd v-else class="adm-sub">{{ $t("admin.queue.noGroup") }}</dd>
+                    <!-- The submitter's own caption, in the language they wrote
+                         it in. It is what the reviewer is deciding about, and it
+                         used to be invisible here — buried in the JSON blob this
+                         <dd> printed whole. -->
+                    <template v-if="detail.item.submitterNote && detail.item.submitterNote.caption">
+                        <dt>{{ $t("admin.desk.submitterCaption") }}</dt>
+                        <dd>
+                            {{ detail.item.submitterNote.caption.text }}
+                            <span class="adm-sub adm-mono">[{{ detail.item.submitterNote.caption.locale }}]</span>
+                        </dd>
+                    </template>
+                    <template v-if="detail.item.submitterNote && detail.item.submitterNote.note">
                         <dt>{{ $t("admin.desk.submitterNote") }}</dt>
-                        <dd>{{ detail.item.submitterNote }}</dd>
+                        <dd>{{ detail.item.submitterNote.note }}</dd>
                     </template>
                 </dl>
                 <p class="adm-sub adm-num">

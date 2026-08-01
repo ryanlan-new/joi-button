@@ -72,6 +72,7 @@ export default {
         clipSize: '{seconds} 秒 · {kb} KB · {ext}',
         noNote: '没留言',
         noGroup: '没指定',
+        proposedGroup: '想新建：{name}',
         review: '去审',
         open: '正在审',
         heard: '已听完'
@@ -102,6 +103,7 @@ export default {
         batchProgress: '这一批：待审 {pending} · 通过 {approved} · 退回 {rejected}',
         proposedName: '投稿人写的名字',
         proposedGroup: '投稿人想放的分类',
+        submitterCaption: '投稿人写的字幕',
         submitterNote: '投稿人的话',
         alreadyDecided: '这条已经是 {state} 了（{at}）。',
         notLiveYet: '已通过，但还没上线 —— 站上现在还看不到它。',
@@ -247,6 +249,7 @@ export default {
         clipSize: '{seconds}s · {kb} KB · {ext}',
         noNote: 'no note',
         noGroup: 'none',
+        proposedGroup: 'proposes a new group: {name}',
         review: 'Review',
         open: 'Open',
         heard: 'heard'
@@ -277,6 +280,7 @@ export default {
         batchProgress: 'This batch: {pending} pending · {approved} approved · {rejected} rejected',
         proposedName: 'Name the submitter wrote',
         proposedGroup: 'Group the submitter wanted',
+        submitterCaption: 'Caption the submitter wrote',
         submitterNote: 'Submitter’s note',
         alreadyDecided: 'This item is already {state} ({at}).',
         notLiveYet: 'Approved, but not live — it is not on the site yet.',
@@ -422,6 +426,7 @@ export default {
         clipSize: '{seconds} 秒 · {kb} KB · {ext}',
         noNote: 'なし',
         noGroup: '指定なし',
+        proposedGroup: '新しいグループの提案：{name}',
         review: '見る',
         open: '表示中',
         heard: '聴了'
@@ -452,6 +457,7 @@ export default {
         batchProgress: 'この束：未処理 {pending} · 承認 {approved} · 却下 {rejected}',
         proposedName: '投稿者がつけた名前',
         proposedGroup: '投稿者が希望したグループ',
+        submitterCaption: '投稿者が書いた字幕',
         submitterNote: '投稿者のひとこと',
         alreadyDecided: 'これはすでに {state} です（{at}）。',
         notLiveYet: '承認済みですが、まだ公開されていません。サイトには出ていません。',

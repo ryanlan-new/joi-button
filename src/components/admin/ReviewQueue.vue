@@ -81,8 +81,18 @@
                             :class="{ 'is-selected': item.itemId === selectedItemId }">
                             <td class="adm-num">{{ item.position }}</td>
                             <td class="adm-wrap">{{ item.proposedLabel }}</td>
+                            <!-- TWO WAYS a submitter can name a group, and this
+                                 column has to show both. proposedGroupId is set
+                                 when they picked one that EXISTS; a group they
+                                 are proposing has no id yet, so it travels in the
+                                 note as `proposedGroup` and this cell used to say
+                                 "not specified" while the name sat two columns
+                                 over, inside a JSON blob. -->
                             <td class="adm-wrap">
                                 <span v-if="item.proposedGroupId" class="adm-mono">{{ item.proposedGroupId }}</span>
+                                <span v-else-if="item.submitterNote && item.submitterNote.proposedGroup">
+                                    {{ $t("admin.queue.proposedGroup", { name: item.submitterNote.proposedGroup }) }}
+                                </span>
                                 <span v-else class="adm-sub">{{ $t("admin.queue.noGroup") }}</span>
                             </td>
                             <td class="adm-num">
@@ -92,8 +102,18 @@
                                     ext: item.media.ext
                                 }) }}
                             </td>
+                            <!-- `.note`, not the whole object. submitterNote is a
+                                 PARSED { caption, note, proposedGroup }; rendering
+                                 the object itself printed
+                                 `{"caption":{"locale":"zh-CN",…}}` at the reviewer,
+                                 which is what this cell did before the API stopped
+                                 shipping the raw column. The caption is shown in
+                                 the review pane, where it can be edited; the
+                                 proposed group is in its own column above. What is
+                                 left for this cell is the free text they wrote TO
+                                 the reviewer. -->
                             <td class="adm-wrap">
-                                <span v-if="item.submitterNote">{{ item.submitterNote }}</span>
+                                <span v-if="item.submitterNote && item.submitterNote.note">{{ item.submitterNote.note }}</span>
                                 <span v-else class="adm-sub">{{ $t("admin.queue.noNote") }}</span>
                             </td>
                             <td>

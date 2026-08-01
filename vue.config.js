@@ -39,24 +39,46 @@ module.exports = {
   // it makes in production, and the difference lives in this file instead of in
   // a variable that has to be right in four build paths.
   //
-  // The three paths are the three the web pod serves or routes:
-  //   /api          the API (ingress rule)
-  //   /catalog.json the published catalogue (nginx alias onto the shared volume)
-  //   /media        published clips        (nginx alias onto the shared volume)
-  // In the cluster the last two are nginx's own files; in dev the API's data
-  // directory is the only place they exist, so the API serves them there.
+  // ONLY /api is proxied, and that is a correction rather than a shortcut: the
+  // API does NOT serve /catalog.json or /media. Every route it has is under
+  // /api (routes/public.mjs, routes/admin.mjs), and in the cluster those two
+  // paths are nginx's own — deploy/nginx.conf aliases them onto the shared
+  // volume, which is why the site keeps serving current data while the API pod
+  // restarts. Proxying them to the API would 404 in dev and teach the wrong
+  // model of the deployment.
   //
-  // JOI_API_ORIGIN overrides the port for anyone running the API elsewhere.
+  // They are served here the same way nginx serves them: as static files, from
+  // a directory that holds ONLY the two published things. Point JOI_PUBLIC_DIR
+  // at it, and run the API with CATALOG_FILE and MEDIA_DIR inside it — the
+  // database and the upload staging directory stay outside, exactly as they do
+  // on the volume, so a dev run cannot serve something production would not.
+  //
+  //   DATA_DIR=/tmp/joi          # joi.db, incoming/  — served by nothing
+  //   CATALOG_FILE=/tmp/joi/public/catalog.json
+  //   MEDIA_DIR=/tmp/joi/public/media
+  //   JOI_PUBLIC_DIR=/tmp/joi/public
+  //
+  // JOI_API_ORIGIN overrides the API's port for anyone running it elsewhere.
   devServer: {
     proxy: {
-      '^/(api|media)($|/)': {
-        target: process.env.JOI_API_ORIGIN || 'http://127.0.0.1:8081',
-        changeOrigin: false,
-      },
-      '^/catalog\\.json$': {
+      '^/api($|/)': {
         target: process.env.JOI_API_ORIGIN || 'http://127.0.0.1:8081',
         changeOrigin: false,
       },
     },
+    // `contentBase`, not `static`: this project is on webpack-dev-server 3.11
+    // (vue-cli 5 pins it for the Vue 2 preset), where `static` is not a valid
+    // option at all — the server refuses to start with "options should NOT have
+    // additional properties" and no mention of which one. `static` is the
+    // webpack-dev-server 4 spelling.
+    //
+    // Two roots, both at '/': the app's own public/ (the default, which naming
+    // contentBase would otherwise replace) and the published directory. Absent
+    // JOI_PUBLIC_DIR only the default is listed, so `npm run serve` with no API
+    // behaves exactly as it did.
+    contentBase: process.env.JOI_PUBLIC_DIR
+      ? [require('path').resolve(__dirname, 'public'), process.env.JOI_PUBLIC_DIR]
+      : [require('path').resolve(__dirname, 'public')],
+    contentBasePublicPath: '/',
   },
 }

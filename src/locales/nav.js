@@ -36,6 +36,7 @@ export default {
             // announces what it is rather than just a stranger's nickname.
             account: "账号",
             myClips: "我投的",
+            reviewDesk: "审核台",
             logout: "退出",
         },
     },
@@ -45,6 +46,7 @@ export default {
             login: "Log in",
             account: "Account",
             myClips: "My clips",
+            reviewDesk: "Review desk",
             logout: "Log out",
         },
     },
@@ -54,6 +56,7 @@ export default {
             login: "ログイン",
             account: "アカウント",
             myClips: "送ったボイス",
+            reviewDesk: "審査デスク",
             logout: "ログアウト",
         },
     },

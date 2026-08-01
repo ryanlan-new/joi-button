@@ -112,10 +112,15 @@ test('the document carries the shape home.vue consumes: ids as i18n keys, per-lo
     assert.match(subject.id, /^[a-z0-9_-]+$/, `${subject.id} is not usable as a flat vue-i18n key`)
   }
 
-  // The audio url is exactly the string home.vue builds today: 'voices/' + path.
+  // The audio url is the path deploy/nginx.conf actually publishes the volume
+  // under. This was 'voices/' + path, which named the image's own static folder
+  // — nothing this API stores is reachable there, so every published clip 404'd.
+  // The literal is spelled out rather than built from MEDIA_BASE_URL alone, so
+  // that changing the constant to something nginx does not serve fails here.
   const late = doc.clips.find((c) => c.id === 'clip-late')
   assert.equal(doc.mediaBaseUrl, MEDIA_BASE_URL)
-  assert.equal(`${doc.mediaBaseUrl}${late.path}`, `voices/${media.late.storagePath}`)
+  assert.equal(doc.mediaBaseUrl, '/media/')
+  assert.equal(`${doc.mediaBaseUrl}${late.path}`, `/media/${media.late.storagePath}`)
   assert.match(late.path, /^[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}\.mp3$/)
 })
 

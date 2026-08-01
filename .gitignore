@@ -30,3 +30,8 @@ yarn-error.log*
 dist
 # pulled backups: real submitter data, never committed
 .backups/
+
+# joi-button docker single-host deploy — never commit local config/secrets
+deploy/docker/.env
+deploy/docker/runtime.env
+deploy/docker/dynamic/*.local.yml

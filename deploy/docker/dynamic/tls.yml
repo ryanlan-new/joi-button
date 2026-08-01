@@ -1,0 +1,14 @@
+# Traefik dynamic config for the own-certificate TLS mode (compose.cert.yml).
+# The cert/key are bind-mounted to these fixed paths by that override; this file
+# just tells Traefik to load them. It is the default certificate, so any router
+# with tls=true on this instance is served it by SNI. Ignored in Let's Encrypt
+# mode, where the file provider's directory is empty of certificates.
+tls:
+  certificates:
+    - certFile: /certs/cert.pem
+      keyFile: /certs/key.pem
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /certs/cert.pem
+        keyFile: /certs/key.pem

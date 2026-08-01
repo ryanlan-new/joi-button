@@ -1,0 +1,25 @@
+# TLS mode: your own certificate.
+#
+#   docker compose -f docker-compose.yml -f compose.cert.yml up -d
+#
+# Mounts a certificate and key you already have (from your CA, an internal PKI,
+# mkcert, anywhere) and serves them. No ACME, no renewal by Traefik — renewing
+# is on you, and the self-check warns when the certificate is near expiry.
+#
+# Set in .env:
+#   CERT_FILE=/absolute/path/to/fullchain.pem
+#   KEY_FILE=/absolute/path/to/privkey.pem
+# The certificate's CN/SAN must include APP_HOST, or the browser rejects it.
+#
+# Traefik loads them through the file provider's dynamic config; the routers'
+# `tls=true` then serves this certificate by SNI for APP_HOST. No default
+# certresolver is set, which is exactly what keeps this mode off ACME.
+
+services:
+  traefik:
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-acme:/acme
+      - ./dynamic:/etc/traefik/dynamic:ro
+      - "${CERT_FILE:?set CERT_FILE in .env}:/certs/cert.pem:ro"
+      - "${KEY_FILE:?set KEY_FILE in .env}:/certs/key.pem:ro"

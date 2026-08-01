@@ -1,0 +1,32 @@
+# TLS mode: Let's Encrypt (automatic issuance + renewal).
+#
+#   docker compose -f docker-compose.yml -f compose.le.yml up -d
+#
+# Adds an ACME resolver to Traefik and makes it the default for the websecure
+# entrypoint, so the routers' `tls=true` gets a real, auto-renewing certificate
+# with no per-router wiring. Requires APP_HOST to be a PUBLIC name that resolves
+# to this host and is reachable on :80 — that HTTP-01 challenge is how Let's
+# Encrypt proves you control the name. Set ACME_EMAIL in .env (expiry notices).
+#
+# The account and the issued certs live in the traefik-acme volume and survive
+# recreates, so a restart does not re-request and burn rate limit.
+
+services:
+  traefik:
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=joi-button_joi
+      - --providers.file.directory=/etc/traefik/dynamic
+      - --providers.file.watch=true
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      # --- ACME / Let's Encrypt ---
+      - "--certificatesresolvers.le.acme.email=${ACME_EMAIL:?set ACME_EMAIL in .env}"
+      - --certificatesresolvers.le.acme.storage=/acme/acme.json
+      - --certificatesresolvers.le.acme.httpchallenge=true
+      - --certificatesresolvers.le.acme.httpchallenge.entrypoint=web
+      # Make it the default so tls=true on the routers resolves through it.
+      - --entrypoints.websecure.http.tls.certresolver=le

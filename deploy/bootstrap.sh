@@ -40,6 +40,8 @@ source "$REPO_ROOT/deploy/bootstrap/collect-env.sh"
 source "$REPO_ROOT/deploy/bootstrap/domain.sh"
 # shellcheck source=deploy/bootstrap/target.sh
 source "$REPO_ROOT/deploy/bootstrap/target.sh"
+# shellcheck source=deploy/bootstrap/tls.sh
+source "$REPO_ROOT/deploy/bootstrap/tls.sh"
 
 hr()   { printf '\n\033[1m=== %s ===\033[0m\n' "$1" >&2; }
 say()  { printf '  %s\n' "$1" >&2; }
@@ -60,11 +62,16 @@ step_target() {
   choose_target
 }
 
+step_tls() {
+  hr 'Step 4 — TLS'
+  choose_tls
+}
+
 # The remaining steps are built next; run them individually as they land. Until
 # then the whole-sequence run stops here rather than pretend to have done more.
 step_todo() {
-  hr 'Steps 4–6 — coming next'
-  say "Target is ${DEPLOY_TARGET:-unset}. Next: TLS, apply, first-admin, self-check."
+  hr 'Steps 5–6 — coming next'
+  say "Target ${DEPLOY_TARGET:-?}, TLS ${TLS_MODE:-?}. Next: apply, first-admin, self-check."
 }
 
 main() {
@@ -72,8 +79,9 @@ main() {
     env)    step_env ;;
     domain) step_domain ;;
     target) step_target ;;
-    all)    step_env; step_domain; step_target; step_todo ;;
-    *)      die "unknown step '${1}' (use: env | domain | target | all)" ;;
+    tls)    step_tls ;;
+    all)    step_env; step_domain; step_target; step_tls; step_todo ;;
+    *)      die "unknown step '${1}' (use: env | domain | target | tls | all)" ;;
   esac
 }
 

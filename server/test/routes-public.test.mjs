@@ -26,6 +26,7 @@
 
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -700,8 +701,68 @@ test('the same file twice in one batch, and a blob that is already a clip, are b
     cookie,
     parts: [metadata([anItem({ key: 'c' })]), { name: 'file:c', filename: 'c.wav', value: bytes }],
   })
-  // clips.media_sha256 is UNIQUE, so this could never become a second clip.
+  // clips.media_sha256 is UNIQUE, so this could never become a second clip. This
+  // one is caught by the NORMALIZED-sha check: the first submission stored `sha`
+  // as its normalized output, and the re-encode is deterministic, so this reaches
+  // the same sha.
   assert.equal(again.json().items[0].code, 'already_published')
+})
+
+test('a clip published under its ORIGINAL sha is refused on re-upload, before the re-encode runs', async (t) => {
+  // The loudness review's dedup finding: baseline clips (import-snapshot) and
+  // anything approved before normalization are stored under their INPUT-byte
+  // sha. The re-encode gives a re-upload a DIFFERENT sha, so the post-normalize
+  // check cannot catch it — only the input-sha pre-check can. Publishing under
+  // the input sha and getting already_published proves that pre-check works, and
+  // that it fires WITHOUT the re-encode (the normalized sha would not match this
+  // row at all).
+  const { app, cookie, db } = await loggedIn(t, { turnstileSwitch: 'off' })
+  const bytes = wav({ seconds: 2 })
+  const inputSha = createHash('sha256').update(bytes).digest('hex')
+  db.prepare(
+    'INSERT INTO media (sha256, ext, content_type, bytes, duration_seconds, uploaded_at) VALUES (?, ?, ?, ?, ?, ?)',
+  ).run(inputSha, 'wav', 'audio/wav', bytes.length, 1, T0)
+  db.prepare('INSERT INTO clips (id, group_id, media_sha256, label, created_at) VALUES (?, ?, ?, ?, ?)').run(
+    'clip-baseline',
+    'grp-a',
+    inputSha,
+    'Baseline',
+    T0,
+  )
+
+  const answer = await post(app, '/api/submit', {
+    cookie,
+    parts: [metadata([anItem({ key: 'a' })]), { name: 'file:a', filename: 'a.wav', value: bytes }],
+  })
+  assert.equal(answer.json().items[0].code, 'already_published')
+})
+
+test('a clip that re-encodes to more than the size limit is refused, though its upload fit', async (t) => {
+  // maxFileBytes is enforced on the upload; the re-encode is to a fixed 192 kbps,
+  // so a low-bitrate input that FIT can normalize to a stored file that does NOT.
+  // Fixture: ~4 s at 32 kbps (~16 KB) with the cap at 40 KB — the upload passes
+  // busboy, the 192 kbps output (~96 KB) does not.
+  const cap = 40_000
+  const lowBitrate = await (async () => {
+    const d = mkdtempSync(join(tmpdir(), 'joi-lowbr-'))
+    const p = join(d, 'q.mp3')
+    await promisify(execFile)('ffmpeg', [
+      '-hide_banner', '-nostats', '-f', 'lavfi',
+      '-i', 'sine=frequency=300:sample_rate=44100:duration=4',
+      '-c:a', 'libmp3lame', '-b:a', '32k', '-f', 'mp3', p,
+    ])
+    const b = readFileSync(p)
+    rmSync(d, { recursive: true, force: true })
+    return b
+  })()
+  assert.ok(lowBitrate.length < cap, `fixture ${lowBitrate.length}B must fit under the ${cap}B cap`)
+
+  const { app, cookie } = await loggedIn(t, { turnstileSwitch: 'off', maxFileBytes: cap })
+  const answer = await post(app, '/api/submit', {
+    cookie,
+    parts: [metadata([anItem({ key: 'a' })]), { name: 'file:a', filename: 'a.mp3', value: lowBitrate }],
+  })
+  assert.equal(answer.json().items[0].code, 'file_too_large')
 })
 
 test('a blocked submitter is refused', async (t) => {

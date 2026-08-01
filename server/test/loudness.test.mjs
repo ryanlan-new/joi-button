@@ -16,7 +16,7 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -73,8 +73,19 @@ async function levelOf(path) {
   return REPLAYGAIN_REFERENCE_DB - trackGainDb
 }
 
-test('probe finds a binary that can do the job', async () => {
-  await normalizer.probe()
+test('probe accepts a complete ffmpeg and names the gap on an incomplete one', async () => {
+  // probe() now checks the four ENCODERS, not just the replaygain filter, so its
+  // verdict depends on the host — and the test asserts the CORRECT verdict for
+  // whichever host runs it. In the Alpine API image all four are present and
+  // probe resolves; on a dev ffmpeg without (commonly) libvorbis it must REFUSE
+  // and say which encoder is missing, which is the boot guarantee itself. Either
+  // outcome is a pass; a silent boot on an incomplete binary would not be.
+  const complete = ['libmp3lame', 'pcm_s16le', 'libvorbis', 'aac'].every(hostHas)
+  if (complete) {
+    await normalizer.probe()
+  } else {
+    await assert.rejects(() => normalizer.probe(), /missing encoder/)
+  }
 })
 
 test('a quiet clip is brought up to the wall', async () => {
@@ -176,6 +187,56 @@ for (const [name, ext, codec, muxer, encoder] of [
     assert.ok(Math.abs(landed - AUDIO_TARGET_DB) <= 0.8, `${ext}: landed at ${landed.toFixed(2)} dB`)
   })
 }
+
+// A stand-in ffmpeg that answers the three call shapes normalize()/probe() make,
+// so the failure paths — which a real ffmpeg does not take on a valid input —
+// can be exercised deterministically on any host. Written to the temp dir (no
+// package.json above it, so the shebang runs it as CJS) and made executable.
+function writeFakeFfmpeg(name, { encoders = ['aac', 'libmp3lame', 'pcm_s16le', 'libvorbis'], encodeExit = 1 } = {}) {
+  const path = join(dir, name)
+  writeFileSync(
+    path,
+    `#!/usr/bin/env node
+const fs = require('fs')
+const args = process.argv.slice(2)
+if (args.includes('-filters')) { process.stdout.write(' T.. replaygain        A->A  ReplayGain scanner.\\n'); process.exit(0) }
+if (args.includes('-encoders')) { process.stdout.write(${JSON.stringify(encoders.map((e) => ` A....D ${e}  x`).join('\n') + '\n')}); process.exit(0) }
+if (args.includes('replaygain') && args.includes('null')) { process.stderr.write('track_gain = -5.00 dB\\ntrack_peak = 0.500000\\n'); process.exit(0) }
+// encode: last arg is the .norm output. Write a PARTIAL file, then fail, exactly
+// as a killed/erroring real ffmpeg would leave one behind.
+fs.writeFileSync(args[args.length - 1], Buffer.alloc(4096, 7))
+process.exit(${encodeExit})
+`,
+  )
+  chmodSync(path, 0o755)
+  return path
+}
+
+test('a re-encode failure removes its own partial .norm — no orphan on the volume', async () => {
+  // The MEDIUM finding from the loudness review: normalize() throwing after
+  // ffmpeg opened its output stranded a partial .norm forever, because the
+  // caller has no handle to it. This fake writes the partial and exits non-zero,
+  // the shape a timeout (SIGTERM) or encoder error produces.
+  const fake = writeFakeFfmpeg('ff-encode-fail', { encodeExit: 1 })
+  const n = createLoudnessNormalizer({ ffmpegPath: fake })
+  const input = join(dir, 'leak-input')
+  writeFileSync(input, Buffer.alloc(1024, 3))
+  await assert.rejects(() => n.normalize(input, { ext: 'mp3' }), /could not re-encode/)
+  assert.equal(existsSync(`${input}.norm`), false, 'a partial .norm was left behind after a failed re-encode')
+})
+
+test('probe refuses a build that has the filter but is missing an encoder it will spawn', async () => {
+  // The LOW finding: probe() checked only the replaygain filter, so an ffmpeg
+  // without (say) libvorbis booted "healthy" and failed the first ogg upload.
+  const fake = writeFakeFfmpeg('ff-no-vorbis', { encoders: ['aac', 'libmp3lame', 'pcm_s16le'] })
+  const n = createLoudnessNormalizer({ ffmpegPath: fake })
+  await assert.rejects(() => n.probe(), /missing encoder.*libvorbis/)
+})
+
+test('probe accepts the fake when all four encoders are present', async () => {
+  const fake = writeFakeFfmpeg('ff-complete')
+  await createLoudnessNormalizer({ ffmpegPath: fake }).probe()
+})
 
 test('decideGain arithmetic, at the edges the process tests cannot reach', () => {
   // Plain target math: a clip at 89 (gain 0 to reference) is 9 above an 80 target.

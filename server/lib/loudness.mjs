@@ -72,6 +72,7 @@ export const REPLAYGAIN_REFERENCE_DB = 89.0
 // was written.
 
 import { execFile } from 'node:child_process'
+import { rm } from 'node:fs/promises'
 import { promisify } from 'node:util'
 
 const run = promisify(execFile)
@@ -183,6 +184,31 @@ export function createLoudnessNormalizer({
         `loudness: ${ffmpegPath} exists but has no replaygain filter; this build cannot measure clips.`,
       )
     }
+
+    // The filter measures; the ENCODERS re-encode. A build can have replaygain
+    // and still lack an encoder for one of the four accepted containers — a
+    // Homebrew ffmpeg without libvorbis is the common case, and this test file's
+    // own container legs skip on exactly that. Checking only the filter would
+    // let such a build boot "healthy" and then reject the first ogg upload with
+    // audio_processing_failed, which is precisely the "discovered at first
+    // submission" failure this probe exists to prevent. The names come from
+    // ENCODERS itself (the -c:a argument), so the check cannot drift from what
+    // normalize() actually spawns.
+    const required = [...new Set(Object.values(ENCODERS).map((e) => e.args[e.args.indexOf('-c:a') + 1]))]
+    let encoders
+    try {
+      ;({ stdout: encoders } = await exec(['-encoders']))
+    } catch (error) {
+      throw new LoudnessError(`loudness: ${ffmpegPath} would not list its encoders`, { cause: error })
+    }
+    const missing = required.filter((name) => !new RegExp(`^\\s*\\S*\\s+${name}\\b`, 'm').test(encoders))
+    if (missing.length > 0) {
+      throw new LoudnessError(
+        `loudness: ${ffmpegPath} has the replaygain filter but is missing encoder(s) [${missing.join(', ')}], ` +
+          'so uploads in the matching container(s) would be rejected at normalize time. The Alpine build in ' +
+          'the API image carries all four; a dev ffmpeg may not (Homebrew often omits libvorbis).',
+      )
+    }
   }
 
   /**
@@ -242,6 +268,15 @@ export function createLoudnessNormalizer({
         outPath,
       ])
     } catch (error) {
+      // ffmpeg opens outPath at mux start, so a timeout (SIGTERM), an encoder
+      // error or ENOSPC leaves a PARTIAL .norm behind. This is the only place
+      // that file's name is known — the caller catches an exception and has no
+      // `result` to clean. If it is not removed here it is stranded forever:
+      // staging is a PVC, nothing sweeps incoming/ (backup.mjs documents that
+      // it relies on the request path discarding), and a submitter with an
+      // input that reliably times out the re-encode could fill the one writable
+      // volume one orphan at a time. The producer cleans its own mess.
+      await rm(outPath, { force: true }).catch(() => {})
       throw new LoudnessError('loudness: ffmpeg could not re-encode this file', { cause: error })
     }
     return { path: outPath, gainDb, trackGainDb, trackPeak }

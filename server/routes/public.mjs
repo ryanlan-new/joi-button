@@ -1255,6 +1255,20 @@ export default async function publicRoutes(fastify, options = {}) {
     const audio = await inspectAudio(upload)
     if (!audio.ok) return audio
 
+    // Already-published check on the INPUT sha, BEFORE the re-encode. Two things
+    // are published under an input-byte sha rather than a normalized one: the
+    // baseline clips (import-snapshot.mjs hashes public/voices/*.mp3 as-is) and
+    // any clip approved before normalization existed. Their original bytes are
+    // publicly fetchable (/media, /voices), so re-uploading them is the easy
+    // duplicate — and the post-normalize check below would MISS it, because the
+    // re-encode changes the sha. Checking here restores that rejection and skips
+    // the ffmpeg work for it. A clip published through the new pipeline is stored
+    // under its normalized sha, so re-uploading ITS bytes matches here too; a
+    // fresh original whose normalized form was published matches the check below.
+    if (q.clipByMedia.get(audio.value.sha256) !== undefined) {
+      return { ok: false, code: 'already_published' }
+    }
+
     // Loudness normalization — the intake step that replaced the README's "run
     // MP3Gain yourself before submitting". It re-encodes, so EVERYTHING
     // identity-shaped about the blob (sha256, bytes, duration) is recomputed
@@ -1271,10 +1285,20 @@ export default async function publicRoutes(fastify, options = {}) {
       return { ok: false, code: 'audio_processing_failed' }
     }
 
+    // maxFileBytes is enforced on the UPLOAD by busboy, but the re-encode is to a
+    // fixed 192 kbps, so output size tracks DURATION, not input size: a 5 MB clip
+    // at 32 kbps is ~20 minutes and re-encodes to ~30 MB. Nothing caps duration
+    // (inspectAudio only requires > 0), so without this the stored file — the
+    // one that costs PVC space and serves for a year immutable — can far exceed
+    // the ruled per-clip limit. A real voice-button clip is seconds long and
+    // never approaches it; this only refuses the pathological long/low-bitrate
+    // input. upload.path now points at the .norm file, so discard() cleans it.
+    if (media.bytes > maxFileBytes) return { ok: false, code: 'file_too_large' }
+
     if (seenSha.has(media.sha256)) return { ok: false, code: 'duplicate_in_batch' }
     // clips.media_sha256 is UNIQUE, so this blob could never become a second
     // clip. Refusing now beats accepting something whose rejection is already
-    // determined.
+    // determined. This is the normalized-sha half; the input-sha half is above.
     if (q.clipByMedia.get(media.sha256) !== undefined) {
       return { ok: false, code: 'already_published' }
     }

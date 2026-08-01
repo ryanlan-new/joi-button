@@ -121,6 +121,15 @@ spec:
               mountPath: /tmp
             - name: nginx-cache
               mountPath: /var/cache/nginx
+            # The API's volume, READ-ONLY. This pod serves catalog.json and the
+            # published media straight off it, which is why there is no
+            # cross-origin fetch and why the read path survives the API pod being
+            # down — with current data, not with whatever the image was built
+            # with. readOnly is not a formality: the web pod has no business
+            # writing here and nginx runs as uid 101 either way.
+            - name: shared
+              mountPath: /srv/shared
+              readOnly: true
       # With `readOnlyRootFilesystem: true`, nginx does not start unless the
       # paths it writes to are mounted writable. These two are the container
       # contract; which files land under them belongs to the image and its
@@ -137,3 +146,11 @@ spec:
         - name: nginx-cache
           emptyDir:
             sizeLimit: 16Mi
+        # k3s's default local-path StorageClass is node-local, so this claim and
+        # the API's are the same volume only because both pods land on the same
+        # node — true on a single-node cluster and the first thing to revisit if
+        # a second node ever joins.
+        - name: shared
+          persistentVolumeClaim:
+            claimName: joi-button-data
+            readOnly: true

@@ -39,6 +39,11 @@ FAIL=0
 cleanup() { docker rm -f "$NAME" >/dev/null 2>&1 || true; }
 trap cleanup EXIT INT TERM
 
+# An optional stand-in for the API's shared volume. When present the two
+# locations that serve it are asserted; when absent the site must still work,
+# which is itself a requirement (a first deploy has no API yet).
+SHARED_DIR="${SMOKE_SHARED_DIR:-}"
+
 RUN_ARGS=(
   --name "$NAME" -d
   --user 101:101
@@ -50,6 +55,7 @@ RUN_ARGS=(
   -p "127.0.0.1:${PORT}:8080"
 )
 [ -n "${SMOKE_PLATFORM:-}" ] && RUN_ARGS+=(--platform "$SMOKE_PLATFORM")
+[ -n "$SHARED_DIR" ] && RUN_ARGS+=(-v "${SHARED_DIR}:/srv/shared:ro")
 [ -n "$OVERRIDE" ] && RUN_ARGS+=(-v "${OVERRIDE}:/etc/nginx/nginx.conf:ro")
 
 if ! docker run "${RUN_ARGS[@]}" "$IMAGE" >/dev/null 2>"/tmp/${NAME}.err"; then
@@ -174,6 +180,22 @@ if [ -n "$BG_URL" ]; then
   check "background image is a hashed asset"       "200"                        "$(code "/${BG_URL#/}")"
 else
   printf '  FAIL  %s\n' "background image is a hashed asset (no URL to request)"; FAIL=$((FAIL+1))
+fi
+
+if [ -n "$SHARED_DIR" ]; then
+  echo "--- the API's shared volume, served read-only by this pod"
+  check  "catalog.json is served"                 "200"                        "$(code /catalog.json)"
+  check  "catalog.json revalidates every load"    "no-cache"                   "$(hdr /catalog.json)"
+  refute "catalog.json is not frozen for an hour" "max-age=3600"               "$(hdr /catalog.json)"
+  check  "catalog.json carries an ETag"           "etag:"                      "$(hdr /catalog.json)"
+  check  "published media is served"              "200"                        "$(code /media/deadbeef01234567.mp3)"
+  check  "published media is immutable"           "immutable"                  "$(hdr /media/deadbeef01234567.mp3)"
+  check  "a missing media file is 404"            "404"                        "$(code /media/absent0123456789.mp3)"
+  refute "the shared volume is not writable here" "WRITABLE"                   "$(docker exec "$NAME" sh -c 'touch /srv/shared/probe 2>/dev/null && echo WRITABLE || echo readonly' 2>&1)"
+else
+  echo "--- no shared volume mounted: the site must still work without the API"
+  check  "the site serves without a catalogue"    "200"                        "$(code /)"
+  check  "catalog.json is an honest 404"          "404"                        "$(code /catalog.json)"
 fi
 
 echo "--- security headers"

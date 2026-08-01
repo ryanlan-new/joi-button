@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: MIT
+#
+# The one writable thing in this deployment.
+#
+# The API writes the database, the staged uploads, the published media and
+# catalog.json here; the web pod mounts the same claim READ-ONLY and serves the
+# last two directly. That sharing is what removes the cross-origin fetch, the
+# mixed-content problem and the loading state from the site — and it is also why
+# ReadWriteOnce is enough: both pods are on the same node.
+#
+# k3s's default StorageClass (local-path) is node-local hostPath. Two
+# consequences worth stating rather than discovering:
+#   * ReadWriteOnce here means "one NODE", not "one pod" — the web pod's
+#     read-only mount is fine alongside the API's read-write one.
+#   * a second node would break the sharing silently: the pods would each get a
+#     directory and neither would notice. Revisit before scheduling across nodes.
+#
+# From the moment the first submission lands, this volume holds bytes that exist
+# nowhere else. The backup story is JOI-BUTTON-STORY-038 and it is not optional.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: joi-button-data
+  namespace: joi-button
+  labels:
+    app.kubernetes.io/name: joi-button-data
+    app.kubernetes.io/part-of: joi-button
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      # Sized for the audio, which is the only thing here that grows: the twelve
+      # founding clips are 1.5MB, so this holds roughly ten thousand of them.
+      storage: 2Gi

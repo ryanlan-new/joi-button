@@ -39,6 +39,10 @@ Dockerfile.api
 .dockerignore
 deploy/*
 !deploy/nginx.conf
+# Re-admitted so the web image can RUN the contrast gate rather than merely ship
+# a palette nobody checked. It reads src/App.vue's :root block and the roster in
+# server/lib/contrast.mjs, both already in this context, and writes nothing.
+!deploy/contrast-check.mjs
 
 # the API's working directory: a local development database, staged uploads and
 # published media. Excluded for the same reason as deploy/runtime.env — a

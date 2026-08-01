@@ -51,6 +51,20 @@ COPY . .
 ARG PUBLIC_PATH=/
 ENV PUBLIC_PATH=${PUBLIC_PATH}
 
+# THE CONTRAST GATE, run rather than merely defined.
+#
+# `npm run contrast` has existed since the palette repair and was invoked by
+# nothing — not this file, not CI, not the smoke test. A gate nobody runs is a
+# comment, and this one is the only check on the DEFAULT palette: it reads
+# src/App.vue's :root block and asserts all eighteen foreground/background
+# pairings the site actually renders. (An OWNER's palette is checked separately,
+# at run time, by server/lib/theme.mjs — against the same roster, which is why
+# server/lib/contrast.mjs is a module and not a copy.)
+#
+# Before `npm run build`, deliberately: a palette that cannot be shipped should
+# fail in seconds rather than after a two-minute webpack run.
+RUN npm run contrast
+
 # NOTE: NODE_ENV is intentionally NOT set.  vue-cli-service sets it to
 # production itself, whereas exporting it before `npm ci` risks dropping the
 # devDependencies that provide vue-cli-service.

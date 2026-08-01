@@ -109,6 +109,26 @@ jobs:
             echo "TAGS_EOF"
           } >> "$GITHUB_OUTPUT"
 
+      # The palette gate, on a runner rather than only in a comment.
+      #
+      # `npm run contrast` reads src/App.vue's :root block and asserts all
+      # eighteen foreground/background pairings the site renders. It had existed
+      # since the palette repair and was invoked by nothing — not the Dockerfile,
+      # not this workflow, not the smoke test — which made it a comment rather
+      # than a gate.
+      #
+      # It is a step of its own AS WELL AS a RUN inside the Dockerfile, and that
+      # is not redundancy for its own sake: this step cannot be defeated by a
+      # .dockerignore that fails to carry the checker into the build context,
+      # and it fails in fifteen seconds instead of after a full image build. The
+      # Dockerfile's copy is what protects a build somebody runs by hand.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+      - name: Contrast gate on the default palette
+        run: npm run contrast
+
       # Build once into the local daemon and SMOKE IT BEFORE PUBLISHING.
       # An image that is pushed before it has ever been started is a package
       # whose first real evaluation happens in the cluster; the runtime contract

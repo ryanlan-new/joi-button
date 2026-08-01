@@ -463,17 +463,33 @@ apply_runtime_secret() {
   [[ -f "${RUNTIME_ENV_FILE}" ]] ||
     fail "${RUNTIME_ENV_FILE} does not exist, so the API pod would have no credentials, no session key and no admin list — it would not start. Copy deploy/runtime.env.example to deploy/runtime.env and fill it in (it is git-ignored), or set RUNTIME_ENV_FILE=... to point elsewhere."
 
-  require_cmd node
-
   log "Building Secret ${SECRET_NAME} from ${RUNTIME_ENV_FILE} (values are never printed) ..."
   local rendered
   # Command substitution, so a failure in the normaliser stops the deploy rather
   # than piping an empty stream into kubectl and creating an EMPTY Secret — which
   # would look like a successful apply and take the API down at the next restart.
-  rendered="$(node "${SCRIPT_DIR}/runtime-env-to-secret.mjs" "${RUNTIME_ENV_FILE}")" ||
-    fail "deploy/runtime-env-to-secret.mjs refused ${RUNTIME_ENV_FILE} (see the message above); nothing was applied."
+  if command -v node >/dev/null 2>&1; then
+    # PREFERRED: the API's own parser normalises the file, so "what a line means"
+    # has exactly one definition (see runtime-env-to-secret.mjs) — it strips the
+    # inline ' #' comments a hand-edited file may carry.
+    rendered="$(node "${SCRIPT_DIR}/runtime-env-to-secret.mjs" "${RUNTIME_ENV_FILE}")" ||
+      fail "deploy/runtime-env-to-secret.mjs refused ${RUNTIME_ENV_FILE} (see the message above); nothing was applied."
+  else
+    # A single-host deploy runs ON a bare k3s node with no Node.js. The bootstrap
+    # writes runtime.env as clean KEY=value lines (no inline comments), which
+    # kubectl --from-env-file reads correctly on its own. Guard the ONE case that
+    # would silently corrupt a secret: a value line carrying an inline ' #' comment,
+    # which the API treats as a comment but kubectl would fold INTO the value.
+    local bad
+    bad="$(grep -nE '^[^#[:space:]][^=]*=.*[[:space:]]#' "${RUNTIME_ENV_FILE}" || true)"
+    [[ -z "${bad}" ]] ||
+      fail "node is not installed here, and ${RUNTIME_ENV_FILE} has value line(s) with an inline ' #' comment that kubectl would fold INTO the secret:
+${bad}
+Install Node.js on this node, or remove the ' # ...' from those lines, then re-run."
+    rendered="$(grep -vE '^[[:space:]]*#|^[[:space:]]*$' "${RUNTIME_ENV_FILE}")"
+  fi
   [[ -n "${rendered}" ]] ||
-    fail "deploy/runtime-env-to-secret.mjs produced no output for ${RUNTIME_ENV_FILE}."
+    fail "no key=value lines to build the Secret from in ${RUNTIME_ENV_FILE}."
 
   # shellcheck disable=SC2029
   printf '%s\n' "${rendered}" | node_pipe \

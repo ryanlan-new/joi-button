@@ -22,11 +22,20 @@ K8S_NS=joi-button
 k3s_pipe() { if [[ -n "${REMOTE:-}" ]]; then ssh "$REMOTE" "$1"; else bash -c "$1"; fi; }
 
 apply_target() {
+  # Open fd 3 for the whole apply step. Unlike the earlier steps, apply prompts
+  # only occasionally (the cert-manager install confirm on the Let's Encrypt path),
+  # but it DOES prompt — and every other step opens its own fd 3, so this one must
+  # too, or confirm_yes reads a closed descriptor and set -u then trips on the
+  # unset answer.
+  open_tty
+  trap close_tty RETURN
   case "${DEPLOY_TARGET:?run the target step first}" in
     k3s)    apply_k3s ;;
     docker) apply_docker ;;
     *)      die "unknown DEPLOY_TARGET '$DEPLOY_TARGET'" ;;
   esac
+  close_tty
+  trap - RETURN
 }
 
 # ---------------------------------------------------------------------------
@@ -155,7 +164,7 @@ k3s_seed_if_needed() {
   # absent this is a soft note rather than a failure, because the site is up and
   # the owner can seed later.
   if [[ -x "$REPO_ROOT/deploy/seed-k3s.sh" ]]; then
-    APP_HOST="$APP_HOST" REMOTE="$REMOTE" bash "$REPO_ROOT/deploy/seed-k3s.sh" || note 'seed step reported a problem — see above; the site is up regardless'
+    APP_HOST="$APP_HOST" REMOTE="${REMOTE:-}" bash "$REPO_ROOT/deploy/seed-k3s.sh" || note 'seed step reported a problem — see above; the site is up regardless'
   else
     note 'deploy/seed-k3s.sh not present; seed later with import-snapshot.'
   fi

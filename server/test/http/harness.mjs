@@ -245,6 +245,8 @@ export async function boot(t, {
     // put in-flight uploads on the public site. Tests assert the emptiness of
     // this directory, so the layout has to be the real one.
     stagingDir: join(dataDir, 'incoming'),
+    themeCssFile: join(dataDir, 'theme.css'),
+    wallpaperDir: join(dataDir, 'wallpaper'),
   })
 
   const clock = createTestClock(T0)
@@ -273,6 +275,8 @@ export async function boot(t, {
         mediaDir: paths.mediaDir,
         catalogFile: paths.catalogFile,
         stagingDir: paths.stagingDir,
+        themeCssFile: paths.themeCssFile,
+        wallpaperDir: paths.wallpaperDir,
       },
       limits,
       danmaku: {

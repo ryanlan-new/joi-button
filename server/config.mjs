@@ -113,6 +113,14 @@ const DERIVED_FROM_DATA_DIR = Object.freeze({
   // in-flight upload publicly fetchable and then permanently cached. A sibling
   // is still on the same volume, which is what rename() requires.
   stagingDir: 'incoming',
+  // The theme stylesheet the web pod serves at /theme.css (no-cache + ETag,
+  // like catalog.json), and the owner-uploaded wallpapers it serves at
+  // /wallpaper/ (immutable — the filenames are content hashes). Both siblings
+  // of media/ for the same reason staging is: each nginx location aliases
+  // exactly one directory, and nothing under media/ that is not published
+  // audio.
+  themeCssFile: 'theme.css',
+  wallpaperDir: 'wallpaper',
 })
 
 /**
@@ -136,6 +144,8 @@ export const ENV_SOURCES = Object.freeze({
   'storage.mediaDir': Object.freeze(['MEDIA_DIR', 'DATA_DIR']),
   'storage.catalogFile': Object.freeze(['CATALOG_FILE', 'DATA_DIR']),
   'storage.stagingDir': Object.freeze(['STAGING_DIR', 'DATA_DIR']),
+  'storage.themeCssFile': Object.freeze(['THEME_CSS_FILE', 'DATA_DIR']),
+  'storage.wallpaperDir': Object.freeze(['WALLPAPER_DIR', 'DATA_DIR']),
 
   'limits.maxClipsPerBatch': Object.freeze(['MAX_CLIPS_PER_BATCH']),
   'limits.maxFileBytes': Object.freeze(['MAX_FILE_BYTES']),
@@ -311,6 +321,8 @@ export function loadConfig({ env: processEnv = process.env, envFile = DEFAULT_EN
   const catalogFile =
     read.string('storage.catalogFile') ?? join(dataDir, DERIVED_FROM_DATA_DIR.catalogFile)
   const stagingDir = read.string('storage.stagingDir') ?? join(dataDir, DERIVED_FROM_DATA_DIR.stagingDir)
+  const themeCssFile = read.string('storage.themeCssFile') ?? join(dataDir, DERIVED_FROM_DATA_DIR.themeCssFile)
+  const wallpaperDir = read.string('storage.wallpaperDir') ?? join(dataDir, DERIVED_FROM_DATA_DIR.wallpaperDir)
 
   const nodeEnv = read.string('nodeEnv')
   const sessionSecret = read.secret('session.secret')
@@ -357,7 +369,7 @@ export function loadConfig({ env: processEnv = process.env, envFile = DEFAULT_EN
       instanceMode: nodeEnv === 'development' ? 'development' : 'production',
     },
 
-    storage: { dataDir, mediaDir, catalogFile, stagingDir },
+    storage: { dataDir, mediaDir, catalogFile, stagingDir, themeCssFile, wallpaperDir },
 
     limits: {
       // The ruled ceilings live in env-guard's roster (1..10 and 1..5 MiB); this
@@ -380,6 +392,20 @@ export function loadConfig({ env: processEnv = process.env, envFile = DEFAULT_EN
         // the code TTL is what keeps those the same fact: a lease that outlived
         // its code would hold the socket open for a code nobody can still use.
         leaseTtlMs: codeTtlMinutes * 60_000,
+        // How long the socket stays open after the LAST waiter lets go.
+        //
+        // Deployment policy, derived from a measured platform behaviour rather
+        // than from taste (JOI-BUTTON-INC-006): /v2/app/start answers 7001
+        // 请求冷却期 for a while after a session for the same app+room ends —
+        // observed to clear inside 15s. Without a linger, the sequence this
+        // site's whole login is made of, "A verifies, session stops, B asks for
+        // a code", puts B inside that window and tells B the room is
+        // unreachable.
+        //
+        // The lifecycle's own default is 0, because a linger is a policy and not
+        // a property of a refcount. This is where the policy lives, beside the
+        // other value derived from a ruling.
+        lingerMs: readLingerMs(env),
       },
     },
 
@@ -710,6 +736,28 @@ function readTrustProxy({ name, value }, problems) {
     return false
   }
   return list
+}
+
+/**
+ * DANMAKU_LINGER_SECONDS, defaulting to 45.
+ *
+ * Read here rather than through the reader roster because it is a tuning knob
+ * with a safe default rather than a value the process needs supplied: an
+ * unreadable or absent one falls back, and a deliberate 0 is honoured (it turns
+ * the linger off, which is what a test deployment against a different room might
+ * want). Refusing to boot over a mistyped tuning knob would be the wrong trade —
+ * the value cannot make the site unsafe, only slower or chattier.
+ */
+function readLingerMs(env) {
+  const raw = env.DANMAKU_LINGER_SECONDS
+  if (raw === undefined || String(raw).trim() === '') return 45_000
+  const text = String(raw).trim()
+  if (!/^\d+$/.test(text)) return 45_000
+  const seconds = Number(text)
+  // Capped at the code's own lifetime: a linger longer than the code TTL would
+  // keep the socket open past the point where any code it was opened for could
+  // still be used, which is the standing connection the ruling forbids.
+  return Math.min(seconds, 10 * 60) * 1000
 }
 
 function readOpenIds(env, problems) {

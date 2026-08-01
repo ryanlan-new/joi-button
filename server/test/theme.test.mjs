@@ -20,7 +20,14 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import { CONTRAST_PAIRS, contrastRatio, evaluatePalette, isTranslucent } from '../lib/contrast.mjs'
-import { THEME_REJECTIONS, TOKEN_NAMES, renderThemeCss, validateTheme } from '../lib/theme.mjs'
+import {
+  THEME_REJECTIONS,
+  TOKEN_NAMES,
+  WALLPAPER_URL_PREFIX,
+  renderThemeCss,
+  validateTheme,
+  wallpaperUrl,
+} from '../lib/theme.mjs'
 
 function defaultTokens() {
   const css = readFileSync(new URL('../../src/App.vue', import.meta.url), 'utf8')
@@ -173,19 +180,27 @@ test('the renderer refuses a value the validator would have caught, rather than 
 })
 
 test('a wallpaper renders as a fixed backdrop, and only from a content-addressed path', () => {
-  const url = '/media/ab/cd/' + 'f'.repeat(64) + '.png'
+  const sha = 'f'.repeat(64)
+  // Built through the exported helper, so the renderer is validating against the
+  // same prefix the route will use rather than against a second literal.
+  const url = wallpaperUrl(`${sha}.png`)
+  assert.equal(url, `${WALLPAPER_URL_PREFIX}${sha}.png`)
+  assert.equal(wallpaperUrl(null), null)
+  assert.equal(wallpaperUrl(''), null)
+
   const css = renderThemeCss({ tokens: GOOD.tokens, wallpaperUrl: url })
   assert.match(css, new RegExp(`background-image: url\\("${url.replace(/\//g, '\\/')}"\\)`))
   assert.match(css, /background-attachment: fixed/)
 
   // Anything else is refused. A ')' or a '"' in the url would end the url() and
-  // start whatever came next.
+  // start whatever came next — the last entry below is exactly that payload.
   for (const bad of [
     'https://elsewhere.example/x.png',
-    '/media/../../etc/passwd',
-    '/media/ab/cd/x.png',
-    `/media/ab/cd/${'f'.repeat(64)}.svg`,
-    `/media/ab/cd/${'f'.repeat(64)}.png") ; body { display:none } a:hover { background: url("`,
+    '/wallpaper/../../etc/passwd',
+    '/wallpaper/x.png',
+    `/media/ab/cd/${sha}.png`,
+    `/wallpaper/${sha}.svg`,
+    `/wallpaper/${sha}.png") ; body { display:none } a:hover { background: url("`,
   ]) {
     assert.throws(() => renderThemeCss({ tokens: GOOD.tokens, wallpaperUrl: bad }), /content-addressed/, bad)
   }

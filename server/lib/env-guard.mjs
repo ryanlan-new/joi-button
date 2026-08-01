@@ -281,6 +281,16 @@ const REQUIREMENTS = Object.freeze([
     why: 'In-flight uploads, on the shared PVC and OUTSIDE mediaDir — the web pod publishes mediaDir, so staging inside it would expose unreviewed clips.',
   },
   {
+    path: 'storage.themeCssFile',
+    kind: 'path',
+    why: 'theme.css on the shared PVC; the web pod serves this file at /theme.css with no-cache.',
+  },
+  {
+    path: 'storage.wallpaperDir',
+    kind: 'path',
+    why: 'Owner-uploaded wallpapers on the shared PVC; the web pod serves them at /wallpaper/ as immutable content-addressed files.',
+  },
+  {
     path: 'limits.maxClipsPerBatch',
     kind: 'integer',
     min: 1,

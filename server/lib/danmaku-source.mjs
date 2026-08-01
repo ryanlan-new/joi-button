@@ -155,7 +155,49 @@ export const DANMAKU_DEFAULTS = Object.freeze({
   // the commonest way a reference-counted resource never stops is a waiter that
   // went away without saying so.
   leaseTtlMs: 10 * MINUTE,
+  /**
+   * How long the room session stays open after the LAST waiter lets go.
+   *
+   * 45s, and it used to be 0. The reason is measured (JOI-BUTTON-INC-006): the
+   * Open Platform refuses /v2/app/start for a while after a session for the same
+   * app+room has ended — code 7001 请求冷却期, observed to clear somewhere inside
+   * 15s. With no linger, the sequence that the whole login is made of —
+   *
+   *     visitor A verifies -> session stops -> visitor B asks for a code
+   *
+   * puts B's start inside that cooldown, and B is told the room is unreachable.
+   *
+   * A linger removes the cooldown from the COMMON path entirely: B arrives while
+   * the socket is still open and gets a code with no wait at all. It does not
+   * remove it from the tail — a visitor arriving just after the linger expires
+   * still lands in the window — which is why the retry below exists as well.
+   * Linger is the optimisation; the retry is the correctness.
+   *
+   * It is not a return to a standing connection. The ruling was that the room is
+   * listened to on demand and released on success or at the 10-minute expiry;
+   * 45s after the last waiter is on demand by any reading, and the socket is
+   * demonstrably closed when nobody has asked for a code in the last minute.
+   *
+   * ZERO IS THE LIBRARY DEFAULT, and the 45s lives in server/config.mjs. This
+   * module is the lifecycle; how long a DEPLOYMENT lingers is policy derived
+   * from a platform's measured behaviour, and config.mjs is where that already
+   * lives (it derives leaseTtlMs from the ruled code TTL in the same object).
+   * Defaulting it here would also mean every lifecycle test that asserts prompt
+   * teardown had to wait out a linger to prove a refcount — which is a different
+   * property, tested with linger off.
+   */
   lingerMs: 0,
+  /**
+   * Total time acquire() may spend getting to 'listening', across retries.
+   *
+   * startTimeoutMs (10s) bounds ONE dial. This bounds the whole attempt, and it
+   * has to be larger than one cooldown plus one dial — measured at up to 15s and
+   * 7s respectively — or the retry could never complete and would only add
+   * latency to a failure. 45s leaves room for one cooldown wait (20s), one dial
+   * (7s) and a second dial, and it is still a bounded promise to a visitor
+   * watching a spinner.
+   */
+  startBudgetMs: 45_000,
   maxRecordedGaps: 50,
   maxOpenIdLength: 128,
   // 120, not 128, and matched to submitters.display_name's
@@ -450,12 +492,41 @@ export function createDanmakuSource(config = {}) {
     })
     startAbort = abort
 
-    const attempt = withTimeout(
-      clock,
-      Promise.race([transport.start({ onDanmaku: ingest, onDisconnect: handleDisconnect }), aborted]),
-      opts.startTimeoutMs,
-      `the transport did not become ready within ${opts.startTimeoutMs}ms`,
-    )
+    // Dial, and WAIT OUT the conditions that clear by themselves.
+    //
+    // This loop is inside start() rather than around it on purpose: the state
+    // stays 'starting' for its whole duration, so a visitor sees 准备中 rather
+    // than being told the room is unreachable during a wait we already know will
+    // end. Going to 'failed' and retrying from outside would have flickered a
+    // false verdict at exactly the moment the answer was "nearly".
+    //
+    // The per-dial timeout is unchanged; what is new is the budget across dials.
+    const dial = async () => {
+      const deadline = clock.now().getTime() + opts.startBudgetMs
+      for (;;) {
+        try {
+          return await withTimeout(
+            clock,
+            transport.start({ onDanmaku: ingest, onDisconnect: handleDisconnect }),
+            opts.startTimeoutMs,
+            `the transport did not become ready within ${opts.startTimeoutMs}ms`,
+          )
+        } catch (err) {
+          const waitMs = retryableWaitMs(err)
+          if (waitMs === null) throw err
+          // Not enough budget left to wait AND dial again: fail now with the
+          // real reason rather than sleeping through the remainder and then
+          // reporting a timeout, which would name the wrong cause.
+          if (clock.now().getTime() + waitMs >= deadline) throw err
+          await delay(clock, waitMs)
+        }
+      }
+    }
+
+    // aborted races the WHOLE loop, not one dial: a stop arriving while we are
+    // waiting out a cooldown must cancel the wait, or the source would keep
+    // dialling for a session nobody holds.
+    const attempt = Promise.race([dial(), aborted])
 
     // Cleared BY IDENTITY, not unconditionally. When a stop aborts this start
     // and a new acquire opens another one before these handlers run, a blind
@@ -754,6 +825,17 @@ function createDevelopmentTransport(devConfig, clock) {
     latencyMs: devConfig.startLatencyMs ?? 0,
     stopLatencyMs: devConfig.stopLatencyMs ?? 0,
     failureMessage: devConfig.startFailureMessage ?? 'simulated start failure',
+    // The platform's restart cooldown, modelled. The first N starts reject with
+    // an error carrying { retryable, retryAfterMs } — the shape lib/bili-transport
+    // puts on a 7001 请求冷却期 — and the N+1th succeeds.
+    //
+    // This knob exists for the same reason every other knob in this double
+    // exists: without it the dial loop's retry is unfalsifiable. A test that
+    // never sees a retryable rejection cannot tell a loop that waits and
+    // succeeds from one that gives up, and the real cooldown is a live
+    // platform's behaviour that no test may depend on reproducing.
+    retryableFailuresRemaining: devConfig.startRetryableFailures ?? 0,
+    retryAfterMs: devConfig.retryAfterMs ?? 20_000,
     startCount: 0,
     stopCount: 0,
     heartbeatCount: 0,
@@ -781,6 +863,14 @@ function createDevelopmentTransport(devConfig, clock) {
         clearPending()
         state.pendingTimer = clock.setTimeout(() => {
           state.pendingTimer = null
+          if (state.retryableFailuresRemaining > 0) {
+            state.retryableFailuresRemaining -= 1
+            const cooling = new Error('simulated cooldown (请求冷却期)')
+            cooling.retryable = true
+            cooling.retryAfterMs = state.retryAfterMs
+            reject(cooling)
+            return
+          }
           if (behaviour === 'fail') {
             reject(new Error(state.failureMessage))
             return
@@ -839,6 +929,13 @@ function createDevelopmentTransport(devConfig, clock) {
        * transport could not would let a test prove a delivery that cannot
        * happen — and the guard it was proving would be worth nothing.
        */
+      /** Arm N consecutive retryable (cooldown-shaped) start rejections. */
+      coolDownFor(count, retryAfterMs) {
+        state.retryableFailuresRemaining = count
+        if (typeof retryAfterMs === 'number') state.retryAfterMs = retryAfterMs
+      },
+      retryableFailuresRemaining: () => state.retryableFailuresRemaining,
+
       emitDanmaku({ openId, displayName = '', text }) {
         if (!state.listening || typeof state.onDanmaku !== 'function') {
           throw new Error(
@@ -933,6 +1030,27 @@ function realClock() {
 // Uses the injected clock, not the global one: a test that drives time must be
 // able to drive the start timeout too, or "the start that never becomes ready"
 // costs it a real ten seconds and gets skipped.
+/**
+ * How long to wait before dialling again, or null when this error is not one
+ * that waiting fixes.
+ *
+ * The transport sets both fields, on two errors that mean "not yet" rather than
+ * "broken": the platform's own restart cooldown (code 7001) and the transport's
+ * backoff gate, which is a clock and therefore opens by itself. Anything else —
+ * a bad credential, the wrong room, a refused TLS handshake — is not improved by
+ * waiting, and retrying it would turn a clear error into a slow one.
+ */
+function retryableWaitMs(error) {
+  if (error === null || typeof error !== 'object') return null
+  if (error.retryable !== true) return null
+  const wait = error.retryAfterMs
+  return typeof wait === 'number' && Number.isFinite(wait) && wait >= 0 ? wait : null
+}
+
+function delay(clock, ms) {
+  return new Promise((resolve) => clock.setTimeout(resolve, ms))
+}
+
 function withTimeout(clock, promise, ms, message) {
   return new Promise((resolve, reject) => {
     let settled = false

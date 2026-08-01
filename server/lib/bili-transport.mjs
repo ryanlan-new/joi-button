@@ -192,6 +192,28 @@ export const INTERACTION_END_CMD = 'LIVE_OPEN_PLATFORM_INTERACTION_END'
 export const SESSION_ALREADY_CLOSED_CODES = Object.freeze([7000, 7003])
 
 /**
+ * The platform's own restart cooldown: /v2/app/start refuses for a while after
+ * a session for the same app+room has ended.
+ *
+ * MEASURED, not read in a document (JOI-BUTTON-INC-006, 2026-08-01, room
+ * 3622717, real credentials): after a stop that had fully settled — state
+ * 'stopped', zero waiters, /v2/app/end completed — an immediate start answered
+ *
+ *     code 7001 (请求冷却期)
+ *
+ * and the same call at +15s succeeded. So the window is somewhere in (0s, 15s].
+ * The first attempt at this measurement started 422ms after release() while our
+ * own end was still in flight, which produces the same 7001 for a completely
+ * different reason; that reading was thrown away.
+ *
+ * THIS IS NOT A FAILURE, and treating it as one is wrong twice over: it inflates
+ * consecutiveStartFailures, and it starts a DOUBLING backoff for a condition
+ * that clears on its own in seconds. It is "not yet", and the honest response is
+ * to wait exactly as long as the platform is asking and then dial again.
+ */
+export const COOLDOWN_CODES = Object.freeze([7001])
+
+/**
  * [BLIVEDM] open_live.py:261-266 — 7003 from /v2/app/heartbeat means the session
  * was closed under us. There is nothing to keep alive and we are already deaf.
  */
@@ -225,6 +247,19 @@ export const TRANSPORT_DEFAULTS = Object.freeze({
    * session, so it would buy nothing and cost the test a deterministic answer.
    */
   backoff: Object.freeze({ initialDelayMs: 1_000, factor: 2, maxDelayMs: 30_000 }),
+  /**
+   * How long to wait after a COOLDOWN_CODES refusal before dialling again.
+   *
+   * 20s against a measured window of at most 15s. Deliberately generous: the
+   * measurement is one sample from one room, the cost of waiting 5s too long is
+   * five seconds of "准备中", and the cost of dialling 1s too early is another
+   * refusal plus another wait. Asymmetric costs, so round up.
+   *
+   * Flat, not doubling. The platform's cooldown does not get longer because we
+   * asked; a doubling delay here would invent a penalty the platform is not
+   * applying.
+   */
+  cooldownRetryMs: 20_000,
   /** Ceilings on what a hostile or broken upstream can make us allocate. */
   maxFrameBytes: 4 * 1024 * 1024,
   maxDecompressedBytes: 8 * 1024 * 1024,
@@ -542,6 +577,7 @@ export function createBiliTransport(config = {}) {
     ...TRANSPORT_DEFAULTS,
     ...(config.transport ?? {}),
     backoff: Object.freeze({ ...TRANSPORT_DEFAULTS.backoff, ...(config.transport?.backoff ?? {}) }),
+    cooldownRetryMs: config.transport?.cooldownRetryMs ?? TRANSPORT_DEFAULTS.cooldownRetryMs,
   })
 
   const clock = config.clock ?? realClock()
@@ -1031,6 +1067,13 @@ export function createBiliTransport(config = {}) {
     // that we are still deaf, which is the honest answer while it is true.
     const waitMs = nextDialAllowedAtMs - clock.now().getTime()
     if (waitMs > 0) {
+      // NOT marked retryable, and that is the deliberate half of this change.
+      // This gate is reached after CONSECUTIVE GENUINE FAILURES — a bad
+      // credential, the wrong room, a refused handshake — and none of those is
+      // improved by waiting. Letting the lifecycle wait it out would spend a
+      // visitor's whole start budget and then fail anyway, turning a clear
+      // error into a slow one. Only the platform's cooldown, which is known to
+      // clear, is retryable; see COOLDOWN_CODES.
       throw new OpenPlatformError(
         `bili transport: still backing off after ${consecutiveStartFailures} consecutive failures — ` +
           `not dialling the room for another ${waitMs}ms. We are deaf, not idle.`,
@@ -1075,8 +1118,27 @@ export function createBiliTransport(config = {}) {
       nextDialAllowedAtMs = 0
       consecutiveHeartbeatFailures = 0
     } catch (err) {
-      consecutiveStartFailures += 1
-      nextDialAllowedAtMs = clock.now().getTime() + backoffDelayMs(consecutiveStartFailures)
+      // A cooldown is the platform saying "not yet", so it is gated like a
+      // failure — we must not dial again immediately — but it is NOT COUNTED as
+      // one. Counting it would double our own backoff on top of the platform's
+      // wait and, worse, would make the NEXT genuine failure start from an
+      // inflated count. The delay is flat and the failure count is untouched.
+      const cooling = err instanceof OpenPlatformError && COOLDOWN_CODES.includes(err.platformCode)
+      if (cooling) {
+        nextDialAllowedAtMs = clock.now().getTime() + opts.cooldownRetryMs
+        // The one thing a caller needs in order to do something better than
+        // give up. Set on the error rather than returned, because start()'s
+        // contract is to throw when it did not open a socket.
+        // A margin over the gate we just armed, so the retry arrives AFTER
+        // nextDialAllowedAtMs rather than exactly on it. Landing on the
+        // boundary would trip the backoff gate — which is not retryable — and
+        // convert a cooldown we were waiting out into a hard failure.
+        err.retryAfterMs = opts.cooldownRetryMs + 250
+        err.retryable = true
+      } else {
+        consecutiveStartFailures += 1
+        nextDialAllowedAtMs = clock.now().getTime() + backoffDelayMs(consecutiveStartFailures)
+      }
       // A session opened here and abandoned here is ours to close. The
       // lifecycle does call stop() after a failed start, but only when it still
       // owns the source — the generation guard in its error handler declines

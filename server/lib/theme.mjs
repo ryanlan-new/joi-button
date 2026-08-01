@@ -103,6 +103,9 @@ const NAME_MAX = 120
  * Validate a theme the owner submitted.
  *
  * @param {{name?: string, tokens?: object, wallpaperPath?: string|null}} theme
+ *        wallpaperPath is the bare `<sha256>.<ext>` stored in the column, not a
+ *        URL: only its PRESENCE matters here, and building a URL is the caller's
+ *        job (see WALLPAPER_URL_PREFIX).
  * @returns {{ok: boolean, problems: Array<{code: string, token?: string, detail?: string}>}}
  *
  * EVERY problem, not the first. The form shows sixteen colour inputs and a
@@ -219,12 +222,19 @@ export function renderThemeCss(theme) {
 
   const url = theme?.wallpaperUrl
   if (typeof url === 'string' && url !== '') {
-    // The URL is built by the caller from a content-addressed path, never from
-    // anything a form supplied — see routes/admin.mjs. This still refuses
+    // The URL is built by the caller from a content-addressed FILENAME, never
+    // from anything a form supplied — see routes/admin.mjs. This still refuses
     // anything that is not the shape it expects, because a `)` or a `"` here
     // would end the url() and start whatever follows it.
-    if (!/^\/media\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}\.(?:png|jpg|webp)$/.test(url)) {
-      throw new Error(`theme: refusing to render a wallpaper url that is not a content-addressed media path: ${JSON.stringify(url)}`)
+    //
+    // /wallpaper/ and not /media/: the two are different trees with different
+    // cache rules and different nginx aliases, and mixing them would mean a
+    // wallpaper could be reached under the path published for approved audio.
+    // themes.wallpaper_path stores the bare `<sha256>.<ext>` — no slash, so the
+    // database CHECK alone makes a traversal unspellable — and the serving
+    // prefix belongs to nginx.
+    if (!/^\/wallpaper\/[0-9a-f]{64}\.(?:png|jpg|webp)$/.test(url)) {
+      throw new Error(`theme: refusing to render a wallpaper url that is not a content-addressed wallpaper path: ${JSON.stringify(url)}`)
     }
     out.push(
       '',
@@ -252,4 +262,19 @@ export function renderThemeCss(theme) {
  * absence of a theme is the correct fallback and there is nothing to duplicate.
  * This exists so the admin form can open pre-filled with what is on screen.
  */
+/**
+ * Where nginx publishes the wallpaper directory.
+ *
+ * Exported so routes/admin.mjs builds the URL from the same constant the
+ * renderer validates against, rather than from a second string literal that can
+ * drift from it. deploy/nginx.conf carries the matching `location ^~ /wallpaper/`.
+ */
+export const WALLPAPER_URL_PREFIX = '/wallpaper/'
+
+/** `<sha256>.<ext>` -> the URL the stylesheet may reference. */
+export function wallpaperUrl(path) {
+  if (typeof path !== 'string' || path === '') return null
+  return `${WALLPAPER_URL_PREFIX}${path}`
+}
+
 export const EMPTY_THEME_CSS = '/* No theme is active; the site uses the palette compiled into its bundle. */\n'

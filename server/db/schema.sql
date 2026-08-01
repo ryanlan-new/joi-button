@@ -875,12 +875,25 @@ CREATE TABLE IF NOT EXISTS themes (
     -- history reads as a sequence.
     activated_at  TEXT,
 
+    -- v2: the wallpaper, as a content-addressed FILENAME (<sha256>.<ext>) under
+    -- the volume's wallpaper/ directory.  A filename and not a path: the serving
+    -- prefix belongs to nginx and the storage directory to config.mjs, so a row
+    -- cannot point outside the directory by construction — there is no '/' to
+    -- traverse with.  The extension list is the allow-list (SVG is refused
+    -- because it is a script container, not an image).
+    wallpaper_path TEXT,
+
     CHECK (id <> '' AND id NOT GLOB '*[^a-z0-9_-]*'),
     CHECK (name <> '' AND length(name) <= 120),
     CHECK (json_valid(tokens)),
     CHECK (created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z'),
     CHECK (activated_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z'),
-    CHECK (is_active = 0 OR activated_at IS NOT NULL)
+    CHECK (is_active = 0 OR activated_at IS NOT NULL),
+    CHECK (wallpaper_path IS NULL OR (
+           (wallpaper_path GLOB '*.png' OR wallpaper_path GLOB '*.jpg' OR wallpaper_path GLOB '*.webp')
+       AND substr(wallpaper_path, 1, 64) NOT GLOB '*[^0-9a-f]*'
+       AND substr(wallpaper_path, 65, 1) = '.'
+       AND length(wallpaper_path) <= 69))
 ) STRICT;
 
 CREATE UNIQUE INDEX IF NOT EXISTS themes_one_active

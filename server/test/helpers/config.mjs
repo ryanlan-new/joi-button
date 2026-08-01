@@ -24,6 +24,8 @@ export function makeConfig({
       catalogFile: '/srv/joi/catalog.json',
       // A sibling of mediaDir, not a child: the web pod publishes mediaDir.
       stagingDir: '/srv/joi/incoming',
+      themeCssFile: '/srv/joi/theme.css',
+      wallpaperDir: '/srv/joi/wallpaper',
       ...storage,
     },
     limits: { maxClipsPerBatch: 10, maxFileBytes: 5 * MiB, ...limits },

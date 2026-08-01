@@ -10,7 +10,7 @@
 import { readFileSync } from 'node:fs';
 
 /** Version this code writes.  Bump on every schema change. */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 /**
  * Oldest catalogue parser that can still read a document produced at
@@ -41,7 +41,23 @@ export const REQUIRED_SQLITE_VERSION = '3.38.0';
  * describes the current shape, so a fresh database is born at SCHEMA_VERSION
  * and an ALTER TABLE on top of it would fail on a column that is already there.
  */
-export const POST_BASELINE_STEPS = [];
+export const POST_BASELINE_STEPS = [
+    {
+        version: 2,
+        // The theme wallpaper (JOI-BUTTON-STORY-034/035).  The CHECK is repeated
+        // from the baseline verbatim; SQLite enforces an ADD COLUMN check on new
+        // writes only, which is fine — the column is born NULL everywhere.
+        // MIN_COMPATIBLE stays 1: catalogue readers are untouched by a themes
+        // column, and src/catalog.mjs only refuses when minCompatibleVersion
+        // exceeds what it knows.
+        sql: `ALTER TABLE themes ADD COLUMN wallpaper_path TEXT
+              CHECK (wallpaper_path IS NULL OR (
+                     (wallpaper_path GLOB '*.png' OR wallpaper_path GLOB '*.jpg' OR wallpaper_path GLOB '*.webp')
+                 AND substr(wallpaper_path, 1, 64) NOT GLOB '*[^0-9a-f]*'
+                 AND substr(wallpaper_path, 65, 1) = '.'
+                 AND length(wallpaper_path) <= 69));`,
+    },
+];
 
 const TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 

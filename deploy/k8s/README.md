@@ -205,6 +205,23 @@ somebody signed off.
   a hosts entry (`$LB_ADDRESS $APP_HOST`); adding a hosts entry needs root and is
   the operator's call. The `curl --resolve` and port-forward recipes above are the
   DNS-independent ways to confirm the deployment itself.
+- **RUN THE SNAPSHOT IMPORT BEFORE THE FIRST PUBLISH.** The twelve clips this
+  site has always served live in `src/voices.json`, compiled into the bundle, and
+  the page paints them when `/catalog.json` cannot be fetched. The first publish
+  creates that file — and the fetched document REPLACES the compiled one
+  wholesale, so on an empty database the site would go from twelve clips to
+  however many were just approved, silently. Once, on the node, against the same
+  volume the API uses:
+
+  ```bash
+  DATA_DIR=/srv/shared node server/scripts/import-snapshot.mjs --dry-run
+  ```
+
+  Then again without `--dry-run`. It is idempotent, it never updates or deletes,
+  and it imports the clips as `published`, so they survive every publish after
+  it. Skipping it is recoverable — run it later and publish again — but between
+  the two the site is missing its own content.
+
 - **This replaced GitHub Pages; Pages is retired.** `.github/workflows/deploy.yml`
   is deleted and `vue.config.js` now serves from `/` in every mode. The reason is
   structural rather than preference: Pages serves static files and nothing else,

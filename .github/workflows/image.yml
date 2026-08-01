@@ -77,6 +77,7 @@ jobs:
           # mixed-case account cannot turn this into a confusing push failure.
           owner="$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')"
           image="ghcr.io/${owner}/joi-button/web"
+          api_image="ghcr.io/${owner}/joi-button/api"
 
           short_sha="$(git rev-parse --short=7 HEAD)"
 
@@ -107,6 +108,20 @@ jobs:
               echo "${image}:${INPUT_TAG}"
             fi
             echo "TAGS_EOF"
+            # The API image carries the SAME tag scheme as web. One working tree,
+            # one tag: deploy-k3s.sh pins both images from a single TAG, so "which
+            # pair is running" must have one answer, not two.
+            echo "api_image=${api_image}"
+            echo "api_primary=${api_image}:${short_sha}"
+            echo "api_tags<<API_TAGS_EOF"
+            echo "${api_image}:${short_sha}"
+            if [ "$REF" = "refs/heads/main" ]; then
+              echo "${api_image}:latest"
+            fi
+            if [ -n "${INPUT_TAG:-}" ]; then
+              echo "${api_image}:${INPUT_TAG}"
+            fi
+            echo "API_TAGS_EOF"
           } >> "$GITHUB_OUTPUT"
 
       # The palette gate, on a runner rather than only in a comment.
@@ -179,6 +194,29 @@ jobs:
           provenance: false
           cache-from: type=gha
 
+      # The API image. NO smoke test here, and that is stated rather than hidden:
+      # the API only starts with a database volume and a full credential set —
+      # which the cluster provides and a bare `docker run` on the runner does not.
+      # Its correctness is covered by its own test suite and by the /api/readyz
+      # assertion deploy-k3s.sh makes against the running pod after rollout.
+      #
+      # Dockerfile.api's builder stage compiles better-sqlite3 (a native addon) as
+      # the TARGET architecture. The runner is amd64 and the target is amd64, so
+      # this is a native build — no QEMU, no BUILDPLATFORM cross-compile. A distinct
+      # gha cache scope keeps it from thrashing the web image's cache.
+      - name: Build and push the API image
+        id: build_api
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.api
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.api_tags }}
+          provenance: false
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
       - name: Publish tag in job summary
         env:
           IMAGE: ${{ steps.meta.outputs.image }}
@@ -186,32 +224,41 @@ jobs:
           SHORT_SHA: ${{ steps.meta.outputs.short_sha }}
           TAGS: ${{ steps.meta.outputs.tags }}
           DIGEST: ${{ steps.build.outputs.digest }}
+          API_IMAGE: ${{ steps.meta.outputs.api_image }}
+          API_PRIMARY: ${{ steps.meta.outputs.api_primary }}
+          API_TAGS: ${{ steps.meta.outputs.api_tags }}
+          API_DIGEST: ${{ steps.build_api.outputs.digest }}
         run: |
           set -euo pipefail
           {
-            echo "### Container image published"
+            echo "### Container images published (web + api)"
             echo
-            echo "Deploy this exact image with the repository's own entrypoint —"
+            echo "Deploy this exact PAIR with the repository's own entrypoint —"
             echo "\`TAG=\` is required, because the script's own default (\`dev-<sha>\`)"
-            echo "names a LOCALLY built image, not this one:"
+            echo "names LOCALLY built images, not these. One tag pins both:"
             echo
             echo '```bash'
             echo "ALLOW_REGISTRY_PULL=1 TAG=${SHORT_SHA} deploy/deploy-k3s.sh apply"
             echo '```'
             echo
-            echo "Or paste it into the k8s Deployment (\`joi-button-web\`) over the \`replace-me\` placeholder:"
+            echo "Or paste them into the k8s Deployments over the \`replace-me\` placeholders:"
             echo
             echo '```yaml'
+            echo "        # joi-button-web"
             echo "        image: ${PRIMARY}"
+            echo "        # joi-button-api"
+            echo "        image: ${API_PRIMARY}"
             echo '```'
             echo
-            echo "| field | value |"
-            echo "| --- | --- |"
-            echo "| repository | \`${IMAGE}\` |"
-            echo "| platform | \`linux/amd64\` |"
-            echo "| digest | \`${DIGEST}\` |"
+            echo "| image | repository | digest |"
+            echo "| --- | --- | --- |"
+            echo "| web | \`${IMAGE}\` | \`${DIGEST}\` |"
+            echo "| api | \`${API_IMAGE}\` | \`${API_DIGEST}\` |"
+            echo
+            echo "Platform: \`linux/amd64\`"
             echo
             echo "All tags pushed by this run:"
             echo
             printf '%s\n' "$TAGS" | sed 's/^/- `/; s/$/`/'
+            printf '%s\n' "$API_TAGS" | sed 's/^/- `/; s/$/`/'
           } >> "$GITHUB_STEP_SUMMARY"

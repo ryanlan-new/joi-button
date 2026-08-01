@@ -71,6 +71,9 @@
                     {{ $t("admin.desk.alreadyDecided", { state: detail.item.state, at: detail.item.resolvedAt }) }}
                 </p>
                 <p v-if="detail.item.reviewerNote">{{ detail.item.reviewerNote }}</p>
+                <!-- A rejected item opened from the recycle bin: the form below
+                     overturns the rejection into a draft clip. -->
+                <p v-if="revising" class="adm-note adm-note-warn">{{ $t("admin.desk.reviseHint") }}</p>
                 <div v-if="detail.clip">
                     <p class="adm-note" :class="detail.clip.state === 'published' ? 'adm-note-ok' : 'adm-note-warn'">
                         <strong v-if="detail.clip.state !== 'published'">{{ $t("admin.desk.notLiveYet") }}</strong>
@@ -161,7 +164,7 @@
                         </option>
                     </select>
 
-                    <label class="adm-choice" v-if="!settled">
+                    <label class="adm-choice" v-if="!settled || revising">
                         <input type="radio" value="new" v-model="draft.groupMode">
                         {{ $t("admin.desk.groupNew") }}
                     </label>
@@ -202,8 +205,8 @@
                 </fieldset>
 
                 <!-- ---------------- the decision ---------------- -->
-                <fieldset class="adm-fieldset" v-if="!settled">
-                    <legend class="adm-legend">{{ $t("admin.desk.decision") }}</legend>
+                <fieldset class="adm-fieldset" v-if="!settled || revising">
+                    <legend class="adm-legend">{{ revising ? $t("admin.desk.reviseLegend") : $t("admin.desk.decision") }}</legend>
 
                     <label class="adm-label" for="adm-reason">{{ $t("admin.desk.reasonLabel") }}</label>
                     <textarea id="adm-reason" class="adm-textarea"
@@ -227,9 +230,11 @@
                     <div class="adm-actions">
                         <button type="button" class="adm-btn adm-btn-primary"
                                 :disabled="!canApprove || busy" @click="approve">
-                            {{ $t("admin.desk.approve") }}
+                            {{ revising ? $t("admin.desk.revise") : $t("admin.desk.approve") }}
                         </button>
-                        <button type="button" class="adm-btn adm-btn-danger"
+                        <!-- No reject when revising: the item is already rejected,
+                             and a second reject decides nothing. -->
+                        <button type="button" class="adm-btn adm-btn-danger" v-if="!revising"
                                 :disabled="!canReject || busy" @click="reject">
                             {{ $t("admin.desk.reject") }}
                         </button>
@@ -517,10 +522,18 @@ class ReviewDeskItem extends Vue {
         return this.detail !== null && this.detail.item.state !== 'pending'
     }
 
+    /** A rejected item re-opened to overturn the rejection (STORY-076). The desk
+     *  shows the approve form again — minus the reject button, since a second
+     *  reject decides nothing — and the server routes the approve to a revise. */
+    get revising() {
+        return this.detail !== null && this.detail.item.state === 'rejected'
+    }
+
     /** A decided item is still editable when it produced a clip; that is where
-     *  translations get typed and typos get fixed, forever. */
+     *  translations get typed and typos get fixed, forever. A rejected item is
+     *  editable while it is being revised. */
     get editable() {
-        return !this.settled || this.detail.clip !== null
+        return !this.settled || this.detail.clip !== null || this.revising
     }
 
     get proposedGroup() {

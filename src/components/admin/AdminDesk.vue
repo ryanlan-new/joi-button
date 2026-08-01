@@ -36,6 +36,10 @@
                         :aria-pressed="String(tab === 'clips')" @click="tab = 'clips'">
                     {{ $t("admin.nav.clips") }}
                 </button>
+                <button type="button" class="adm-tab" :class="{ 'is-on': tab === 'recycle' }"
+                        :aria-pressed="String(tab === 'recycle')" @click="tab = 'recycle'">
+                    {{ $t("admin.nav.recycle") }}
+                </button>
                 <button type="button" class="adm-tab" :class="{ 'is-on': tab === 'audit' }"
                         :aria-pressed="String(tab === 'audit')" @click="tab = 'audit'">
                     {{ $t("admin.nav.audit") }}
@@ -85,6 +89,41 @@
             </div>
         </div>
 
+        <!-- The recycle bin is a split like the queue: a list of rejected items on
+             one side, and the SAME review desk on the other, re-opened to overturn
+             a rejection. It keeps its own selection so leaving and returning to the
+             queue does not disturb what is open here, and vice versa. -->
+        <div v-if="tab === 'recycle'" class="adm-split" :class="{ 'is-focused': selectedRecycleItemId !== null }">
+            <div class="adm-split-list">
+                <RecycleQueue
+                    :recycle="recycle"
+                    :loading="recycleLoading"
+                    :error="recycleError"
+                    :selected-item-id="selectedRecycleItemId"
+                    :heard-item-ids="heardItemIds"
+                    @select="selectRecycleItem"
+                    @reload="loadRecycle" />
+            </div>
+            <div class="adm-split-desk">
+                <button type="button" class="adm-btn adm-back" v-if="selectedRecycleItemId !== null"
+                        @click="selectRecycleItem(null)">
+                    {{ $t("admin.desk.backToRecycle") }}
+                </button>
+                <ReviewDeskItem
+                    v-if="selectedRecycleItemId !== null"
+                    :key="'rec-' + selectedRecycleItemId"
+                    :item-id="selectedRecycleItemId"
+                    :heard="heardItemIds.indexOf(selectedRecycleItemId) !== -1"
+                    :siblings-by-group="siblingsByGroup"
+                    :next-item-id="nextRecycleItemId"
+                    @heard="markHeard"
+                    @decided="onRecycleDecided"
+                    @open="selectRecycleItem"
+                    @open-publish="tab = 'publish'" />
+                <p v-else class="adm-empty">{{ $t("admin.recycle.pick") }}</p>
+            </div>
+        </div>
+
         <!-- Every non-queue tab lives inside one body wrapper that carries the
              SAME top gap the queue's .adm-split has, so the first panel of any
              tab sits the same distance below the bar. Without it the bare panels
@@ -95,7 +134,7 @@
              event that changes it, and the register the desk shows is drawn
              from it. Without this the sibling captions would quietly describe
              the site as it was when this tab was opened. -->
-        <div v-if="tab !== 'queue'" class="adm-tabbody">
+        <div v-if="tab !== 'queue' && tab !== 'recycle'" class="adm-tabbody">
             <PublishPanel v-if="tab === 'publish'" @published="loadCatalogue" />
             <ClipsPanel v-if="tab === 'clips'" />
             <AuditTrail v-if="tab === 'audit'" />
@@ -408,6 +447,7 @@ import Vue from 'vue'
 import Component from 'vue-class-component'
 
 import ReviewQueue from './ReviewQueue.vue'
+import RecycleQueue from './RecycleQueue.vue'
 import ReviewDeskItem from './ReviewDeskItem.vue'
 import PublishPanel from './PublishPanel.vue'
 import ClipsPanel from './ClipsPanel.vue'
@@ -530,7 +570,15 @@ function createAdminApi({ onGone }) {
 }
 
 @Component({
-    components: { ReviewQueue, ReviewDeskItem, PublishPanel, ClipsPanel, AuditTrail, ThemePanel, BrandingPanel, AdminsPanel },
+    components: { ReviewQueue, RecycleQueue, ReviewDeskItem, PublishPanel, ClipsPanel, AuditTrail, ThemePanel, BrandingPanel, AdminsPanel },
+    watch: {
+        // The bin is read the first time its tab is opened, not on load: it is one
+        // more request, and a desk that opens on the queue should not spend it
+        // before anyone asks for the bin. The refresh button reloads thereafter.
+        tab(value) {
+            if (value === 'recycle' && this.recycle === null) this.loadRecycle()
+        },
+    },
     provide() {
         // Built here rather than as a class property: it holds functions, not
         // state, and `data` would make Vue walk it for reactivity it can never
@@ -551,6 +599,14 @@ class AdminDesk extends Vue {
     queueError = ''
 
     selectedItemId = null
+
+    // The recycle bin (STORY-076), with its own list and selection so it and the
+    // queue do not disturb each other's open item. heardItemIds is shared: a clip
+    // heard through is heard through whichever list opened it.
+    recycle = null
+    recycleLoading = false
+    recycleError = ''
+    selectedRecycleItemId = null
 
     /**
      * The clips that have been played all the way through in THIS session.
@@ -583,6 +639,15 @@ class AdminDesk extends Vue {
             for (const item of batch.items) {
                 if (item.itemId !== this.selectedItemId) return item.itemId
             }
+        }
+        return null
+    }
+
+    /** The first item in the bin that is not the one already open. */
+    get nextRecycleItemId() {
+        if (this.recycle === null) return null
+        for (const item of this.recycle.items) {
+            if (item.itemId !== this.selectedRecycleItemId) return item.itemId
         }
         return null
     }
@@ -689,6 +754,43 @@ class AdminDesk extends Vue {
         // The catalogue is not re-read here on purpose: a decision writes a
         // DRAFT clip, and catalog.json holds published ones. Publishing is what
         // moves it, and PublishPanel says so above.
+        this.loadQueue()
+    }
+
+    async loadRecycle() {
+        this.recycleLoading = true
+        this.recycleError = ''
+        try {
+            this.recycle = await this.api.get('/api/admin/recycle')
+        } catch (error) {
+            if (error.code !== 'gone') this.recycleError = error.message
+        } finally {
+            this.recycleLoading = false
+        }
+    }
+
+    selectRecycleItem(itemId) {
+        this.selectedRecycleItemId = itemId
+        // The same narrow-screen courtesy the queue does: when the list gives way
+        // to the desk, bring the area's top back into view.
+        if (itemId !== null
+            && typeof window !== 'undefined'
+            && typeof window.matchMedia === 'function'
+            && window.matchMedia('(max-width: 900px)').matches) {
+            this.$nextTick(() => {
+                if (this.$el && typeof this.$el.scrollIntoView === 'function') {
+                    this.$el.scrollIntoView()
+                }
+            })
+        }
+    }
+
+    onRecycleDecided() {
+        // A revision moves the item out of the bin (into a draft clip) and shifts
+        // the submitter's counts the queue's history column shows, so refresh
+        // both. The catalogue is unchanged for the same reason onDecided leaves
+        // it: the revised clip is a draft until it is published.
+        this.loadRecycle()
         this.loadQueue()
     }
 }

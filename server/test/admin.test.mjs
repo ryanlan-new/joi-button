@@ -24,6 +24,7 @@ import adminRoutes, {
   readAuditPage,
   readItem,
   readQueue,
+  readRecycle,
   restoreClip,
   retireClip,
   reviewItem,
@@ -205,6 +206,9 @@ test('the plugin puts ONE gate in front of every route it registers, and registe
     [
       'GET /api/admin/queue',
       'GET /api/admin/item/:id',
+      // The recycle bin: rejected items, and revising one is a POST to the item
+      // route above (STORY-076), so it needs no verb of its own.
+      'GET /api/admin/recycle',
       'POST /api/admin/item/:id',
       'POST /api/admin/publish',
       // The catalogue library: list, and retire/restore a clip (STORY-065).
@@ -502,10 +506,13 @@ test('a decision is only available while the item is pending and its batch is su
   const { db, ids, itemId } = pendingFixture(t)
   reviewItem(db, itemId, { decision: 'reject', reason: 'no' }, { actor: ADMIN, now: at })
 
+  // A rejected item CAN be revised into an approval (STORY-076, its own test);
+  // what stays refused is a SECOND reject — it would double-count the submitter
+  // and decide nothing that is not already decided.
   assert.throws(
-    () => reviewItem(db, itemId, { decision: 'approve', label: 'x', captions: CAPTIONS, groupId: ids.group }, { actor: ADMIN, now: at }),
+    () => reviewItem(db, itemId, { decision: 'reject', reason: 'still no' }, { actor: ADMIN, now: at }),
     (error) => error.code === 'conflict' && error.status === 409,
-    're-deciding a resolved item would double-count the submitter and need a clip under a rejected item',
+    'a second reject on an already-rejected item decides nothing',
   )
 
   // A cancelled batch keeps its items 'pending' for the life of the database.
@@ -918,6 +925,95 @@ test('restore refuses BEFORE committing when the clip\'s own media file is gone,
   assert.equal(db.prepare('SELECT state FROM clips WHERE id = ?').get(clipId).state, 'retired')
   assert.equal(readFileSync(paths.catalogFile, 'utf8'), catalogAfterRetire)
   assert.equal(db.prepare("SELECT count(*) AS n FROM audit_log WHERE action = 'admin.clip.restore'").get().n, 0)
+})
+
+// ---------------------------------------------------------------------------
+// revise a rejection / the recycle bin (STORY-076)
+
+test('a rejected item can be revised into an approval, correcting the counts and logging it as a revision', (t) => {
+  const { db, ids, media, itemId } = pendingFixture(t)
+  const paths = workspace(t)
+  place(paths.mediaDir, media.storagePath, media.bytes)
+  for (const locale of ['en-US', 'zh-CN', 'ja-JP']) {
+    db.prepare('INSERT INTO group_captions (group_id, locale, text, updated_at) VALUES (?, ?, ?, ?)').run(
+      ids.group, locale, `alpha ${locale}`, T0,
+    )
+  }
+
+  reviewItem(db, itemId, { decision: 'reject', reason: 'wrong file' }, { actor: ADMIN, now: at })
+  assert.equal(db.prepare('SELECT rejected_count, approved_count FROM submitters WHERE id = ?').get(ids.submitter).rejected_count, 1)
+
+  const result = reviewItem(
+    db, itemId,
+    { decision: 'approve', label: 'Ei?', captions: CAPTIONS, groupId: ids.group },
+    { actor: ADMIN, now: at, paths },
+  )
+  assert.equal(result.outcome, 'approved')
+
+  // The item is now an approved draft clip, and the submitter's counts moved the
+  // reject back off and an approve on — no drift from what the view derives.
+  assert.equal(db.prepare('SELECT state FROM batch_items WHERE id = ?').get(itemId).state, 'approved')
+  assert.equal(db.prepare('SELECT state FROM clips WHERE id = ?').get(result.clipId).state, 'draft')
+  const counts = db.prepare('SELECT approved_count, rejected_count FROM submitters WHERE id = ?').get(ids.submitter)
+  assert.deepEqual(counts, { approved_count: 1, rejected_count: 0 })
+  const expected = db.prepare('SELECT approved_count, rejected_count FROM v_submitter_counts_expected WHERE submitter_id = ?').get(ids.submitter)
+  assert.deepEqual({ approved_count: expected.approved_count, rejected_count: expected.rejected_count }, counts)
+
+  // Logged as a revision, not a first approval, and the original reject reason is
+  // preserved in the entry rather than only overwritten on the row.
+  const entry = db.prepare("SELECT detail FROM audit_log WHERE action = 'admin.item.revise'").get()
+  assert.ok(entry, 'a revision is logged under its own verb')
+  const detail = JSON.parse(entry.detail)
+  assert.equal(detail.diff.reviewerNote.before, 'wrong file')
+  assert.equal(detail.diff.revised.after, true)
+  assert.deepEqual(detail.diff.state, { before: 'rejected', after: 'approved' })
+})
+
+test('revising is refused when the item\'s audio has been reclaimed, and nothing is written', (t) => {
+  const { db, ids, media, itemId } = pendingFixture(t)
+  const paths = workspace(t)
+  place(paths.mediaDir, media.storagePath, media.bytes)
+  reviewItem(db, itemId, { decision: 'reject', reason: 'no' }, { actor: ADMIN, now: at })
+
+  // The GC (STORY-077) removed the file; the media row stays.
+  rmSync(join(paths.mediaDir, media.storagePath))
+
+  assert.throws(
+    () => reviewItem(
+      db, itemId,
+      { decision: 'approve', label: 'Ei?', captions: CAPTIONS, groupId: ids.group },
+      { actor: ADMIN, now: at, paths },
+    ),
+    (error) => error.status === 409 && error.code === 'conflict',
+  )
+  // Still rejected, no clip minted, counts untouched.
+  assert.equal(db.prepare('SELECT state FROM batch_items WHERE id = ?').get(itemId).state, 'rejected')
+  assert.equal(db.prepare('SELECT count(*) AS n FROM clips').get().n, 1) // only seed()'s draft
+  assert.equal(db.prepare('SELECT rejected_count FROM submitters WHERE id = ?').get(ids.submitter).rejected_count, 1)
+})
+
+test('the recycle bin lists rejected items newest-first with the days left before the GC', (t) => {
+  // Two items in one batch, both rejected — added while the batch is still a
+  // draft, because adding to a submitted batch is what the trigger forbids.
+  const db = openDatabase(t)
+  const ids = seed(db)
+  const media1 = putMedia(db, 'recycle-one')
+  const media2 = putMedia(db, 'recycle-two')
+  const i1 = addItem(db, ids.batch, 1, media1)
+  const i2 = addItem(db, ids.batch, 2, media2)
+  submitBatch(db, ids.batch)
+  reviewItem(db, i1, { decision: 'reject', reason: 'first no' }, { actor: ADMIN, now: () => new Date(T0) })
+  reviewItem(db, i2, { decision: 'reject', reason: 'second no' }, { actor: ADMIN, now: () => new Date(T5) })
+
+  // now = one day after T5, so item2 (rejected at T5) has RETENTION-1 days left.
+  const oneDayAfterT5 = new Date(Date.parse(T5) + 24 * 60 * 60 * 1000)
+  const bin = readRecycle(db, { now: () => oneDayAfterT5 })
+  assert.equal(bin.count, 2)
+  assert.equal(bin.retentionDays, 30)
+  assert.deepEqual(bin.items.map((i) => i.itemId), [i2, i1], 'newest rejection first')
+  assert.equal(bin.items[0].reviewerNote, 'second no')
+  assert.equal(bin.items[0].retentionDaysLeft, 29)
+  assert.ok(bin.items[0].media.audioUrl.endsWith(media2.storagePath))
 })
 
 // ---------------------------------------------------------------------------

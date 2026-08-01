@@ -138,6 +138,13 @@ const NOTE_MAX_LENGTH = 500
 const QUEUE_DEFAULT_LIMIT = 100
 const QUEUE_MAX_LIMIT = 500
 
+// How long a rejected item's audio is kept before the media GC (STORY-077) may
+// reclaim it. The recycle bin shows the days remaining so the window to revise a
+// rejection — or to notice the last copy of a file is about to go — is visible.
+// STORY-077's collector reads the SAME constant, so the number the bin promises
+// and the number the sweep enforces cannot drift.
+export const RECYCLE_RETENTION_DAYS = 30
+
 const DEFAULT_COOKIE_NAME = 'joi_session'
 
 export class AdminError extends Error {
@@ -258,11 +265,18 @@ export default async function adminRoutes(fastify, options = {}) {
     }),
   )
 
+  fastify.get('/api/admin/recycle', async (request, reply) =>
+    answered(reply, () => readRecycle(db, { mediaBaseUrl, now })),
+  )
+
   fastify.post('/api/admin/item/:id', async (request, reply) =>
     guarded(reply, request.adminIdentity, db, now, () =>
       reviewItem(db, request.params.id, request.body ?? {}, {
         actor: request.adminIdentity,
         now,
+        // Threaded so revising a rejected item can verify its audio is still on
+        // the volume before it re-approves; a plain decision never touches paths.
+        paths,
       }),
     ),
   )
@@ -938,6 +952,65 @@ export function readQueue(db, { limit = QUEUE_DEFAULT_LIMIT, mediaBaseUrl = MEDI
   }
 }
 
+// ---------------------------------------------------------------------------
+// GET /api/admin/recycle
+
+/**
+ * Every rejected item, newest rejection first — the recycle bin (STORY-076).
+ *
+ * A flat list, not the queue's batch grouping: these span many long-resolved
+ * batches, and what the reviewer acts on is one item at a time (revise it, or
+ * let its audio age out). Each row carries what the bin shows — the proposed
+ * name, the size, when and why it was rejected, and how many days remain before
+ * the media GC (STORY-077) may reclaim the audio — plus the audioUrl the desk
+ * auditions, the same content-addressed URL the queue uses.
+ */
+export function readRecycle(db, { mediaBaseUrl = MEDIA_BASE_URL, now = () => new Date() } = {}) {
+  const rows = db
+    .prepare(`
+      SELECT i.id, i.proposed_label, i.resolved_at, i.reviewer_note,
+             m.sha256, m.ext, m.bytes, m.duration_seconds, m.storage_path,
+             s.display_name AS submitter_name
+      FROM batch_items i
+      JOIN media m ON m.sha256 = i.media_sha256
+      JOIN batches b ON b.id = i.batch_id
+      LEFT JOIN submitters s ON s.id = b.submitter_id
+      WHERE i.state = 'rejected'
+      ORDER BY i.resolved_at DESC, i.id
+    `)
+    .all()
+
+  const nowMs = now().getTime()
+  const items = rows.map((row) => ({
+    itemId: row.id,
+    proposedLabel: row.proposed_label,
+    rejectedAt: row.resolved_at,
+    reviewerNote: row.reviewer_note,
+    submitterName: row.submitter_name,
+    media: {
+      sha256: row.sha256,
+      audioUrl: `${mediaBaseUrl}${row.storage_path}`,
+      ext: row.ext,
+      bytes: row.bytes,
+      durationSeconds: row.duration_seconds,
+    },
+    retentionDaysLeft: retentionDaysLeft(row.resolved_at, nowMs),
+  }))
+
+  return { items, count: items.length, retentionDays: RECYCLE_RETENTION_DAYS }
+}
+
+// Whole days between now and when the GC may reclaim this item's audio, floored
+// at 0 (an item already past the window reads "0", i.e. collectable now). null
+// when resolved_at cannot be parsed, so the bin can say "unknown" rather than
+// print a misleading number.
+function retentionDaysLeft(resolvedAt, nowMs) {
+  const rejectedMs = Date.parse(resolvedAt)
+  if (!Number.isFinite(rejectedMs)) return null
+  const deadline = rejectedMs + RECYCLE_RETENTION_DAYS * 24 * 60 * 60 * 1000
+  return Math.max(0, Math.ceil((deadline - nowMs) / (24 * 60 * 60 * 1000)))
+}
+
 function submitterView(row) {
   const stored = {
     submittedCount: row.submitted_count,
@@ -1134,11 +1207,11 @@ function captionsOf(db, table, column, id) {
  * record — what they asked for — and overwriting it with what the reviewer chose
  * would erase the only evidence of the difference.
  */
-export function reviewItem(db, itemId, input = {}, { actor, now = () => new Date() } = {}) {
+export function reviewItem(db, itemId, input = {}, { actor, now = () => new Date(), paths = null } = {}) {
   requireActor(actor)
   const at = toCanonicalTimestamp(now())
   const item = db
-    .prepare('SELECT id, batch_id, media_sha256, state, clip_id, proposed_label, proposed_group_id FROM batch_items WHERE id = ?')
+    .prepare('SELECT id, batch_id, media_sha256, state, clip_id, proposed_label, proposed_group_id, reviewer_note FROM batch_items WHERE id = ?')
     .get(itemId)
   if (!item) throw new AdminError(`no item ${itemId}`, { code: 'not_found', status: 404 })
 
@@ -1151,6 +1224,17 @@ export function reviewItem(db, itemId, input = {}, { actor, now = () => new Date
   }
 
   if (decision === null) return editApprovedClip(db, item, input, { actor, at })
+
+  // The one exit from 'rejected': re-decide it into an approval (STORY-076). A
+  // reject is not always final — a mis-judged clip, or one the submitter cannot
+  // re-send because the copy on the volume is the only one left — so the recycle
+  // bin can approve it after the fact. Only 'approve': a second 'reject' changes
+  // nothing, and an edit (decision === null, above) needs a clip a rejected item
+  // has not got.
+  if (item.state === 'rejected' && decision === 'approve') {
+    return reviseRejectedItem(db, paths, item, input, { actor, at })
+  }
+
   if (item.state !== 'pending') {
     throw new AdminError(
       `item ${itemId} is already ${item.state}; a decision is only available while it is pending`,
@@ -1176,7 +1260,7 @@ export function reviewItem(db, itemId, input = {}, { actor, now = () => new Date
   return approveItem(db, item, batch, input, { actor, at })
 }
 
-function approveItem(db, item, batch, input, { actor, at }) {
+function approveItem(db, item, batch, input, { actor, at, revising = false }) {
   const label = cleanText(input.label, 'label', LABEL_MAX_LENGTH)
   const captions = cleanCaptions(db, input.captions)
   if (Object.keys(captions).length === 0) {
@@ -1233,6 +1317,12 @@ function approveItem(db, item, batch, input, { actor, at }) {
     db.prepare("UPDATE batch_items SET state = 'approved', resolved_at = ?, reviewer_note = ?, clip_id = ? WHERE id = ?")
       .run(at, note, clipId, item.id)
     db.prepare('UPDATE submitters SET approved_count = approved_count + 1 WHERE id = ?').run(batch.submitter_id)
+    // Revising moves the item OUT of 'rejected', so the reject it once counted is
+    // no longer true. Undo it here, in the same transaction, or the stored
+    // rejected_count drifts from what v_submitter_counts_expected derives.
+    if (revising) {
+      db.prepare('UPDATE submitters SET rejected_count = rejected_count - 1 WHERE id = ?').run(batch.submitter_id)
+    }
 
     const batchResolved = resolveBatchIfDone(db, batch, at)
 
@@ -1240,10 +1330,17 @@ function approveItem(db, item, batch, input, { actor, at }) {
       actorKind: 'owner',
       actorOpenId: actor.openId,
       actorDisplayName: actor.displayName,
-      verb: 'admin.item.approve',
+      // A distinct verb, so the log — and its per-actor filter — can tell a
+      // first-time approval from an overturned rejection. before carries the
+      // original reject reason, the only record of why it was refused.
+      verb: revising ? 'admin.item.revise' : 'admin.item.approve',
       subject: { kind: 'batch_item', id: item.id },
-      before: { state: item.state, clipId: null },
-      after: { state: 'approved', clipId, groupId, label, captions, reviewerNote: note },
+      before: revising
+        ? { state: item.state, clipId: null, reviewerNote: item.reviewer_note ?? null }
+        : { state: item.state, clipId: null },
+      after: revising
+        ? { state: 'approved', clipId, groupId, label, captions, reviewerNote: note, revised: true }
+        : { state: 'approved', clipId, groupId, label, captions, reviewerNote: note },
       consequence: `clip:${clipId}`,
       succeeded: true,
       occurredAt: at,
@@ -1290,6 +1387,36 @@ function rejectItem(db, item, batch, input, { actor, at }) {
   })
 
   return { outcome: 'rejected', itemId: item.id, ...apply.immediate() }
+}
+
+/**
+ * Overturn a rejection into an approval (STORY-076). Everything the approval
+ * itself does is approveItem's — this adds only the two things a revision needs:
+ * a batch that is already resolved (rejecting the last item resolves it, so this
+ * must NOT require 'submitted' the way a fresh decision does), and a check that
+ * the blob is still on the volume.
+ *
+ * The media check is why `paths` is threaded this far: a rejected item's file is
+ * kept until the media GC reclaims it (STORY-077), and approving one whose file
+ * is already gone would mint a draft clip that can never publish. Refuse before
+ * any write, with an answer that says why.
+ */
+function reviseRejectedItem(db, paths, item, input, { actor, at }) {
+  const batch = db
+    .prepare('SELECT id, submitter_id, state, submitted_at FROM batches WHERE id = ?')
+    .get(item.batch_id)
+
+  if (paths && typeof paths.mediaDir === 'string') {
+    const problems = checkMedia(db, { mediaDir: paths.mediaDir }, [item.media_sha256])
+    if (problems.length > 0) {
+      throw new AdminError(
+        `item ${item.id} cannot be revised: its audio file is no longer in storage (it may have been reclaimed)`,
+        { code: 'conflict', status: 409, details: { problems } },
+      )
+    }
+  }
+
+  return approveItem(db, item, batch, input, { actor, at, revising: true })
 }
 
 function editApprovedClip(db, item, input, { actor, at }) {

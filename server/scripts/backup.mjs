@@ -358,10 +358,16 @@ const counts = {}
 for (const table of ['groups', 'clips', 'media', 'submitters', 'batches', 'batch_items', 'audit_log', 'themes']) {
   counts[table] = source.prepare(`SELECT count(*) AS n FROM ${table}`).get().n
 }
-// Every blob the database references. NOT everything in mediaDir: a file with no
-// row is either mid-upload or already collectable, and a backup is not the place
-// to resurrect either.
-const referenced = source.prepare('SELECT sha256, ext, storage_path, bytes FROM media ORDER BY sha256').all()
+// Every blob the database references AND still holds on the volume. NOT
+// everything in mediaDir: a file with no row is either mid-upload or already
+// collectable, and a backup is not the place to resurrect either. And NOT a
+// reclaimed blob (collected_at set, STORY-077): its row is backed up with the
+// database, but the media GC removed its file ON PURPOSE, so its absence is
+// expected — counting it here would fill missingFromVolume below, the signal
+// reserved for a file the volume LOST, with files nobody lost.
+const referenced = source
+  .prepare('SELECT sha256, ext, storage_path, bytes FROM media WHERE collected_at IS NULL ORDER BY sha256')
+  .all()
 // Every wallpaper any themes row names, active or not. DISTINCT because two rows
 // may share a picture (the filename is its sha256), and not `WHERE is_active = 1`
 // because deactivated rows are the rollback path and a rollback that lands on a

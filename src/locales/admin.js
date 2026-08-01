@@ -73,6 +73,7 @@ export default {
         clips: '音声库',
         recycle: '回收站',
         audit: '记录',
+        storage: '存储',
         theme: '主题',
         branding: '品牌',
         admins: '管理员'
@@ -294,6 +295,20 @@ export default {
         revise: '改判',
         open: '正在看'
       },
+      reclaim: {
+        title: '存储回收',
+        subtitle: '清理被驳回或废弃投稿的音频文件，释放磁盘空间。',
+        empty: '暂无可回收的音频。',
+        summary: '可回收 {count} 项，共 {size}。',
+        retentionNote: '仅回收被驳回或废弃超过 {days} 天、且无任何引用的音频；已发布或已下架的音声永不在此列。',
+        colSha: '文件（sha256）',
+        colSize: '大小',
+        colLastActivity: '最后活动',
+        collect: '回收',
+        confirm: '确认回收这 {count} 项音频（共 {size}）？将删除文件，不可撤销；被驳回的投稿从此无法改判。',
+        resultDone: '已回收 {count} 项，释放 {size}。',
+        resultFailures: '有 {n} 项文件未能删除（已标记，稍后重试即可）。'
+      },
       branding: {
         title: '品牌',
         subtitle: '站点的名字、图标和频道链接。改完保存，下次打开页面就生效，不用重新构建。',
@@ -408,6 +423,7 @@ export default {
         clips: 'Library',
         recycle: 'Recycle bin',
         audit: 'Log',
+        storage: 'Storage',
         theme: 'Theme',
         branding: 'Branding',
         admins: 'Admins'
@@ -629,6 +645,20 @@ export default {
         revise: 'Revise',
         open: 'Open'
       },
+      reclaim: {
+        title: 'Storage reclaim',
+        subtitle: 'Remove the audio of rejected and abandoned submissions to free disk space.',
+        empty: 'Nothing to reclaim right now.',
+        summary: '{count} reclaimable, {size} in all.',
+        retentionNote: 'Only audio rejected or abandoned more than {days} days ago and referenced by nothing is listed; a published or retired clip’s audio is never here.',
+        colSha: 'File (sha256)',
+        colSize: 'Size',
+        colLastActivity: 'Last activity',
+        collect: 'Reclaim',
+        confirm: 'Reclaim these {count} audio files ({size})? This deletes the files and cannot be undone; rejected submissions can no longer be revised.',
+        resultDone: 'Reclaimed {count}, freed {size}.',
+        resultFailures: '{n} file(s) could not be deleted (marked; a re-run will retry).'
+      },
       branding: {
         title: 'Branding',
         subtitle: "The site's name, icon and channel link. Saved changes are live on the next page load — no rebuild.",
@@ -743,6 +773,7 @@ export default {
         clips: '音声庫',
         recycle: 'ごみ箱',
         audit: '記録',
+        storage: 'ストレージ',
         theme: 'テーマ',
         branding: 'ブランド',
         admins: '管理者'
@@ -963,6 +994,20 @@ export default {
         retentionUnknown: '不明',
         revise: '再判定',
         open: '表示中'
+      },
+      reclaim: {
+        title: 'ストレージ回収',
+        subtitle: '却下・放棄された投稿の音声ファイルを削除し、ディスク容量を空けます。',
+        empty: '今のところ回収できるものはありません。',
+        summary: '回収可能 {count} 件、合計 {size}。',
+        retentionNote: '却下または放棄から {days} 日を過ぎ、どこからも参照されていない音声だけが対象です。公開中・取り下げ済みの音声は決して含まれません。',
+        colSha: 'ファイル（sha256）',
+        colSize: 'サイズ',
+        colLastActivity: '最終アクティビティ',
+        collect: '回収',
+        confirm: 'この {count} 件（合計 {size}）を回収しますか？ファイルを削除し、元に戻せません。却下された投稿は以後、再判定できなくなります。',
+        resultDone: '{count} 件を回収し、{size} を解放しました。',
+        resultFailures: '{n} 件のファイルを削除できませんでした（記録済み、再実行で再試行します）。'
       },
       branding: {
         title: 'ブランド',

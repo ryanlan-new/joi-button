@@ -110,6 +110,7 @@ import {
 } from '../lib/audit.mjs'
 import { createAdminInvites } from '../lib/admin-invites.mjs'
 import { CatalogError, MEDIA_BASE_URL, checkMedia, writeCatalog } from '../lib/catalog.mjs'
+import { RECYCLE_RETENTION_DAYS, collectMedia, reclaimablePreview } from '../lib/media-gc.mjs'
 import { CAPTION_MAX_LENGTH, escapeForI18n, validateCaption } from '../lib/text-safety.mjs'
 import { THEME_TOKENS, wallpaperUrl } from '../lib/theme.mjs'
 import { ThemeStoreError, deactivate, readActiveTheme, saveTheme } from '../lib/theme-store.mjs'
@@ -137,13 +138,6 @@ const NOTE_MAX_LENGTH = 500
 
 const QUEUE_DEFAULT_LIMIT = 100
 const QUEUE_MAX_LIMIT = 500
-
-// How long a rejected item's audio is kept before the media GC (STORY-077) may
-// reclaim it. The recycle bin shows the days remaining so the window to revise a
-// rejection — or to notice the last copy of a file is about to go — is visible.
-// STORY-077's collector reads the SAME constant, so the number the bin promises
-// and the number the sweep enforces cannot drift.
-export const RECYCLE_RETENTION_DAYS = 30
 
 const DEFAULT_COOKIE_NAME = 'joi_session'
 
@@ -308,6 +302,18 @@ export default async function adminRoutes(fastify, options = {}) {
   fastify.post('/api/admin/clips/:id/restore', async (request, reply) =>
     guarded(reply, request.adminIdentity, db, now, () =>
       restoreClip(db, paths, request.params.id, { actor: request.adminIdentity, now }),
+    ),
+  )
+
+  // Media reclamation (STORY-077): preview what is collectable, then remove it.
+  // A read and an audited mutation, the same shape retire/restore use.
+  fastify.get('/api/admin/reclaimable', async (request, reply) =>
+    answered(reply, () => reclaimablePreview(db, { now })),
+  )
+
+  fastify.post('/api/admin/reclaim', async (request, reply) =>
+    guarded(reply, request.adminIdentity, db, now, () =>
+      collectMedia(db, paths.mediaDir, { actor: request.adminIdentity, now }),
     ),
   )
 
@@ -1308,6 +1314,12 @@ function approveItem(db, item, batch, input, { actor, at, revising = false }) {
       INSERT INTO clips (id, group_id, media_sha256, label, sort_order, state, created_at, submitter_id, submitted_at)
       VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, ?)
     `).run(clipId, groupId, item.media_sha256, label, sortOrder, at, batch.submitter_id, batch.submitted_at)
+
+    // A clip now references this blob, so it is present and referenced — clear any
+    // stale reclamation mark. Only reachable on a revise whose file removal had
+    // failed (a fresh approve's media is never collected), but it keeps the
+    // invariant "a clip-referenced blob is never marked collected" exact.
+    db.prepare('UPDATE media SET collected_at = NULL WHERE sha256 = ? AND collected_at IS NOT NULL').run(item.media_sha256)
 
     const insertCaption = db.prepare(
       'INSERT INTO clip_captions (clip_id, locale, text, updated_at) VALUES (?, ?, ?, ?)',

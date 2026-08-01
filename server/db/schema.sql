@@ -287,6 +287,11 @@ CREATE TABLE IF NOT EXISTS media (
     bytes             INTEGER NOT NULL,
     duration_seconds  REAL NOT NULL,
     uploaded_at       TEXT NOT NULL,
+    -- Set when the media reclamation sweep removes this blob's bytes from the
+    -- PVC.  The row stays (batch_items and clips reference it ON DELETE RESTRICT,
+    -- so it cannot go); NULL means the file is present.  Cleared if the same
+    -- bytes are submitted again, which puts the file back.  See v_unreferenced_media.
+    collected_at      TEXT,
 
     storage_path      TEXT GENERATED ALWAYS AS
         (substr(sha256, 1, 2) || '/' || substr(sha256, 3, 2) || '/' || sha256 || '.' || ext) VIRTUAL,
@@ -304,6 +309,7 @@ CREATE TABLE IF NOT EXISTS media (
     -- backstop for the day a route forgets to.
     CHECK (bytes > 0 AND bytes <= 5242880),
     CHECK (duration_seconds > 0.0),
+    CHECK (collected_at IS NULL OR collected_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z'),
     CHECK (uploaded_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z')
 ) STRICT;
 

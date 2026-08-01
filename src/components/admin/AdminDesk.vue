@@ -44,6 +44,10 @@
                         :aria-pressed="String(tab === 'audit')" @click="tab = 'audit'">
                     {{ $t("admin.nav.audit") }}
                 </button>
+                <button type="button" class="adm-tab" :class="{ 'is-on': tab === 'storage' }"
+                        :aria-pressed="String(tab === 'storage')" @click="tab = 'storage'">
+                    {{ $t("admin.nav.storage") }}
+                </button>
                 <button type="button" class="adm-tab" :class="{ 'is-on': tab === 'theme' }"
                         :aria-pressed="String(tab === 'theme')" @click="tab = 'theme'">
                     {{ $t("admin.nav.theme") }}
@@ -137,6 +141,7 @@
         <div v-if="tab !== 'queue' && tab !== 'recycle'" class="adm-tabbody">
             <PublishPanel v-if="tab === 'publish'" @published="loadCatalogue" />
             <ClipsPanel v-if="tab === 'clips'" />
+            <ReclaimPanel v-if="tab === 'storage'" />
             <AuditTrail v-if="tab === 'audit'" />
             <ThemePanel v-if="tab === 'theme'" />
             <BrandingPanel v-if="tab === 'branding'" />
@@ -451,6 +456,7 @@ import RecycleQueue from './RecycleQueue.vue'
 import ReviewDeskItem from './ReviewDeskItem.vue'
 import PublishPanel from './PublishPanel.vue'
 import ClipsPanel from './ClipsPanel.vue'
+import ReclaimPanel from './ReclaimPanel.vue'
 import AuditTrail from './AuditTrail.vue'
 import ThemePanel from './ThemePanel.vue'
 import BrandingPanel from './BrandingPanel.vue'
@@ -570,7 +576,7 @@ function createAdminApi({ onGone }) {
 }
 
 @Component({
-    components: { ReviewQueue, RecycleQueue, ReviewDeskItem, PublishPanel, ClipsPanel, AuditTrail, ThemePanel, BrandingPanel, AdminsPanel },
+    components: { ReviewQueue, RecycleQueue, ReviewDeskItem, PublishPanel, ClipsPanel, ReclaimPanel, AuditTrail, ThemePanel, BrandingPanel, AdminsPanel },
     watch: {
         // The bin is read the first time its tab is opened, not on load: it is one
         // more request, and a desk that opens on the queue should not spend it

@@ -78,9 +78,11 @@ WORKDIR /app
 # replaygain filter and re-encoded to the wall's 80 dB before it is hashed and
 # stored. server.mjs probes for it at boot and refuses to start without it, so
 # removing this line does not produce a quieter image — it produces one that
-# will not run. Measured cost at adoption (Alpine ffmpeg 8.1.2): +127 MB, and
-# the replaygain filter, libmp3lame, aac and libvorbis were confirmed present
-# in that build. The runtime stage installs it rather than the deps stage: the
+# will not run. Measured cost at adoption (Alpine ffmpeg 8.1.2): the api image
+# went 72.7 -> 121.1 MiB, so +48.3 MiB (docker image inspect .Size, uncompressed;
+# an earlier "+127 MB" was a `du -sm /` reading that counted the apk cache). The
+# replaygain filter, libmp3lame, aac and libvorbis were confirmed present in that
+# build. The runtime stage installs it rather than the deps stage: the
 # deps stage exists to compile node addons and its packages are deleted again.
 RUN apk add --no-cache ffmpeg
 

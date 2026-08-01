@@ -65,10 +65,11 @@ export const REPLAYGAIN_REFERENCE_DB = 89.0
 // original submitted twice normalizes to the same sha256, and `duplicate_in_
 // batch` / `already_published` still mean what they say.
 //
-// The deployed binary is Alpine's ffmpeg (8.1.2 at adoption, +127 MB in the
-// image — measured, and accepted as the price of the whole feature). The
-// replaygain filter, libmp3lame, native aac and libvorbis were all confirmed
-// present in that build before this file was written.
+// The deployed binary is Alpine's ffmpeg (8.1.2 at adoption, +48.3 MiB on the
+// api image — 72.7 -> 121.1 MiB by docker image inspect .Size, and accepted as
+// the price of the whole feature). The replaygain filter, libmp3lame, native
+// aac and libvorbis were all confirmed present in that build before this file
+// was written.
 
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'

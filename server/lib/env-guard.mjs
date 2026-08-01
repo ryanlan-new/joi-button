@@ -259,6 +259,33 @@ export const BYPASS_FLAGS = Object.freeze([
 const prodDanmaku = (config) => read(config, 'danmaku.mode').value === 'production'
 const prodTurnstile = (config) => read(config, 'turnstile.mode').value === 'production'
 
+/**
+ * The real verifier AND a switch position that can actually reach it.
+ *
+ * WHY THE SWITCH IS PART OF THE CONDITION. `turnstile.switch: 'off'` short-
+ * circuits required() at its FIRST rule, before the rate rule and before the
+ * new-submitter rule, so no challenge is ever demanded — and routes/public.mjs
+ * only calls verify() inside `if (decision.required)`, so an unsolicited token
+ * is ignored rather than checked. Both were read before this predicate was
+ * written, not assumed: with the switch off, siteverify is unreachable and the
+ * two keys are dead weight.
+ *
+ * Demanding a credential that cannot be used is not a harmless extra safety —
+ * it is a boot refusal that an operator can only satisfy by going and
+ * registering a service they have decided not to use. That is what it did: a
+ * deployment that had ruled Turnstile out could not start at all.
+ *
+ * WHY FLIPPING THE SWITCH BACK ON IS STILL CAUGHT. TURNSTILE_SWITCH is read by
+ * config.mjs at boot and nowhere else, and on the cluster it arrives through
+ * envFrom, which is injected when the container starts. So there is no way to
+ * turn challenges on without a restart, and that restart runs this guard with
+ * the switch no longer 'off' — which requires the keys again, before a single
+ * visitor is asked to solve anything. The window this could have opened does
+ * not exist.
+ */
+const prodTurnstileChallenging = (config) =>
+  prodTurnstile(config) && read(config, 'turnstile.switch').value !== 'off'
+
 const REQUIREMENTS = Object.freeze([
   {
     path: 'database.file',
@@ -354,15 +381,15 @@ const REQUIREMENTS = Object.freeze([
   {
     path: 'turnstile.siteKey',
     kind: 'string',
-    when: prodTurnstile,
-    why: 'Public sitekey; the frontend widget needs it. Not a secret.',
+    when: prodTurnstileChallenging,
+    why: 'Public sitekey; the frontend widget needs it. Not a secret. Not required while TURNSTILE_SWITCH=off, because no widget is ever rendered.',
   },
   {
     path: 'turnstile.secretKey',
     kind: 'string',
     secret: true,
-    when: prodTurnstile,
-    why: 'siteverify credential.',
+    when: prodTurnstileChallenging,
+    why: 'siteverify credential. Not required while TURNSTILE_SWITCH=off, because verify() is only reached inside `if (decision.required)` and the switch makes that false.',
   },
   {
     path: 'turnstile.switch',
@@ -964,7 +991,13 @@ function buildBanner(nodeEnv, bypasses) {
     : 'CHALLENGE POLICY IS OVERRIDDEN BY AN OPERATOR SWITCH'
   const detail = refusing
     ? 'This build accepts submissions without verifying who sent them. Nothing seen here is evidence that the production path works.'
-    : 'Submissions are accepted without demanding a Turnstile challenge. Tokens that are presented are still verified.'
+    // "Tokens that are presented are still verified" is what this said, and it was
+    // never true: routes/public.mjs calls verify() only inside
+    // `if (decision.required)`, and the switch makes that false before any rule
+    // runs — so an unsolicited token is ignored, not checked. A banner that
+    // overstates what is still happening is worse than no banner, because it is
+    // the one line an operator reads to decide whether a deployment is safe.
+    : 'Submissions are accepted without demanding a Turnstile challenge, and a token sent anyway is ignored rather than checked. Identity is still required: every submission is tied to an open_id verified in the live room.'
 
   return Object.freeze({
     id: 'env-bypass',

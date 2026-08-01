@@ -383,9 +383,27 @@ export function createTurnstile(config = {}) {
     trusted: Object.freeze({ ...DEFAULT_POLICY.trusted, ...(config.policy?.trusted ?? {}) }),
   })
 
-  if (mode === 'production') {
+  // A production verifier needs a secret to VERIFY. It does not need one to
+  // EXIST when the switch says it will never be asked to.
+  //
+  // `switch: 'off'` short-circuits required() at its first rule below, and
+  // routes/public.mjs calls verify() only inside `if (decision.required)` — so
+  // with the switch off there is no path to siteverify at all. Demanding the
+  // credential here anyway meant a deployment that had decided against Turnstile
+  // could not construct this module, and therefore could not boot: the operator
+  // switch that exists to turn the feature off could not actually be used to run
+  // without the feature.
+  //
+  // The invariant is kept where it belongs. verify() refuses below if it is ever
+  // reached without a secret, so "you cannot verify without a credential" is
+  // still true — it is now enforced at the moment it would be violated instead
+  // of at a moment when it cannot be.
+  const willChallenge = policy.switch !== 'off'
+  if (mode === 'production' && willChallenge) {
     if (typeof config.secretKey !== 'string' || config.secretKey.trim() === '') {
-      throw new TypeError('createTurnstile: production mode needs config.secretKey')
+      throw new TypeError(
+        'createTurnstile: production mode needs config.secretKey unless the operator switch is "off"',
+      )
     }
   }
 
@@ -547,6 +565,19 @@ export function createTurnstile(config = {}) {
    * for a legitimate visitor. Omit it rather than pass a guess.
    */
   async function verify(token, ip) {
+    // Unreachable through routes/public.mjs, which only calls this inside
+    // `if (decision.required)` and cannot get a true out of required() while the
+    // switch is off. It is a throw and not a false verdict on purpose: a
+    // deployment with no credential that somehow reached here has a routing bug,
+    // and answering "not ok" would hide it behind what looks like an ordinary
+    // failed challenge.
+    if (mode === 'production' && (typeof config.secretKey !== 'string' || config.secretKey.trim() === '')) {
+      throw new Error(
+        'turnstile.verify: reached with no secretKey. This build was constructed with the operator ' +
+          'switch "off", which is the only way that is allowed — so something asked for a challenge ' +
+          'that required() said was not needed.',
+      )
+    }
     const at = toCanonicalTimestamp(now())
     const verdict = (ok, reason, extra = {}) => {
       const degraded = extra.degraded === true

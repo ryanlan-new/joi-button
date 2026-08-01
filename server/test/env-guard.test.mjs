@@ -525,7 +525,16 @@ test('an announce-severity switch does not refuse production, but it does raise 
   assert.deepEqual(report.bypasses.map((b) => b.path), ['turnstile.switch'])
   assert.equal(report.banner.severity, 'degraded')
   assert.equal(report.banner.messageKey, 'banner.envChallengeOff')
-  assert.match(report.banner.detail, /Tokens that are presented are still verified/)
+
+  // The detail used to promise "Tokens that are presented are still verified",
+  // and that was never true: routes/public.mjs calls verify() only inside
+  // `if (decision.required)`, and this switch makes that false before any rule
+  // runs. The sentence now says what actually happens, and names what IS still
+  // protecting the endpoint — a banner an operator reads to judge a deployment
+  // must not overstate the remaining checks.
+  assert.match(report.banner.detail, /ignored rather than checked/)
+  assert.match(report.banner.detail, /Identity is still required/)
+  assert.equal(/still verified/.test(report.banner.detail), false)
 })
 
 test('a refuse-severity bypass running in development raises the stronger banner', () => {

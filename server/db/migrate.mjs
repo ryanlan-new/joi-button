@@ -10,7 +10,7 @@
 import { readFileSync } from 'node:fs';
 
 /** Version this code writes.  Bump on every schema change. */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 /**
  * Oldest catalogue parser that can still read a document produced at
@@ -72,6 +72,55 @@ export const POST_BASELINE_STEPS = [
         sql: `ALTER TABLE verify_codes ADD COLUMN challenge_text TEXT
                 CHECK (challenge_text IS NULL OR (length(challenge_text) BETWEEN 4 AND 40));
               CREATE UNIQUE INDEX IF NOT EXISTS verify_codes_challenge ON verify_codes (challenge_text);`,
+    },
+    {
+        version: 4,
+        // Online admin identity (JOI-BUTTON-STORY-053). Two brand-new tables, so
+        // this is pure CREATE — no ALTER, no dependency on re-running schema.sql
+        // first, and CREATE TABLE/INDEX IF NOT EXISTS is idempotent on the fresh
+        // path where schema.sql already made them. The definitions are copied
+        // verbatim from schema.sql so an upgraded database and a fresh one carry
+        // byte-identical tables; migrate-v2.test.mjs's strip-and-replay guards
+        // that they cannot drift.
+        sql: `
+          CREATE TABLE IF NOT EXISTS admins (
+              open_id       TEXT NOT NULL PRIMARY KEY,
+              display_name  TEXT NOT NULL,
+              invited_by    TEXT NOT NULL,
+              invited_at    TEXT NOT NULL,
+              revoked_at    TEXT,
+              CHECK (open_id <> ''),
+              CHECK (display_name <> ''),
+              CHECK (invited_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z'),
+              CHECK (revoked_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z')
+          ) STRICT;
+          CREATE INDEX IF NOT EXISTS admins_active ON admins (revoked_at);
+          CREATE TABLE IF NOT EXISTS admin_invites (
+              id                     TEXT NOT NULL PRIMARY KEY,
+              challenge_text         TEXT NOT NULL UNIQUE,
+              room_id                INTEGER NOT NULL,
+              created_by             TEXT NOT NULL,
+              state                  TEXT NOT NULL DEFAULT 'pending'
+                                          CHECK (state IN ('pending', 'claimed', 'confirmed', 'expired', 'cancelled')),
+              issued_at              TEXT NOT NULL,
+              expires_at             TEXT NOT NULL,
+              closed_at              TEXT,
+              observed_open_id       TEXT,
+              observed_display_name  TEXT,
+              claimed_at             TEXT,
+              confirmed_at           TEXT,
+              CHECK (id <> '' AND id NOT GLOB '*[^a-z0-9_-]*'),
+              CHECK (length(challenge_text) BETWEEN 4 AND 40),
+              CHECK (room_id > 0),
+              CHECK (created_by <> ''),
+              CHECK (issued_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z'),
+              CHECK (expires_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z'),
+              CHECK (expires_at > issued_at),
+              CHECK ((state IN ('pending', 'claimed')) = (closed_at IS NULL)),
+              CHECK (state NOT IN ('claimed', 'confirmed') OR observed_open_id IS NOT NULL),
+              CHECK ((state = 'confirmed') = (confirmed_at IS NOT NULL))
+          ) STRICT;
+          CREATE INDEX IF NOT EXISTS admin_invites_pending ON admin_invites (state, expires_at);`,
     },
 ];
 

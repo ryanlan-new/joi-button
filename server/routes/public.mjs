@@ -1060,7 +1060,12 @@ export default async function publicRoutes(fastify, options = {}) {
       // a non-admin — which is a thing they could already establish by asking
       // for /admin. Nothing here tells anyone about anybody else, and the
       // allow-list itself is never published.
-      admin: adminOpenIds.has(row.open_id),
+      //
+      // Both admin sources, so the navbar offers the desk to an online-added
+      // admin too — the env seed OR an active row in `admins`, which is the same
+      // union routes/admin.mjs's gate uses. Anything else would let the gate
+      // admit them while this field told them they were not admins.
+      admin: adminOpenIds.has(row.open_id) || q.activeAdmin.get(row.open_id) !== undefined,
     }
   }
 
@@ -2121,6 +2126,9 @@ function prepareStatements(db) {
              blocked, blocked_reason
         FROM submitters WHERE id = ?
     `),
+    // Whether an open_id is an admin added online (schema v4). Unioned with the
+    // env seed by publicSubmitter so /api/me's admin flag matches the gate.
+    activeAdmin: db.prepare('SELECT 1 FROM admins WHERE open_id = ? AND revoked_at IS NULL'),
     insertSubmitter: db.prepare(`
       INSERT INTO submitters (id, open_id, display_name, display_name_seen_at, first_seen_at, last_seen_at)
       VALUES (@id, @open_id, @display_name, @display_name_seen_at, @first_seen_at, @last_seen_at)

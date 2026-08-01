@@ -170,6 +170,12 @@ async function main() {
           // catalogue's directory. Setting either variable changed nothing, and
           // the theme was written where the web pod does not serve it.
           paths: adminStoragePaths(config.storage),
+          // The SAME room source the public routes use — one socket per process
+          // (it is reference-counted), so admin invitations and logins share it
+          // rather than opening a second. This is what lets an invite listen.
+          danmakuSource: danmaku,
+          roomId: config.danmaku.roomId,
+          codeTtlMinutes: config.danmaku.codeTtlMinutes,
         },
       },
     ],

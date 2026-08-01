@@ -357,6 +357,11 @@ export async function boot(t, {
             themeCssFile: paths.themeCssFile,
             wallpaperDir: paths.wallpaperDir,
           },
+          // The same source the public plugin got, so admin-invite tests through
+          // boot() exercise the real room orchestration rather than a stub.
+          danmakuSource: danmaku,
+          roomId: whole.danmaku.roomId,
+          codeTtlMinutes: whole.danmaku.codeTtlMinutes,
           now: clock.now,
         },
       },

@@ -102,14 +102,14 @@ function openV1(t) {
 }
 
 test('the version roster is self-consistent', () => {
-  assert.equal(SCHEMA_VERSION, 3)
-  // MIN_COMPATIBLE stays 1 on purpose: a themes column and a verify_codes column
-  // are both invisible to a catalogue reader, and src/catalog.mjs only refuses a
-  // document whose minCompatibleVersion EXCEEDS what it knows. Bumping it would
-  // make every tab holding a year-cached chunk refuse a catalogue it can read
-  // perfectly well.
+  assert.equal(SCHEMA_VERSION, 4)
+  // MIN_COMPATIBLE stays 1 on purpose: the theme/verify_codes columns and the
+  // two admin tables are all invisible to a catalogue reader, and src/catalog.mjs
+  // only refuses a document whose minCompatibleVersion EXCEEDS what it knows.
+  // Bumping it would make every tab holding a year-cached chunk refuse a
+  // catalogue it can read perfectly well.
   assert.equal(MIN_COMPATIBLE_SCHEMA_VERSION, 1)
-  assert.deepEqual(POST_BASELINE_STEPS.map((step) => step.version), [2, 3])
+  assert.deepEqual(POST_BASELINE_STEPS.map((step) => step.version), [2, 3, 4])
 })
 
 test('a v1 database gains themes.wallpaper_path from the post-baseline step', (t) => {

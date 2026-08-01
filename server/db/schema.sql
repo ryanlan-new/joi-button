@@ -491,6 +491,89 @@ CREATE TABLE IF NOT EXISTS verify_codes (
 CREATE INDEX IF NOT EXISTS verify_codes_pending ON verify_codes (state, expires_at);
 CREATE INDEX IF NOT EXISTS verify_codes_session ON verify_codes (session_id);
 
+-- ===========================================================================
+-- Admin identity (schema v4)
+-- ===========================================================================
+-- Who may reach the review desk is the UNION of two sources:
+--
+--   * the env seed, ADMIN_OPEN_IDS, which the deploy bootstrap fills. It is the
+--     floor: it can never be removed from the running set, so a room full of
+--     admins revoking each other can never lock the owner out. It lives in the
+--     process env, NOT in this table.
+--   * this table, which holds admins added ONLINE, by an existing admin
+--     confirming a candidate who proved an open_id in the live room. Adding one
+--     takes effect on the next request — the gate reads the table, it is not
+--     cached at boot — which is the whole point of not editing env for every
+--     new admin.
+--
+-- So this table never holds a seed. Removal (revoked_at) only ever affects a
+-- row here, and the gate refuses to revoke the last remaining admin (env + here)
+-- so the desk can never become unreachable.
+CREATE TABLE IF NOT EXISTS admins (
+    open_id       TEXT NOT NULL PRIMARY KEY,
+    display_name  TEXT NOT NULL,
+    -- The admin open_id who confirmed this one. NULL is not allowed: an online
+    -- admin was always added BY somebody, and the audit trail needs to say who.
+    invited_by    TEXT NOT NULL,
+    invited_at    TEXT NOT NULL,
+    -- Soft delete: a revoked admin stays as the record that they once were one,
+    -- so `invited_by` on somebody they added still points at a real row.
+    revoked_at    TEXT,
+
+    CHECK (open_id <> ''),
+    CHECK (display_name <> ''),
+    CHECK (invited_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z'),
+    CHECK (revoked_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z')
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS admins_active ON admins (revoked_at);
+
+-- An online invitation, verified the same way a login is: a phrase posted as a
+-- danmaku in the room. It is NOT a verify_codes row, because that table's
+-- session_id is NOT NULL (it binds a login session) and an invite has no
+-- candidate session — the candidate proves an open_id, they do not sign in here.
+--
+-- Two-step by the owner's ruling: a danmaku moves the invite to 'claimed' and
+-- records WHO claimed it, but only the inviting admin's explicit 'confirm' turns
+-- the candidate into an admin. So a stray or stolen phrase binds nobody until a
+-- human who can already see the desk says yes.
+CREATE TABLE IF NOT EXISTS admin_invites (
+    id                     TEXT NOT NULL PRIMARY KEY,
+    challenge_text         TEXT NOT NULL UNIQUE,
+    room_id                INTEGER NOT NULL,
+    -- The admin who started the invite. Their open_id, kept even after they are
+    -- themselves revoked, for the same reason verify_codes keeps its subject.
+    created_by             TEXT NOT NULL,
+    state                  TEXT NOT NULL DEFAULT 'pending'
+                                CHECK (state IN ('pending', 'claimed', 'confirmed', 'expired', 'cancelled')),
+    issued_at              TEXT NOT NULL,
+    expires_at             TEXT NOT NULL,
+    closed_at              TEXT,
+    -- The candidate the danmaku revealed. Set when the phrase is claimed, kept
+    -- through confirmation so the audit says who was made an admin from where.
+    observed_open_id       TEXT,
+    observed_display_name  TEXT,
+    claimed_at             TEXT,
+    confirmed_at           TEXT,
+
+    CHECK (id <> '' AND id NOT GLOB '*[^a-z0-9_-]*'),
+    CHECK (length(challenge_text) BETWEEN 4 AND 40),
+    CHECK (room_id > 0),
+    CHECK (created_by <> ''),
+    CHECK (issued_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z'),
+    CHECK (expires_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z'),
+    CHECK (expires_at > issued_at),
+    -- 'pending' and 'claimed' are both OPEN states — the invite is still live,
+    -- waiting for a danmaku or for the admin's confirm — so closed_at is NULL for
+    -- both. Only the three terminal states (confirmed/expired/cancelled) close it.
+    CHECK ((state IN ('pending', 'claimed')) = (closed_at IS NULL)),
+    -- claimed/confirmed imply the candidate was observed.
+    CHECK (state NOT IN ('claimed', 'confirmed') OR observed_open_id IS NOT NULL),
+    CHECK ((state = 'confirmed') = (confirmed_at IS NOT NULL))
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS admin_invites_pending ON admin_invites (state, expires_at);
+
 -- Single use, enforced rather than assumed: once a code leaves 'pending' it can
 -- never re-enter it or become anything else, so a replayed danmaku cannot
 -- re-verify a code that already spent itself.

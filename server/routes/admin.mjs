@@ -108,6 +108,7 @@ import {
   getEntry,
   record,
 } from '../lib/audit.mjs'
+import { createAdminInvites } from '../lib/admin-invites.mjs'
 import { CatalogError, MEDIA_BASE_URL, checkMedia, writeCatalog } from '../lib/catalog.mjs'
 import { CAPTION_MAX_LENGTH, escapeForI18n, validateCaption } from '../lib/text-safety.mjs'
 import { THEME_TOKENS, wallpaperUrl } from '../lib/theme.mjs'
@@ -177,6 +178,31 @@ export default async function adminRoutes(fastify, options = {}) {
     resolveIdentity: options.resolveIdentity,
     now,
   })
+
+  // The env seed, as a set — the floor of admin authority and the thing the
+  // management routes below refuse to let anyone remove. Same normalisation the
+  // gate applies, so "is this open_id a seed" gives the same answer both places.
+  const seedOpenIds = new Set(
+    (Array.isArray(options.adminOpenIds) ? options.adminOpenIds : [])
+      .map((value) => String(value).trim())
+      .filter((value) => value !== ''),
+  )
+
+  // Online invitations. Present only when the room source is wired (the whole
+  // assembled server); a harness that registers admin routes for a theme test
+  // and passes no source simply has no invite routes, which is why every one of
+  // them is guarded by `if (invites)`.
+  const invites =
+    options.danmakuSource && options.roomId
+      ? createAdminInvites({
+          db,
+          danmakuSource: options.danmakuSource,
+          roomId: options.roomId,
+          now,
+          codeTtlMinutes: options.codeTtlMinutes,
+        })
+      : null
+  if (invites) fastify.addHook('onClose', async () => invites.close())
 
   // Said on every boot, not once at install: an empty list is correct on a first
   // deploy and a mistake on any later one, and this plugin cannot tell which it
@@ -386,6 +412,144 @@ export default async function adminRoutes(fastify, options = {}) {
       }
     }),
   )
+
+  // -------------------------------------------------------------------------
+  // Admins and invitations (JOI-BUTTON-STORY-055/056)
+  // -------------------------------------------------------------------------
+  const listActiveDbAdmins = db.prepare(
+    'SELECT open_id, display_name, invited_by, invited_at FROM admins WHERE revoked_at IS NULL ORDER BY invited_at',
+  )
+  const activeDbAdminByOpenId = db.prepare(
+    'SELECT open_id FROM admins WHERE open_id = ? AND revoked_at IS NULL',
+  )
+  const revokeAdminRow = db.prepare(
+    'UPDATE admins SET revoked_at = @now WHERE open_id = @open_id AND revoked_at IS NULL',
+  )
+
+  // The whole admin roster, both sources, tagged so the UI knows which rows it
+  // may offer to remove. The seed rows come from env and are never removable;
+  // the invite rows come from the table. `you` marks the caller's own row.
+  function rosterFor(actor) {
+    const seeds = [...seedOpenIds].map((openId) => ({
+      openId,
+      displayName: openId,
+      source: 'seed',
+      removable: false,
+      you: openId === actor.openId,
+    }))
+    const dbAdmins = listActiveDbAdmins
+      .all()
+      // A seed that ALSO has a table row (e.g. it was invited before being made a
+      // seed) is shown once, as the seed — the non-removable truth wins.
+      .filter((row) => !seedOpenIds.has(row.open_id))
+      .map((row) => ({
+        openId: row.open_id,
+        displayName: row.display_name,
+        invitedBy: row.invited_by,
+        invitedAt: row.invited_at,
+        source: 'invite',
+        removable: true,
+        you: row.open_id === actor.openId,
+      }))
+    return [...seeds, ...dbAdmins]
+  }
+
+  fastify.get('/api/admin/admins', async (request) => ({
+    admins: rosterFor(request.adminIdentity),
+  }))
+
+  fastify.post('/api/admin/admins/:openId/revoke', async (request, reply) =>
+    guarded(reply, request.adminIdentity, db, now, () => {
+      const openId = String(request.params?.openId ?? '')
+      if (seedOpenIds.has(openId)) {
+        throw new AdminError('A seed admin comes from ADMIN_OPEN_IDS and cannot be removed here.', {
+          code: 'cannot_remove_seed_admin',
+          status: 403,
+        })
+      }
+      if (activeDbAdminByOpenId.get(openId) === undefined) {
+        throw new AdminError('That open_id is not an admin added here.', {
+          code: 'admin_not_found',
+          status: 404,
+        })
+      }
+      // The last-admin floor: removing this row must not empty the roster. Seeds
+      // count, so with any seed present this never fires; it only bites a
+      // deployment running with an empty ADMIN_OPEN_IDS and one online admin.
+      const activeDbCount = listActiveDbAdmins.all().filter((r) => !seedOpenIds.has(r.open_id)).length
+      if (seedOpenIds.size === 0 && activeDbCount <= 1) {
+        throw new AdminError('This is the only admin left; add another before removing this one.', {
+          code: 'cannot_remove_last_admin',
+          status: 409,
+        })
+      }
+      const at = toCanonicalTimestamp(now())
+      revokeAdminRow.run({ open_id: openId, now: at })
+      record(db, {
+        actorKind: 'owner',
+        actorOpenId: request.adminIdentity.openId,
+        actorDisplayName: request.adminIdentity.displayName,
+        verb: 'admin.revoke',
+        subject: { kind: 'admin', id: openId },
+        before: { openId, admin: true },
+        after: { openId, admin: false },
+        consequence: null,
+        succeeded: true,
+        occurredAt: at,
+      })
+      return { openId, revoked: true }
+    }),
+  )
+
+  if (invites) {
+    fastify.post('/api/admin/invites', async (request, reply) =>
+      guarded(reply, request.adminIdentity, db, now, async () => {
+        const result = await invites.create({ createdBy: request.adminIdentity.openId })
+        if (!result.ok) throw inviteError(result.code)
+        return result.invite
+      }),
+    )
+
+    fastify.get('/api/admin/invites/:id', async (request, reply) =>
+      answered(reply, () => {
+        const snapshot = invites.status(String(request.params?.id ?? ''))
+        if (snapshot === null) throw inviteError('invite_not_found')
+        return snapshot
+      }),
+    )
+
+    fastify.post('/api/admin/invites/:id/confirm', async (request, reply) =>
+      guarded(reply, request.adminIdentity, db, now, () => {
+        const result = invites.confirm({
+          id: String(request.params?.id ?? ''),
+          by: request.adminIdentity,
+        })
+        if (!result.ok) throw inviteError(result.code)
+        return { openId: result.openId, confirmed: true }
+      }),
+    )
+
+    fastify.post('/api/admin/invites/:id/cancel', async (request, reply) =>
+      answered(reply, () => ({ cancelled: invites.cancel(String(request.params?.id ?? '')) })),
+    )
+  }
+}
+
+/** Invite/roster refusal codes → an AdminError the shared error path renders. */
+function inviteError(code) {
+  const status = {
+    invite_not_found: 404,
+    invite_not_claimed: 409,
+    invite_already_confirmed: 409,
+    invite_capacity: 429,
+  }[code] ?? 400
+  const message = {
+    invite_not_found: 'That invitation does not exist.',
+    invite_not_claimed: 'Nobody has posted this invitation phrase yet.',
+    invite_already_confirmed: 'This invitation was already confirmed.',
+    invite_capacity: 'Too many invitations are open right now. Try again in a few minutes.',
+  }[code] ?? 'That invitation cannot be acted on.'
+  return new AdminError(message, { code, status })
 }
 
 // A read that can refuse — a page size out of range, a malformed cursor, an item
@@ -513,6 +677,12 @@ export function createAdminGate({ db, adminOpenIds, cookieName = DEFAULT_COOKIE_
 
   const lookup = resolveIdentity ?? defaultIdentityResolver(db, cookieName, now)
 
+  // The OTHER source of admin authority: rows added online (schema v4). Queried
+  // per request, never cached, so a just-confirmed admin reaches the desk on
+  // their next click without a redeploy — the whole reason the table exists.
+  // `allow` (the env seed) is the floor that is always unioned in.
+  const activeDbAdmin = db.prepare('SELECT 1 FROM admins WHERE open_id = ? AND revoked_at IS NULL')
+
   return async function gate(request) {
     let identity
     try {
@@ -523,7 +693,8 @@ export function createAdminGate({ db, adminOpenIds, cookieName = DEFAULT_COOKIE_
     }
     if (identity === null || identity === undefined) return null
     const openId = identity.openId
-    if (typeof openId !== 'string' || !allow.has(openId)) return null
+    if (typeof openId !== 'string') return null
+    if (!allow.has(openId) && activeDbAdmin.get(openId) === undefined) return null
     return Object.freeze({
       openId,
       submitterId: identity.submitterId ?? null,

@@ -210,6 +210,12 @@ test('the plugin puts ONE gate in front of every route it registers, and registe
       'POST /api/admin/theme',
       'DELETE /api/admin/theme',
       'POST /api/admin/theme/wallpaper',
+      // Admin roster management. These register unconditionally. The FOUR invite
+      // routes (POST /api/admin/invites, GET/confirm/cancel) register only when a
+      // danmakuSource is wired — this call passes none, so they are absent here;
+      // the http harness, which wires the source, exercises them.
+      'GET /api/admin/admins',
+      'POST /api/admin/admins/:openId/revoke',
     ],
   )
   // Named on its own because it is the one the double used to swallow: DELETE is

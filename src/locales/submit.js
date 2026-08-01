@@ -35,7 +35,7 @@ export default {
         heading: '为什么要你在直播间发一条弹幕？',
         lead: '先把事情说清楚，再问你要东西。',
         noPassword:
-          '不用密码，不用扫码，也不用给这个站任何授权。你要做的只有一件事：在轴伊的直播间里，把一串码当成普通弹幕发出去。',
+          '不用密码，不用扫码，也不用给这个站任何授权。你要做的只有一件事：在本站的直播间里，把一串码当成普通弹幕发出去。',
         whatWeSee:
           '我们能看到的就只有那一条弹幕：谁发的、发了什么。关注列表、私信、充电记录、手机号，这个站碰都碰不到，也不想碰。',
         whatWeLearn:
@@ -71,7 +71,7 @@ export default {
         label: '你的码',
         expiresIn: '剩余 {time}',
         expiredNow: '倒计时走完了，正在跟服务器确认…',
-        room: '轴伊的直播间',
+        room: '本站的直播间',
         copyHint: '点“复制”会把码放进剪贴板；点直播间链接也会先复制再跳转。',
         copied: '已复制到剪贴板。',
         copyFailed: '浏览器不让我们自动复制，手动选中上面那串就好。',
@@ -317,7 +317,7 @@ export default {
         label: 'Your code',
         expiresIn: '{time} left',
         expiredNow: 'The countdown ran out; checking with the server…',
-        room: "Joi's live room",
+        room: "this site's live room",
         copyHint: 'Copy puts it on your clipboard. The room link copies it first, then opens the room.',
         copied: 'Copied to the clipboard.',
         copyFailed: 'The browser would not let us copy it for you. Select it by hand instead.',
@@ -562,7 +562,7 @@ export default {
         label: 'あなたのコード',
         expiresIn: '残り {time}',
         expiredNow: 'カウントダウンが終わりました。サーバーに確認しています…',
-        room: '轴伊の配信部屋',
+        room: '当サイトの配信部屋',
         copyHint: '「コピー」でクリップボードへ。配信部屋のリンクも、開く前にまずコピーします。',
         copied: 'コピーしました。',
         copyFailed: 'ブラウザが自動コピーを許可しませんでした。上の文字を手で選んでください。',

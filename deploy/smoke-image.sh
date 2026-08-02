@@ -59,6 +59,12 @@ if [ -z "$SHARED_DIR" ] && [ "${SMOKE_SHARED:-0}" = "1" ]; then
   trap 'cleanup; rm -rf "$SHARED_DIR"' EXIT INT TERM
 fi
 WALLPAPER="0000000000000000000000000000000000000000000000000000000000000001.png"
+# The branding favicon (STORY-068), spelled the way lib/branding.mjs names one:
+# 64 hex plus an extension, the only form its FAVICON_NAME_PATTERN accepts. Same
+# double duty as WALLPAPER above — seeded below when a shared directory is given
+# so the cache rules can be asserted, and used as a CSP probe either way, because
+# `^~ /branding/` declares `always` and answers a missing file with the headers.
+BRANDING_FAVICON="0000000000000000000000000000000000000000000000000000000000000002.png"
 if [ -n "$SHARED_DIR" ]; then
   mkdir -p "${SHARED_DIR}/media/tmp" "${SHARED_DIR}/wallpaper"
   [ -e "${SHARED_DIR}/catalog.json" ] || printf '{"version":1,"groups":[],"clips":[]}\n' > "${SHARED_DIR}/catalog.json"
@@ -93,6 +99,22 @@ if [ -n "$SHARED_DIR" ]; then
   # which is what nginx keys on, rather than the spelling.
   [ -e "${SHARED_DIR}/wallpaper/.wallpaper-tmp-probe" ] || printf 'half-written\n' > "${SHARED_DIR}/wallpaper/.wallpaper-tmp-probe"
   [ -e "${SHARED_DIR}/media/.media-tmp-probe" ] || printf 'half-written\n' > "${SHARED_DIR}/media/.media-tmp-probe"
+  # The same leftover, for branding (STORY-068/077). server/lib/branding.mjs
+  # writes branding.json and every favicon through a BRANDING_TEMP_PREFIX
+  # ('.branding-') temp in the target's own directory and relies on exactly this
+  # guard — `^~ /branding/` is a prefix location, so without its nested dotfile
+  # rule a crash leftover would be answered 200 `public, immutable` and pinned in
+  # every cache for a year, which is the bug this fixture exists to catch.
+  mkdir -p "${SHARED_DIR}/branding"
+  [ -e "${SHARED_DIR}/branding/.branding-tmp-probe" ] || printf 'half-written\n' > "${SHARED_DIR}/branding/.branding-tmp-probe"
+  # The branding pair, in the two shapes the API writes and with the OPPOSITE
+  # cache rules — branding.json at a stable name that must revalidate, the
+  # favicon at a content-addressed one that may freeze. Getting those two the
+  # wrong way round is the realistic mistake: a frozen branding.json would pin
+  # every visitor to the titles and channel link that were live the first time
+  # they loaded the site, for a year, with nothing the owner could do about it.
+  [ -e "${SHARED_DIR}/branding.json" ] || printf '{"navTitle":{"zh-CN":"smoke-branding"}}\n' > "${SHARED_DIR}/branding.json"
+  [ -e "${SHARED_DIR}/branding/${BRANDING_FAVICON}" ] || printf 'favicon\n' > "${SHARED_DIR}/branding/${BRANDING_FAVICON}"
 fi
 
 RUN_ARGS=(
@@ -279,6 +301,16 @@ if [ -n "$SHARED_DIR" ]; then
   check  "wallpaper is immutable"                 "immutable"                  "$(hdr "/wallpaper/${WALLPAPER}")"
   check  "wallpaper has a year max-age"           "max-age=31536000"           "$(hdr "/wallpaper/${WALLPAPER}")"
   check  "a missing wallpaper is 404"             "404"                        "$(code /wallpaper/absent.png)"
+  # Branding: the same stable-vs-content-addressed split the theme has, and the
+  # reason App.vue can fetch /branding.json on every load and see an edit made a
+  # minute ago without a rebuild.
+  check  "branding.json is served"                "200"                        "$(code /branding.json)"
+  check  "branding.json is the file on the volume" "smoke-branding"            "$(body /branding.json)"
+  check  "branding.json revalidates every load"   "no-cache"                   "$(hdr /branding.json)"
+  refute "branding.json is NOT immutable"         "immutable"                  "$(hdr /branding.json)"
+  check  "the branding favicon is served"         "200"                        "$(code "/branding/${BRANDING_FAVICON}")"
+  check  "the branding favicon is immutable"      "immutable"                  "$(hdr "/branding/${BRANDING_FAVICON}")"
+  check  "a missing favicon is 404"               "404"                        "$(code /branding/absent.png)"
 
   # A REAL half-written upload, seeded above, that must not be readable. The
   # sibling assertion is the important one: a 200 here would ALSO be labelled
@@ -291,6 +323,12 @@ if [ -n "$SHARED_DIR" ]; then
   refute "a refused temp file leaks no bytes"     "half-written"               "$(body /wallpaper/.wallpaper-tmp-probe)"
   check  "a media temp file is refused"           "404"                        "$(code /media/.media-tmp-probe)"
   refute "a refused media temp file is not frozen" "immutable"                 "$(hdr /media/.media-tmp-probe)"
+  # The branding half of the same guard. lib/branding.mjs's atomic writes are
+  # only safe because this rule exists, and nothing else in the suite asks nginx
+  # whether it does.
+  check  "a branding temp file is refused"        "404"                        "$(code /branding/.branding-tmp-probe)"
+  refute "a refused branding temp is not frozen"  "immutable"                  "$(hdr /branding/.branding-tmp-probe)"
+  refute "a refused branding temp leaks no bytes" "half-written"               "$(body /branding/.branding-tmp-probe)"
   # /voices/ has the same `^~` shadowing and the same nested rule, but it is
   # served off the image's own read-only layer — there is no way to seed a
   # fixture there, and asserting 404 on a file that does not exist is a check
@@ -403,6 +441,8 @@ CSP_PROBES=(
   /theme.css                        # location = /theme.css
   /media/deadbeef01234567.mp3       # location ^~ /media/
   "/wallpaper/${WALLPAPER}"         # location ^~ /wallpaper/
+  /branding.json                    # location = /branding.json
+  "/branding/${BRANDING_FAVICON}"   # location ^~ /branding/
   "/voices/${MP3}"                  # location ^~ /voices/
   /resources/favicon/favicon.png    # location ~* \.(css|js|png|…)$  — the generic rule
   /healthz                          # declares NO add_header: proves the SERVER-level one
@@ -423,14 +463,17 @@ done
 # Read out of the RUNNING container, so it is the config actually in force
 # including any override passed as argv[2], not the repo's copy of it.
 #
-# 12 = one server-level emission + eleven locations. Fourteen probes cover
-# twelve sites: two land in the same hashed-asset location (one on a 200, one on
-# a 404), and `/` doubles up on `= /index.html` for the reason above. Every one
-# of the twelve was proved by deleting its repetition and watching a named probe
-# go red, one at a time.
+# 14 = one server-level emission + thirteen locations. Sixteen probes cover
+# fourteen sites: two land in the same hashed-asset location (one on a 200, one
+# on a 404), and `/` doubles up on `= /index.html` for the reason above. Twelve
+# of the fourteen were proved by deleting their repetition and watching a named
+# probe go red, one at a time; the two branding sites (STORY-068) were added with
+# their locations and proved the same way when this count was raised — which is
+# what this assertion caught in the first place, by going red on a config that
+# had grown two emissions the loop above did not yet reach.
 # The `emissions=` prefix is not decoration: check() is a substring match, so a
-# bare "12" would also be satisfied by an actual of "112".
-CSP_EMISSIONS_EXPECTED=12
+# bare "14" would also be satisfied by an actual of "114".
+CSP_EMISSIONS_EXPECTED=14
 CSP_EMISSIONS="$(docker exec "$NAME" grep -cF 'Content-Security-Policy  $csp' /etc/nginx/nginx.conf 2>/dev/null | tr -d '[:space:]')"
 check "the reach loop covers every CSP emission in the config" \
       "emissions=${CSP_EMISSIONS_EXPECTED}" "emissions=${CSP_EMISSIONS:-unreadable}"

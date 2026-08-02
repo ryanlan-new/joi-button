@@ -88,9 +88,32 @@
 
 ## 🚀 快速开始
 
+### 🎫 前置：申请 B 站直播开放平台（一次性，约 10 分钟 + 审核）
+
+「一条弹幕完成身份验证」走的是官方 **哔哩哔哩直播开放平台** 的弹幕通道，需要一套官方凭据。部署前把下面五个值备齐——引导脚本第 1 步会逐项询问：
+
+| 环境变量 | 是什么 | 去哪拿 |
+| --- | --- | --- |
+| `BILI_APP_ID` | 项目 ID（非机密） | 开放平台控制台，创建项目后的项目页 |
+| `BILI_ROOM_ID` | 直播间号（非机密） | 直播间网址 `live.bilibili.com/<数字>` 里的那串数字 |
+| `BILI_ACCESS_KEY_ID`<br/>`BILI_ACCESS_KEY_SECRET` | 开发者密钥对（🔒 机密） | 控制台的**个人资料页**——注意不在项目页里 |
+| `BILI_ROOM_OWNER_AUTH_CODE` | 主播身份码（🔒 机密） | [play-live.bilibili.com](https://play-live.bilibili.com/)（幻星·主播端） |
+
+申请步骤：
+
+1. 用 B 站账号登录 [open-live.bilibili.com](https://open-live.bilibili.com/) 进入**创作者服务中心**，按提示完成实名认证并提交**个人开发者**入驻申请（无需企业资质，审核约 2 个工作日）；
+2. 审核通过后，在控制台**个人资料**页取得 `access_key_id` / `access_key_secret`；
+3. 在控制台**创建项目**，项目页显示的**项目 ID** 即 `BILI_APP_ID`；
+4. 用**主播本人**的账号访问 [play-live.bilibili.com](https://play-live.bilibili.com/) 获取**身份码**——它把这个项目授权到主播的直播间；
+5. 直播间号从直播间网址上抄下来即可。
+
+> ⚠️ **身份码一经刷新，旧码立即作废**。在幻星页面点了刷新，就必须重跑 `deploy/bootstrap.sh env` 换上新码并重新部署，否则弹幕验证会安静地失效，没有任何别的症状。
+>
+> 本站只**监听**投稿人发出的验证口令，从不代替任何人发送弹幕；密钥对仅用于对弹幕网关请求签名。
+
 ### 部署到生产（约半小时）
 
-你需要：一台 Linux 服务器（k3s 单机即可）+ 一个指向它的域名（公网或内网域名皆可）。
+你需要：一台 Linux 服务器（k3s 单机即可）+ 一个指向它的域名（公网或内网域名皆可）+ 上一节备好的 B 站凭据。
 
 ```bash
 git clone https://github.com/ryanlan-new/joi-button.git

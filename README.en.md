@@ -88,9 +88,32 @@ A few details worth bragging about:
 
 ## 🚀 Quick start
 
+### 🎫 Prerequisite: the Bilibili Live Open Platform (one-time, ~10 minutes + review)
+
+"Identity in a single danmaku" rides the official **Bilibili Live Open Platform** danmaku feed, which needs a set of official credentials. Have these five values ready before deploying — step 1 of the guided script asks for each:
+
+| Environment variable | What it is | Where to get it |
+| --- | --- | --- |
+| `BILI_APP_ID` | Project id (not secret) | The project page in the Open Platform console, after you create a project |
+| `BILI_ROOM_ID` | Live-room number (not secret) | The number in the room's URL, `live.bilibili.com/<number>` |
+| `BILI_ACCESS_KEY_ID`<br/>`BILI_ACCESS_KEY_SECRET` | Developer key pair (🔒 secret) | The console's **profile page** — note: not the project page |
+| `BILI_ROOM_OWNER_AUTH_CODE` | Streamer identity code, 身份码 (🔒 secret) | [play-live.bilibili.com](https://play-live.bilibili.com/) (the streamer-side "幻星" portal) |
+
+How to apply:
+
+1. Sign in at [open-live.bilibili.com](https://open-live.bilibili.com/) with a Bilibili account, enter the **creator service center**, complete the identity verification it asks for and submit an **individual developer** application (no company required; review takes ~2 business days);
+2. Once approved, copy `access_key_id` / `access_key_secret` from the console's **profile page**;
+3. **Create a project** in the console; the **project ID** shown on its page is your `BILI_APP_ID`;
+4. Have **the streamer themselves** visit [play-live.bilibili.com](https://play-live.bilibili.com/) and fetch their **identity code** — it is what authorises this project for their room;
+5. Read the room number off the live room's URL.
+
+> ⚠️ **Refreshing the identity code invalidates the old one immediately.** If it is ever refreshed on that page, re-run `deploy/bootstrap.sh env` with the new code and redeploy — otherwise danmaku verification stops working silently, with no other symptom.
+>
+> The site only **listens** for the verification phrases submitters post; it never sends a danmaku on anyone's behalf. The key pair is used solely to sign requests to the danmaku gateway.
+
 ### Deploy to production (about half an hour)
 
-You need: one Linux server (single-node k3s is fine) + a domain pointing at it (a LAN hostname works too).
+You need: one Linux server (single-node k3s is fine) + a domain pointing at it (a LAN hostname works too) + the Bilibili credentials from the section above.
 
 ```bash
 git clone https://github.com/ryanlan-new/joi-button.git

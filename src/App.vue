@@ -10,12 +10,15 @@
                         <span class="icon-bar"></span>
                         <span class="icon-bar"></span>
                     </button>
-                    <router-link class="navbar-brand" to="/"><img :src="brandIconUrl" height="18" alt="" style="vertical-align:middle"/>&nbsp;{{ navTitle }}</router-link>
+                    <!-- No `&nbsp;` and no inline vertical-align: the navbar items
+                         are flex rows (see the style block), so the gap owns the
+                         spacing and align-items owns the midline. -->
+                    <router-link class="navbar-brand" to="/"><img :src="brandIconUrl" height="18" alt=""/>{{ navTitle }}</router-link>
                 </div>
 
                 <div class="collapse navbar-collapse" id="bs-navbar-collapse">
                     <ul class="nav navbar-nav">
-                        <li><a :href="channelHref" target="_blank" rel="noopener"><img src="resources/bili_favicon.ico" height="18" style="vertical-align:middle"/>&nbsp;&nbsp;{{ channelLabel }}</a></li>
+                        <li><a :href="channelHref" target="_blank" rel="noopener"><img src="resources/bili_favicon.ico" height="18" alt=""/>{{ channelLabel }}</a></li>
                     </ul>
                     <!-- Order within this group, left to right: submit, account,
                          language.
@@ -209,6 +212,66 @@ body{
 }
 .navbar-brand {
     font-family: 'Aptos', sans-serif;
+}
+/* ONE MIDLINE ACROSS THE WHOLE BAR.
+   Three separate things were pulling the row apart, and each needed its own fix.
+
+   1. Bootstrap 3 ships `.navbar-brand > img { display: block }` so a logo can
+      fill the brand box on its own. The mark here sits BESIDE the wordmark, and
+      a block image put them on two stacked lines — the icon above, the site name
+      below, which is what this looked like in production.
+   2. `vertical-align: middle` (what the two icons used to carry inline) aligns to
+      the TEXT's middle, and the brand is 18px while the links are 14px, so the
+      two icons landed on midlines 2.4px apart. align-items does what that was
+      reaching for: it centres on the row, not on a font.
+   3. The items were 50px tall inside a 55px bar, so the whole row sat 2.5px high
+      of centre. Giving each item the bar's own height makes "centred in the item"
+      and "centred in the bar" the same line.
+
+   The spacing below is MARGINS rather than flex `gap`, and that is a browser
+   decision, not a taste one: this project's browserslist still resolves to IE
+   10/11, Opera Mini and KaiOS 2.5. Autoprefixer gives those the -ms- flexbox
+   they need (the built CSS carries `-ms-flexbox`), but nothing can polyfill
+   `gap` — so with gap those browsers would lay the row out correctly and then
+   render it with NO spacing at all: the icon welded to the wordmark and
+   `语言:🇨🇳简体中文`. Margins work wherever flex does.
+
+   They are needed at all because a flex container drops whitespace-only
+   children, and the ordinary spaces that used to separate the language toggle's
+   label, flag and value are exactly that. The two icons carried `&nbsp;` for the
+   same job; those are gone from the markup, so spacing is declared here instead
+   of being punctuation in a template.
+
+   `display: inline-block` on the brand image is the IE10-without-flex fallback:
+   if the flex declaration is ever ignored, the image still sits beside the
+   wordmark instead of stacking above it, which is Bootstrap's default. */
+.navbar-brand,
+.navbar-default .navbar-nav > li > a{
+    display: flex;
+    align-items: center;
+}
+.navbar-brand > img{
+    display: inline-block;
+}
+.navbar-brand > img,
+.navbar-default .navbar-nav > li > a > img{
+    margin-right: .4em;
+}
+.navbar-default .navbar-nav > li > a > .flag{
+    margin: 0 .3em;
+}
+.navbar-default .navbar-nav > li > a > .caret{
+    margin-left: .4em;
+}
+/* Only where the bar is a ROW. Below 768px Bootstrap stacks these inside the
+   hamburger, where a fixed 55px per item would just make the menu taller. */
+@media (min-width: 768px){
+    .navbar-brand,
+    .navbar-default .navbar-nav > li > a{
+        height: 55px;                   /* = .navbar's min-height below */
+        padding-top: 0;
+        padding-bottom: 0;
+    }
 }
 /* `> li > a`, never a descendant selector: the language dropdown's items are
    `.dropdown-menu > li > a` INSIDE `ul.nav.navbar-nav`, so `.nav.navbar-nav li a`
@@ -505,10 +568,13 @@ class App extends Vue {
         return (c && typeof c.href === 'string' && c.href !== '') ? c.href : 'https://space.bilibili.com/61639371';
     }
     get brandIconUrl(){
-        // The little mark before the title is the site favicon: the custom one
-        // when set, otherwise the icon the bundle already ships.
+        // The little mark before the title is the site's OWN favicon: the custom
+        // one an admin uploaded, otherwise the one index.html declares. It used
+        // to fall back to bili_favicon.ico — the bilibili logo — which is the
+        // mark of the platform the streamer is on, not of this site, and it sat
+        // next to the site's name claiming to be it.
         if (this.branding && this.branding.faviconPath) return '/branding/' + this.branding.faviconPath;
-        return 'resources/bili_favicon.ico';
+        return 'resources/favicon/favicon.png';
     }
     get currentLang(){
         return this.$i18n.locale;

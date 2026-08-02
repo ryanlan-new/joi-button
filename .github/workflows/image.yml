@@ -177,6 +177,14 @@ jobs:
       - name: Smoke test the image as the cluster runs it
         env:
           PRIMARY: ${{ steps.meta.outputs.primary }}
+          # WITH a shared volume, which is how the cluster actually runs it. Left
+          # off, the script skips its whole shared-volume block — every assertion
+          # about /theme.css, /wallpaper/, /branding.json and, most importantly,
+          # the dotfile guards that stop a crash-leftover temp file being served
+          # `public, immutable` for a year. Those guards are what lib/wallpaper.mjs
+          # and lib/branding.mjs's atomic writes rely on, and until this flag they
+          # were written, reasoned about, and never once exercised by CI.
+          SMOKE_SHARED: '1'
         run: deploy/smoke-image.sh "$PRIMARY"
 
       - name: Build and push

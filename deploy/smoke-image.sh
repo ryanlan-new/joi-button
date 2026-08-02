@@ -54,8 +54,10 @@ trap cleanup EXIT INT TERM
 # green this script exists to prevent, so it writes what it is about to assert
 # on. Files it already finds are left alone.
 SHARED_DIR="${SMOKE_SHARED_DIR:-}"
+SHARED_DIR_OWNED=0
 if [ -z "$SHARED_DIR" ] && [ "${SMOKE_SHARED:-0}" = "1" ]; then
   SHARED_DIR="$(mktemp -d)"
+  SHARED_DIR_OWNED=1
   trap 'cleanup; rm -rf "$SHARED_DIR"' EXIT INT TERM
 fi
 WALLPAPER="0000000000000000000000000000000000000000000000000000000000000001.png"
@@ -115,6 +117,23 @@ if [ -n "$SHARED_DIR" ]; then
   # they loaded the site, for a year, with nothing the owner could do about it.
   [ -e "${SHARED_DIR}/branding.json" ] || printf '{"navTitle":{"zh-CN":"smoke-branding"}}\n' > "${SHARED_DIR}/branding.json"
   [ -e "${SHARED_DIR}/branding/${BRANDING_FAVICON}" ] || printf 'favicon\n' > "${SHARED_DIR}/branding/${BRANDING_FAVICON}"
+  # READABLE BY THE CONTAINER, and this is not cosmetic. `mktemp -d` makes a 0700
+  # directory owned by the invoking user; the image runs as uid 101, so on a
+  # Linux bind mount — a GitHub runner, or any Linux host — nginx cannot even
+  # traverse it and every shared-volume assertion below fails for a reason the
+  # cluster does not have (there, fsGroup 101 owns the volume). macOS Docker
+  # Desktop hides this behind its VM's permissive mapping, so it is precisely the
+  # failure that passes locally and goes red in CI.
+  #
+  # Only the directory this script created. A caller who supplied
+  # SMOKE_SHARED_DIR owns its permissions, and silently widening them would be a
+  # surprise; if the container cannot read it, the named assertions say so.
+  # An explicit `if`, not `[ … ] && chmod …`: as the last statement of a block
+  # that form returns the test's status, which is a booby trap for the next
+  # person who adds `set -e` to this file.
+  if [ "$SHARED_DIR_OWNED" = "1" ]; then
+    chmod -R a+rX "$SHARED_DIR"
+  fi
 fi
 
 RUN_ARGS=(

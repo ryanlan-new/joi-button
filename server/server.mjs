@@ -55,6 +55,7 @@ import adminRoutes, { adminStoragePaths } from './routes/admin.mjs'
 import publicRoutes from './routes/public.mjs'
 import { CONFIG_EXTRA_REQUIREMENTS, ENV_SOURCES, loadConfig } from './config.mjs'
 import { applyConnectionPragmas, migrate } from './db/migrate.mjs'
+import { synchronizeCatalog } from './lib/catalog.mjs'
 import { assertSafeConfig } from './lib/env-guard.mjs'
 import { createDanmakuSource } from './lib/danmaku-source.mjs'
 import { createLoudnessNormalizer } from './lib/loudness.mjs'
@@ -126,6 +127,14 @@ async function main() {
   const adminOpenIds = devAdminBypass
     ? [...new Set([...config.admin.openIds, DEV_ADMIN_OPEN_ID])]
     : config.admin.openIds
+
+  // --- 5b. derived public catalogue --------------------------------------
+  // SQLite remains the authority. This startup pass only reconciles the
+  // materialised catalog.json with rows that are already published; it never
+  // promotes drafts. That matters after a deploy which changes the document's
+  // projection (for example, adding submitter names) while the shared volume
+  // still contains the previous document.
+  const catalogSync = synchronizeCatalog(db, adminStoragePaths(config.storage))
 
   // --- 6. the sources ------------------------------------------------------
   // After the guard, and only after it: in development mode both of these check
@@ -221,6 +230,13 @@ async function main() {
       // the first question is always "where did it go", and this is the answer.
       themeCssFile: config.storage.themeCssFile,
       wallpaperDir: config.storage.wallpaperDir,
+      catalogSync: {
+        changed: catalogSync.catalogChanged ?? false,
+        skipped: catalogSync.skipped,
+        reason: catalogSync.reason ?? null,
+        clips: catalogSync.clips ?? null,
+        sha256: catalogSync.catalogSha256 ?? null,
+      },
     },
     'joi-button API listening',
   )

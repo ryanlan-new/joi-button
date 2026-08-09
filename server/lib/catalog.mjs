@@ -469,6 +469,32 @@ export function writeCatalog(db, paths = {}, options = {}) {
   }
 }
 
+/**
+ * Reconcile the materialised catalogue when the API starts.
+ *
+ * The catalogue is a derived file, not the authority. A deploy can therefore
+ * ship a new projection rule while the shared volume still contains bytes
+ * produced by the previous rule. On a fresh install the media directory may
+ * not exist until the seed or the first submission creates it; leave that
+ * fallback state alone rather than manufacturing a storage tree here.
+ *
+ * This deliberately calls writeCatalog directly instead of publishCatalogue:
+ * startup reconciliation must never promote draft clips or create a human
+ * publish audit event. It only makes catalog.json agree with already-published
+ * database rows.
+ */
+export function synchronizeCatalog(db, paths = {}, options = {}) {
+  if (typeof paths.mediaDir === 'string' && paths.mediaDir.trim() !== '' && !existsSync(paths.mediaDir)) {
+    return {
+      skipped: true,
+      reason: 'media_dir_missing',
+      catalogFile: paths.catalogFile ?? null,
+    }
+  }
+
+  return { skipped: false, ...writeCatalog(db, paths, options) }
+}
+
 // ---------------------------------------------------------------------------
 
 function collectCaptions(rows, localeOrder) {

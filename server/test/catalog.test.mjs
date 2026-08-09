@@ -15,7 +15,15 @@ import test from 'node:test'
 
 import Database from 'better-sqlite3'
 
-import { CatalogError, MEDIA_BASE_URL, buildCatalog, checkMedia, serializeCatalog, writeCatalog } from '../lib/catalog.mjs'
+import {
+  CatalogError,
+  MEDIA_BASE_URL,
+  buildCatalog,
+  checkMedia,
+  serializeCatalog,
+  synchronizeCatalog,
+  writeCatalog,
+} from '../lib/catalog.mjs'
 import { T0, T10, openDatabase } from './helpers/temp-db.mjs'
 
 function workspace(t) {
@@ -242,6 +250,33 @@ test('writeCatalog puts catalog.json and the media on the shared directory, and 
   const third = writeCatalog(db, paths, { now: new Date(T10) })
   assert.equal(third.catalogChanged, true)
   assert.notEqual(statSync(paths.catalogFile).ino, inodeBefore)
+})
+
+test('synchronizeCatalog rebuilds a stale document without promoting drafts, and skips an unseeded volume', (t) => {
+  const db = openDatabase(t)
+  const media = seedCatalogue(db)
+  const paths = workspace(t)
+
+  const skipped = synchronizeCatalog(db, paths)
+  assert.equal(skipped.skipped, true)
+  assert.equal(skipped.reason, 'media_dir_missing')
+  assert.equal(existsSync(paths.catalogFile), false)
+
+  for (const blob of Object.values(media)) place(paths.mediaDir, blob.storagePath, blob.bytes)
+
+  const draftMedia = putMedia(db, 'draft-only-audio')
+  place(paths.mediaDir, draftMedia.storagePath, draftMedia.bytes)
+  db.prepare("INSERT INTO clips (id, group_id, media_sha256, label, sort_order, state, created_at) VALUES ('draft-only', 'hummings', ?, 'Draft only', 99, 'draft', ?)").run(
+    draftMedia.sha256,
+    T0,
+  )
+  const rebuilt = synchronizeCatalog(db, paths, { now: new Date(T0) })
+  assert.equal(rebuilt.skipped, false)
+  assert.equal(rebuilt.catalogChanged, true)
+  assert.equal(rebuilt.clips, 3)
+  const document = JSON.parse(readFileSync(paths.catalogFile, 'utf8'))
+  assert.equal(document.clips.some((clip) => clip.id === 'draft-only'), false)
+  assert.deepEqual(document.clips.find((clip) => clip.id === 'clip-ei').submitter, { name: '和乐' })
 })
 
 test('publishing refuses to name a file that is not on the volume, and leaves the previous catalogue in place', (t) => {

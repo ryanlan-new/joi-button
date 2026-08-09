@@ -49,7 +49,7 @@
         <div v-for="category in voices" v-bind:key="category.id">
             <div class="cate-header" :lang="captionLang(category)">{{ $t("voicecategory." + category.id) }}</div>
             <div class="cate-body">
-                <div class="voice-row" v-for="clip in category.clips" v-bind:key="clip.id">
+                <div class="voice-row" :class="{ 'is-info-visible': detailsEnabled, 'is-info-focused': infoFocusId === clip.id }" v-for="clip in category.clips" v-bind:key="clip.id">
                     <button class="btn btn-new voice-play"
                             :class="{ 'is-playing': voice.id === clip.id }"
                             :style="pressStyle(clip)"
@@ -66,7 +66,7 @@
                     </button>
                     <!-- Sibling, never nested: a badge is its own interactive
                          control and cannot become a button inside a button. -->
-                    <button class="clip-info-badge" :class="{ 'is-persistent': detailsEnabled }" type="button" :aria-label="$t('info.clipInfo')" @click.stop="openInfo(clip, $event)" @keydown.enter.space.prevent="openInfo(clip, $event)">ⓘ</button>
+                    <button class="clip-info-badge" :class="{ 'is-persistent': detailsEnabled }" type="button" :aria-label="$t('info.clipInfo')" @click.stop="openInfo(clip, $event)" @focus="focusInfo(clip, $event)" @blur="blurInfo(clip)" @keydown.enter.space.prevent="openInfo(clip, $event)">ⓘ</button>
                 </div>
             </div>
         </div>
@@ -119,6 +119,10 @@
 .voice-play {
     position: relative;
     overflow: hidden;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding-inline: 14px;
     touch-action: none;
     user-select: none;
     -webkit-user-select: none;
@@ -128,6 +132,9 @@
 .hold-sweep {
     position: relative;
     z-index: 1;
+}
+.voice-label {
+    transition: transform .16s ease;
 }
 .hold-sweep {
     position: absolute;
@@ -170,6 +177,14 @@
         transform: translateY(-50%) scale(1);
         pointer-events: auto;
     }
+    .voice-row:hover .voice-label,
+    .voice-play:focus-visible .voice-label {
+        transform: translateX(-14px);
+    }
+}
+.voice-row.is-info-visible .voice-label,
+.voice-row.is-info-focused .voice-label {
+    transform: translateX(-14px);
 }
 .clip-info-badge:focus-visible,
 .clip-info-badge.is-persistent {
@@ -229,7 +244,8 @@
     cursor: pointer; /* Cursor on hover */
 }
 @media (prefers-reduced-motion: reduce) {
-    .clip-info-badge { transition: none; }
+    .clip-info-badge,
+    .voice-label { transition: none; }
 }
 @media (prefers-reduced-transparency: reduce) {
     .hold-sweep,
@@ -275,6 +291,7 @@ class HomePage extends Vue {
     infoClip = null;
     infoAnchor = null;
     detailsEnabled = false;
+    infoFocusId = null;
     holdProgress = 0;
     pressScales = {};
 
@@ -432,6 +449,12 @@ class HomePage extends Vue {
     closeInfo() {
         this.infoClip = null;
         this.infoAnchor = null;
+    }
+    focusInfo(item, event) {
+        if (event && event.target && event.target.matches && event.target.matches(':focus-visible')) this.infoFocusId = item.id;
+    }
+    blurInfo(item) {
+        if (this.infoFocusId === item.id) this.infoFocusId = null;
     }
     play(item){
         // `item.src` rather than "voices/" + item.path: where the audio lives is

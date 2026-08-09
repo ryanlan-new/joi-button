@@ -170,9 +170,7 @@ test('STORY-079: the caption fallback matrix returns the real source language', 
 
 test('INC-010/011: the badge overlays the pill without reserving hidden space', () => {
   assert.match(homeSource, /\.clip-info-badge[\s\S]*?right:\s*8px/)
-  const defaultPlayStyle = homeSource.match(/\.voice-play\s*\{([\s\S]*?)\n\}/)?.[1] || ''
-  assert.doesNotMatch(defaultPlayStyle, /padding-right:\s*30px/)
-  assert.match(homeSource, /\.voice-row\.is-info-visible \.voice-play[\s\S]*?padding-right:\s*30px/)
+  assert.doesNotMatch(homeSource, /padding-right:\s*30px/)
   assert.match(homeSource, /\.clip-info-badge[\s\S]*?position:\s*absolute/)
   assert.match(homeSource, /\.clip-info-badge[\s\S]*?opacity:\s*0[\s\S]*?pointer-events:\s*none/)
   assert.match(infoCardSource, /background:\s*rgba\(255, 255, 255, \.82\)/)

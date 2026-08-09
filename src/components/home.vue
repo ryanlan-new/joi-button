@@ -49,7 +49,7 @@
         <div v-for="category in voices" v-bind:key="category.id">
             <div class="cate-header" :lang="captionLang(category)">{{ $t("voicecategory." + category.id) }}</div>
             <div class="cate-body">
-                <div class="voice-row" :class="{ 'is-info-visible': detailsEnabled }" v-for="clip in category.clips" v-bind:key="clip.id">
+                <div class="voice-row" v-for="clip in category.clips" v-bind:key="clip.id">
                     <button class="btn btn-new voice-play"
                             :class="{ 'is-playing': voice.id === clip.id }"
                             :style="pressStyle(clip)"
@@ -123,18 +123,6 @@
     user-select: none;
     -webkit-user-select: none;
     -webkit-touch-callout: none;
-}
-/* Only the visible state gets a protected trailing lane. The default keeps
-   the badge out of layout entirely, so a hover-only detail affordance cannot
-   leave blank copy space behind when it is hidden. */
-@media (hover: hover) {
-    .voice-row:hover .voice-play,
-    .voice-row:focus-within .voice-play {
-        padding-right: 30px;
-    }
-}
-.voice-row.is-info-visible .voice-play {
-    padding-right: 30px;
 }
 .voice-label,
 .hold-sweep {

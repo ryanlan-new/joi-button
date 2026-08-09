@@ -40,6 +40,18 @@ Unlike the classic "static button page + edit a JSON + send a PR" approach, this
 
 The original Joi Button runs on exactly this code: **<https://joi-button.tcrn-tms.com>** — every button, wallpaper, and caption you see there grew out of the features below.
 
+## 📦 Latest release: v2.7.0 (2026-08-10)
+
+This release completes the INIT-002 frontend and admin overhaul and closes the interaction issues found during acceptance:
+
+- **Login-free local admin acceptance**: development mode injects a local admin session, so `/admin` opens directly; this path is never enabled in production;
+- **Stable clip-info interaction**: the ⓘ badge stays inside the button with a reserved lane and equal inner spacing, hover never moves the button, and clicking it still lets the badge disappear when the pointer leaves;
+- **Clearer submission fields**: source information is always visible, required fields use an asterisk, and optional fields no longer rely on “optional” filler labels;
+- **Completed quality gates**: frontend UI-contract tests, the server suite, admin contrast checks, and the production build were all verified for this release;
+- **Repository cleanup**: the historical `docs/` directory is removed from version control and remains ignored locally by `.gitignore`.
+
+Full notes: [v2.7.0 release](https://github.com/ryanlan-new/joi-button/releases/tag/v2.7.0).
+
 ## ✨ Feature tour
 
 ### 🎧 For visitors
@@ -140,8 +152,14 @@ git tag v1.0.0 && git push origin v1.0.0   # auto-build + auto-deploy
 
 ```bash
 npm install && npm run serve      # frontend with hot reload
-cd server && npm install && npm run dev   # the API
+cd server && npm install
+LOCAL_SESSION_SECRET="$(node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))")"
+NODE_ENV=development DANMAKU_MODE=development TURNSTILE_MODE=development \
+TURNSTILE_SWITCH=off DEV_PLAIN_HTTP=1 HOST=127.0.0.1 PORT=8081 \
+SESSION_SECRET="$LOCAL_SESSION_SECRET" npm run dev   # API; local admin is login-free
 ```
+
+With `NODE_ENV=development`, the API injects an admin session for local acceptance. Open `/admin` directly; this bypass is never enabled in production.
 
 Tests and quality gates: `cd server && npm test` (450+ server cases) · `npm test` (frontend) · `npm run contrast` (an automated contrast gate for the admin palette).
 
@@ -185,7 +203,7 @@ Details you can trust: a STRICT-mode schema with exhaustive CHECK constraints; c
 - **Translations** are maintained by the owner and not currently open to contribution;
 - **Code** PRs are welcome — for anything larger than a fix, an issue first saves us both a round trip.
 
-More docs: [deployment & operations details](deploy/k8s/README.md) · [pre-rebuild technical notes](docs/project-tech-and-function.md) (a historical snapshot; its deployment sections are outdated).
+More docs: [deployment & operations details](deploy/k8s/README.md).
 
 ## 📄 License and thanks
 

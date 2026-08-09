@@ -40,6 +40,18 @@ VTuber の [Joi_Channel（轴伊）](https://space.bilibili.com/61639371)のた�
 
 本家 Joiボタンがまさにこのコードで動いています：**<https://joi-button.tcrn-tms.com>** —— そこにあるボタンも壁紙も字幕も、すべて下記の機能から育ったものです。
 
+## 📦 最新リリース：v2.7.0（2026-08-10）
+
+このリリースでは INIT-002 のフロントエンド / 管理画面改修を完成させ、受け入れ時に見つかった操作上の問題を解消しました：
+
+- **ローカル管理画面をログイン不要に**：開発モードではローカル管理者セッションを注入するため、`/admin` を直接開いて確認できます。本番ではこの経路を有効にしません；
+- **音声情報の操作を安定化**：ⓘ はボタン内右側に固定し、専用の幅と左右の等しい内側余白を確保。ホバーでボタンが跳ねず、クリック後にポインターを外せば正しく消えます；
+- **投稿項目を明確化**：ソース情報を常に表示し、必須項目にはアスタリスクを付け、任意項目には「入力不要」を示す曖昧なラベルを使いません；
+- **品質ゲートを完了**：フロントエンド UI コントラクトテスト、サーバーテスト、管理画面のコントラスト検査、本番ビルドを検証済みです；
+- **リポジトリを整理**：歴史的な `docs/` ディレクトリをバージョン管理から削除し、`.gitignore` でローカルの同名ディレクトリは引き続き無視します。
+
+詳しい内容：[v2.7.0 リリース](https://github.com/ryanlan-new/joi-button/releases/tag/v2.7.0)。
+
 ## ✨ 機能ツアー
 
 ### 🎧 訪問者側
@@ -140,8 +152,14 @@ git tag v1.0.0 && git push origin v1.0.0   # 自動ビルド + 自動デプロ�
 
 ```bash
 npm install && npm run serve      # フロントエンド（ホットリロード）
-cd server && npm install && npm run dev   # API サーバー
+cd server && npm install
+LOCAL_SESSION_SECRET="$(node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))")"
+NODE_ENV=development DANMAKU_MODE=development TURNSTILE_MODE=development \
+TURNSTILE_SWITCH=off DEV_PLAIN_HTTP=1 HOST=127.0.0.1 PORT=8081 \
+SESSION_SECRET="$LOCAL_SESSION_SECRET" npm run dev   # API；ローカル管理画面はログイン不要
 ```
+
+`NODE_ENV=development` では、API がローカル確認用の管理者セッションを注入します。`/admin` を直接開いてください。このバイパスは本番では有効になりません。
 
 テストと品質ゲート：`cd server && npm test`（サーバー側 450+ ケース）· `npm test`（フロントエンド）· `npm run contrast`（管理画面配色のコントラストゲート）。
 
@@ -185,7 +203,7 @@ flowchart LR
 - **翻訳**は管理人がメンテナンスしており、現在外部からの貢献は受け付けていません；
 - **コード**の PR は歓迎です——修正より大きな変更は、先に issue を立てていただけるとお互い無駄足になりません。
 
-その他のドキュメント：[デプロイ・運用の詳細](deploy/k8s/README.md) · [再構築前の技術ノート](docs/project-tech-and-function.md)（歴史的スナップショット。デプロイの章は古くなっています）。
+その他のドキュメント：[デプロイ・運用の詳細](deploy/k8s/README.md)。
 
 ## 📄 ライセンスと謝辞
 

@@ -171,8 +171,8 @@ test('STORY-079: the caption fallback matrix returns the real source language', 
 })
 
 test('INC-010/011: the badge overlays the pill without reserving hidden space', () => {
-  assert.match(homeSource, /\.clip-info-badge[\s\S]*?right:\s*8px/)
-  assert.match(homeSource, /\.voice-play[\s\S]*?padding-inline:\s*14px/)
+  assert.match(homeSource, /\.clip-info-badge[\s\S]*?right:\s*15px/)
+  assert.match(homeSource, /\.voice-play[\s\S]*?padding-inline:\s*21px/)
   assert.match(homeSource, /\.voice-row:hover \.voice-label[\s\S]*?transform:\s*translateX\(-14px\)/)
   assert.match(homeSource, /\.voice-row\.is-info-focused \.voice-label/)
   assert.doesNotMatch(homeSource, /padding-right:\s*30px/)

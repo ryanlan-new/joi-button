@@ -122,7 +122,10 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    padding-inline: 14px;
+    /* Keep a 10px visual breathing room on the left/right of the hovered
+       label + ⓘ group. .btn-new contributes a 5px outer margin, so the
+       badge's 15px row offset leaves the same 10px from the pill edge. */
+    padding-inline: 21px;
     touch-action: none;
     user-select: none;
     -webkit-user-select: none;
@@ -151,7 +154,7 @@
     /* The row is the pill-sized containing block. This keeps the badge
        visually inside the trailing edge while absolute positioning keeps the
        hidden state out of the row's flex sizing. */
-    right: 8px;
+    right: 15px;
     left: auto;
     z-index: 2;
     width: 1.75rem;

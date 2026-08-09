@@ -116,7 +116,6 @@
                                         <label><span class="adm-label">{{ $t('admin.clips.sourceDate') }}</span><input class="adm-input" type="date" v-model="draft.sourceDate"></label>
                                         <label><span class="adm-label">{{ $t('admin.clips.sourceTime') }}</span><input class="adm-input" v-model.trim="draft.sourceTime" placeholder="mm:ss"></label>
                                         <label><span class="adm-label">{{ $t('admin.clips.sourceUrl') }}</span><input class="adm-input" type="url" v-model.trim="draft.sourceUrl"></label>
-                                        <label class="adm-choice"><input type="checkbox" v-model="draft.creditHidden"> {{ $t('admin.clips.hideCredit') }}</label>
                                     </div>
                                     <div class="adm-langs">
                                         <I18nTextField v-for="locale in CAPTION_LOCALES" :key="locale"
@@ -244,7 +243,6 @@ class ClipsPanel extends Vue {
             sourceDate: clip.source ? clip.source.date || '' : '',
             sourceTime: clip.source ? secondsToTime(clip.source.seconds) : '',
             sourceUrl: clip.source ? clip.source.url || '' : '',
-            creditHidden: clip.creditHidden === true,
             captions: Object.assign({}, clip.captions || {}, { 'en-US': (clip.captions && clip.captions['en-US']) || '', 'zh-CN': (clip.captions && clip.captions['zh-CN']) || '', 'ja-JP': (clip.captions && clip.captions['ja-JP']) || '' }),
         }
     }
@@ -263,7 +261,6 @@ class ClipsPanel extends Vue {
                 sourceDate: this.draft.sourceDate || null,
                 sourceSeconds: seconds,
                 sourceUrl: this.draft.sourceUrl || null,
-                creditHidden: this.draft.creditHidden,
             })
             this.cancelEdit(); await this.reload()
             this.notice = this.$t('admin.clips.saved')

@@ -307,7 +307,7 @@ export default {
         empty: '这个筛选下没有音声。',
         saved: '已保存，站点目录已更新。',
         moved: '已把 {n} 条移到「{group}」。',
-        edit: '编辑', sourceKind: '来源类型', sourceTitle: '来源标题', sourceDate: '来源日期', sourceTime: '来源时间', sourceUrl: '来源链接', hideCredit: '隐藏投稿人', blankDeletes: '留空删除这门语言', noSource: '无来源', noSubmitter: '无投稿人', sourceTimeBad: '时间请输入秒数、mm:ss 或 h:mm:ss。'
+        edit: '编辑', sourceKind: '来源类型', sourceTitle: '来源标题', sourceDate: '来源日期', sourceTime: '来源时间', sourceUrl: '来源链接', blankDeletes: '留空删除这门语言', noSource: '无来源', noSubmitter: '无投稿人', sourceTimeBad: '时间请输入秒数、mm:ss 或 h:mm:ss。'
       },
       recycle: {
         title: '回收站',
@@ -692,7 +692,7 @@ export default {
         empty: 'No clips under this filter.',
         saved: 'Saved; the site catalogue is updated.',
         moved: 'Moved {n} clips to “{group}”.',
-        edit: 'Edit', sourceKind: 'Source type', sourceTitle: 'Source title', sourceDate: 'Source date', sourceTime: 'Source time', sourceUrl: 'Source URL', hideCredit: 'Hide submitter credit', blankDeletes: 'Blank removes this locale', noSource: 'no source', noSubmitter: 'no submitter', sourceTimeBad: 'Use seconds, mm:ss or h:mm:ss for the time.'
+        edit: 'Edit', sourceKind: 'Source type', sourceTitle: 'Source title', sourceDate: 'Source date', sourceTime: 'Source time', sourceUrl: 'Source URL', blankDeletes: 'Blank removes this locale', noSource: 'no source', noSubmitter: 'no submitter', sourceTimeBad: 'Use seconds, mm:ss or h:mm:ss for the time.'
       },
       recycle: {
         title: 'Recycle bin',
@@ -1077,7 +1077,7 @@ export default {
         empty: 'この絞り込みでは音声がありません。',
         saved: '保存しました。サイトのカタログを更新しました。',
         moved: '{n} 件を「{group}」へ移動しました。',
-        edit: '編集', sourceKind: '出典の種類', sourceTitle: '出典のタイトル', sourceDate: '出典の日付', sourceTime: '出典の時間', sourceUrl: '出典リンク', hideCredit: '投稿者を非表示', blankDeletes: '空欄にするとこの言語を削除', noSource: '出典なし', noSubmitter: '投稿者なし', sourceTimeBad: '秒数、mm:ss、または h:mm:ss で入力してください。'
+        edit: '編集', sourceKind: '出典の種類', sourceTitle: '出典のタイトル', sourceDate: '出典の日付', sourceTime: '出典の時間', sourceUrl: '出典リンク', blankDeletes: '空欄にするとこの言語を削除', noSource: '出典なし', noSubmitter: '投稿者なし', sourceTimeBad: '秒数、mm:ss、または h:mm:ss で入力してください。'
       },
       recycle: {
         title: 'ごみ箱',

@@ -195,7 +195,7 @@ export function buildCatalog(db, options = {}) {
       `SELECT c.id, c.group_id, c.label, c.sort_order,
               m.sha256, m.storage_path, m.bytes, m.duration_seconds,
               c.source_kind, c.source_title, c.source_date, c.source_seconds,
-              c.source_url, c.credit_hidden,
+              c.source_url,
               s.display_name AS submitter_name
          FROM clips c
          JOIN media m ON m.sha256 = c.media_sha256
@@ -277,7 +277,10 @@ export function buildCatalog(db, options = {}) {
       }
       const source = sourceOf(row)
       if (source !== null) clip.source = source
-      if (row.credit_hidden !== 1 && typeof row.submitter_name === 'string' && row.submitter_name !== '') {
+      // The public card follows the data, not an additional visibility flag:
+      // a recorded submitter name is shown, and only an empty/missing name is
+      // omitted from the catalogue.
+      if (typeof row.submitter_name === 'string' && row.submitter_name !== '') {
         clip.submitter = { name: row.submitter_name }
       }
       return clip

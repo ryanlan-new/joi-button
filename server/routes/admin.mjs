@@ -1209,7 +1209,7 @@ function readClip(db, clipId) {
       SELECT c.id, c.group_id, c.media_sha256, c.label, c.sort_order, c.state,
              c.created_at, c.published_at, c.retired_at,
              c.source_kind, c.source_title, c.source_date, c.source_seconds,
-             c.source_url, c.credit_hidden, s.display_name AS submitter_name
+             c.source_url, s.display_name AS submitter_name
         FROM clips c
         LEFT JOIN submitters s ON s.id = c.submitter_id
        WHERE c.id = ?
@@ -1228,9 +1228,6 @@ function readClip(db, clipId) {
     retiredAt: clip.retired_at,
     captions: captionsOf(db, 'clip_captions', 'clip_id', clipId),
     ...(source === null ? {} : { source }),
-    creditHidden: clip.credit_hidden === 1,
-    // The admin desk may see the recorded submitter even when public credit is
-    // hidden; creditHidden is the publication decision, not data erasure.
     submitter: !clip.submitter_name ? null : { name: clip.submitter_name },
     missingLocales: db
       .prepare("SELECT locale FROM v_missing_captions WHERE subject_kind = 'clip' AND subject_id = ? ORDER BY locale")
@@ -1550,10 +1547,9 @@ function updateClip(db, clipId, input = {}, { actor, at }) {
 
   const patch = cleanClipPatch(db, input)
   const hasSource = patch.source !== undefined
-  const hasAny = patch.label !== undefined || patch.groupId !== undefined || patch.captions !== undefined ||
-    hasSource || patch.creditHidden !== undefined
+  const hasAny = patch.label !== undefined || patch.groupId !== undefined || patch.captions !== undefined || hasSource
   if (!hasAny) {
-    throw new AdminError('nothing to change: pass a label, captions, a groupId, source fields, or creditHidden', {
+    throw new AdminError('nothing to change: pass a label, captions, a groupId, or source fields', {
       code: 'invalid_request',
       details: { field: 'label' },
     })
@@ -1575,10 +1571,6 @@ function updateClip(db, clipId, input = {}, { actor, at }) {
         sets.push(`${column} = ?`)
         values.push(value)
       }
-    }
-    if (patch.creditHidden !== undefined) {
-      sets.push('credit_hidden = ?')
-      values.push(patch.creditHidden ? 1 : 0)
     }
     if (sets.length > 0) db.prepare(`UPDATE clips SET ${sets.join(', ')} WHERE id = ?`).run(...values, clipId)
 
@@ -1619,7 +1611,6 @@ function editableClipView(clip) {
     groupId: clip.groupId,
     captions: clip.captions,
     source: clip.source ?? null,
-    creditHidden: clip.creditHidden,
   }
 }
 
@@ -1631,8 +1622,6 @@ function cleanClipPatch(db, input) {
   if (Object.prototype.hasOwnProperty.call(input, 'label')) patch.label = cleanText(input.label, 'label', LABEL_MAX_LENGTH)
   if (Object.prototype.hasOwnProperty.call(input, 'groupId')) patch.groupId = requireActiveGroup(db, input.groupId)
   if (Object.prototype.hasOwnProperty.call(input, 'captions')) patch.captions = cleanCaptionPatch(db, input.captions)
-  if (Object.prototype.hasOwnProperty.call(input, 'creditHidden')) patch.creditHidden = cleanBoolean(input.creditHidden, 'creditHidden')
-
   const sourcePatch = sourcePatchFromInput(input)
   if (sourcePatch !== undefined) patch.source = sourcePatch
   return patch
@@ -1778,12 +1767,6 @@ function cleanSourceString(value, field, maxLength) {
     throw new AdminError(`${field} is not valid source metadata`, { code: 'invalid_text', details: { field, maxLength } })
   }
   return text
-}
-
-function cleanBoolean(value, field) {
-  if (value === true || value === 1) return true
-  if (value === false || value === 0) return false
-  throw new AdminError(`${field} must be a boolean`, { code: 'invalid_request', details: { field } })
 }
 
 function resolveBatchIfDone(db, batch, at) {
@@ -2172,7 +2155,7 @@ export function listClips(db, { mediaBaseUrl = MEDIA_BASE_URL } = {}) {
            c.group_id, g.display_name AS group_name, g.state AS group_state,
            m.sha256, m.storage_path, m.duration_seconds, m.bytes, m.ext, m.content_type,
            c.source_kind, c.source_title, c.source_date, c.source_seconds, c.source_url,
-           c.credit_hidden, s.display_name AS submitter_name,
+           s.display_name AS submitter_name,
            (SELECT count(*) FROM clip_captions cc WHERE cc.clip_id = c.id) AS caption_count,
            (SELECT count(*) FROM locales) AS caption_total
     FROM clips c
@@ -2194,9 +2177,8 @@ export function listClips(db, { mediaBaseUrl = MEDIA_BASE_URL } = {}) {
       captionTotal: row.caption_total,
       captions: captionsOf(db, 'clip_captions', 'clip_id', row.id),
       source: sourceOfClipRow(row),
-      creditHidden: row.credit_hidden === 1,
-      // Keep the admin view honest about who submitted it. buildCatalog() is
-      // the public boundary that applies credit_hidden.
+      // Keep the admin view honest about who submitted it. The public catalogue
+      // uses the same non-empty-name rule for the information card.
       submitter: !row.submitter_name ? null : { name: row.submitter_name },
       media: {
         sha256: row.sha256,

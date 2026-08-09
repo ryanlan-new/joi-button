@@ -857,6 +857,9 @@ CREATE TABLE IF NOT EXISTS clips (
                       length(source_url) <= 2048
                   AND (source_url GLOB 'http://*' OR source_url GLOB 'https://*')
                   AND length(source_url) > 7)),
+    -- Kept for schema compatibility with databases created before submitter
+    -- names became unconditional public metadata. The catalogue no longer
+    -- uses this legacy flag to suppress a non-empty submitter name.
     credit_hidden INTEGER NOT NULL DEFAULT 0 CHECK (credit_hidden IN (0, 1)),
 
     CHECK (id <> '' AND length(id) <= 64 AND id NOT GLOB '*[^a-z0-9_-]*'),

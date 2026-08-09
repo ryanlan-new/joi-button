@@ -136,8 +136,10 @@ export const POST_BASELINE_STEPS = [
     },
     {
         version: 6,
-        // Clip provenance and the owner's credit preference. All provenance is
-        // nullable because it is descriptive metadata, never a publish gate.
+        // Clip provenance plus the legacy credit_hidden column. All provenance
+        // is nullable because it is descriptive metadata, never a publish gate;
+        // the legacy column remains for already-migrated databases but is no
+        // longer used to suppress a non-empty submitter name from the catalogue.
         // The fresh schema carries the same definitions; these ALTERs are for
         // databases that were already stamped before INIT-002.
         sql: `

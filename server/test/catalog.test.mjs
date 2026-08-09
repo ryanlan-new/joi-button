@@ -74,6 +74,12 @@ function seedCatalogue(db) {
   insertClip.run('clip-wake', 'alarms', media.wake.sha256, 'Wake up', 1, T0, T0)
   insertClip.run('clip-late', 'alarms', media.late.sha256, 'Late', 0, T0, T0)
 
+  db.prepare(`
+    INSERT INTO submitters (id, open_id, display_name, display_name_seen_at, first_seen_at, last_seen_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run('sub-ei', 'open-ei', '和乐', T0, T0, T0)
+  db.prepare('UPDATE clips SET submitter_id = ?, submitted_at = ? WHERE id = ?').run('sub-ei', T0, 'clip-ei')
+
   const clipCaption = db.prepare('INSERT INTO clip_captions (clip_id, locale, text, updated_at) VALUES (?, ?, ?, ?)')
   for (const locale of ['en-US', 'zh-CN', 'ja-JP']) {
     clipCaption.run('clip-ei', locale, `ei ${locale}`, T0)
@@ -86,6 +92,21 @@ function seedCatalogue(db) {
 
   return media
 }
+
+test('a non-empty submitter name is published, while a missing name is omitted', (t) => {
+  const db = openDatabase(t)
+  seedCatalogue(db)
+  // `credit_hidden` is legacy data retained by the schema. It must not make a
+  // non-empty submitter disappear from the public information card.
+  db.prepare('UPDATE clips SET credit_hidden = 1 WHERE id = ?').run('clip-ei')
+
+  const doc = buildCatalog(db)
+  const credited = doc.clips.find((clip) => clip.id === 'clip-ei')
+  const uncredited = doc.clips.find((clip) => clip.id === 'clip-wake')
+
+  assert.deepEqual(credited.submitter, { name: '和乐' })
+  assert.equal(Object.hasOwn(uncredited, 'submitter'), false)
+})
 
 test('the document carries the shape home.vue consumes: ids as i18n keys, per-locale captions, page order', (t) => {
   const db = openDatabase(t)

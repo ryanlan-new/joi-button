@@ -29,6 +29,7 @@ const {
 const homeSource = readFileSync(new URL('../src/components/home.vue', import.meta.url), 'utf8')
 const submitSource = readFileSync(new URL('../src/components/submit.vue', import.meta.url), 'utf8')
 const infoCardSource = readFileSync(new URL('../src/components/ClipInfoCard.vue', import.meta.url), 'utf8')
+const clipsPanelSource = readFileSync(new URL('../src/components/admin/ClipsPanel.vue', import.meta.url), 'utf8')
 const appSource = readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8')
 const locales = {
   zh: readFileSync(new URL('../src/locales/zh-CN.js', import.meta.url), 'utf8'),
@@ -145,6 +146,13 @@ test('STORY-091: source fields, time point, deep link and empty submitter are ex
   assert.equal(rows.find((row) => row.key === 'type').value, '直播切片')
   assert.equal(rows.find((row) => row.key === 'time-point').label, '时间点')
   assert.equal(rows.some((row) => row.key === 'submitter'), false)
+  const creditedRows = buildInfoRows({ submitter: { name: '和乐' } }, labels)
+  assert.deepEqual(creditedRows.find((row) => row.key === 'submitter'), {
+    key: 'submitter',
+    label: '投稿人',
+    value: '和乐',
+  })
+  assert.doesNotMatch(clipsPanelSource, /creditHidden|hideCredit/)
   assert.equal(sourceHref({ url: 'https://example.test/watch?v=joi', seconds: 3723 }), 'https://example.test/watch?v=joi&t=3723')
   assert.match(infoCardSource, /v-for="row in infoRows"/)
   assert.doesNotMatch(infoCardSource, /站长自剪|未知投稿人/)

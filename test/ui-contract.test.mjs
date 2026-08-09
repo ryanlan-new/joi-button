@@ -98,6 +98,8 @@ test('STORY-089: the play gesture and info control remain two keyboard-reachable
   assert.equal((homeSource.match(/class="clip-info-badge"/g) || []).length, 1)
   assert.match(homeSource, /@keydown\.enter\.space\.prevent="openInfo\(clip, \$event\)"/)
   assert.match(homeSource, /\.clip-info-badge[\s\S]*?opacity:\s*0[\s\S]*?pointer-events:\s*none/)
+  assert.doesNotMatch(homeSource, /\.voice-row:focus-within \.clip-info-badge/)
+  assert.match(homeSource, /\.voice-play:focus-visible \+ \.clip-info-badge/)
 })
 
 test('STORY-090: a stopped slow drag returns, while a recent fast flick dismisses', () => {

@@ -165,7 +165,7 @@
 }
 @media (hover: hover) {
     .voice-row:hover .clip-info-badge,
-    .voice-row:focus-within .clip-info-badge {
+    .voice-play:focus-visible + .clip-info-badge {
         opacity: 1;
         transform: translateY(-50%) scale(1);
         pointer-events: auto;

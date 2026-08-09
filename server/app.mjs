@@ -101,12 +101,13 @@
 //     refusal names which rule was broken, and its number" case goes red.
 // ---------------------------------------------------------------------------
 
-import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 
 import Fastify from 'fastify'
 import multipart from '@fastify/multipart'
 
 import { readSchemaStamp, toCanonicalTimestamp } from './db/migrate.mjs'
+import { DEV_ADMIN_DISPLAY_NAME, DEV_ADMIN_OPEN_ID } from './lib/dev-admin.mjs'
 
 /**
  * Non-file form fields allowed in one request, and the size of one.
@@ -259,8 +260,18 @@ const REFUSALS = Object.freeze({
  *                     mediaDir: config.storage.mediaDir },
  *            cookieName: SESSION_COOKIE_NAME,
  *          } }]
+ * @param {boolean} [devAdminBypass]  inject a local admin session in development only
  */
-export function createApp({ config, db, danmaku, turnstile, logger, report = null, routes = [] } = {}) {
+export function createApp({
+  config,
+  db,
+  danmaku,
+  turnstile,
+  logger,
+  report = null,
+  routes = [],
+  devAdminBypass = false,
+} = {}) {
   requireArgument(config, 'config')
   requireArgument(db, 'db')
   requireArgument(danmaku, 'danmaku')
@@ -275,6 +286,10 @@ export function createApp({ config, db, danmaku, turnstile, logger, report = nul
   // Absent report reads as production. See the header: this is the same rule
   // env-guard applies to an unstated deployment mode, for the same reason.
   const production = report === null ? true : report.production === true
+
+  if (devAdminBypass && (production || report?.nodeEnv !== 'development')) {
+    throw new Error('createApp: devAdminBypass is only valid for a development report')
+  }
 
   const app = Fastify({
     ...resolveLogger(logger, config),
@@ -292,12 +307,30 @@ export function createApp({ config, db, danmaku, turnstile, logger, report = nul
     ttlHours: config.session.ttlHours,
   })
 
+  // A local acceptance server should open the desk directly. It still uses the
+  // normal signed session row and cookie, so /api/me, public routes and the
+  // admin gate exercise the same path as a real session. The switch is passed
+  // only by server.mjs after env-guard has established NODE_ENV=development.
+  const devSession = devAdminBypass
+    ? createDevelopmentAdminSession(db, sessionCookie, config.session.ttlHours)
+    : null
+
   app.decorate('config', config)
   app.decorate('db', db)
   app.decorate('danmaku', danmaku)
   app.decorate('turnstile', turnstile)
   app.decorate('sessionCookie', sessionCookie)
   app.decorate('guardReport', report)
+
+  if (devSession !== null) {
+    app.addHook('onRequest', async (request, reply) => {
+      // Always prefer the local session in this explicitly local-only mode. It
+      // also repairs a stale cookie left by an earlier dev server instance.
+      if (sessionCookie.read(request) === devSession.token) return
+      request.headers.cookie = replaceCookie(request.headers.cookie, sessionCookie.name, devSession.token)
+      sessionCookie.set(reply, devSession.token)
+    })
+  }
 
   // Uploads never touch disk here: no route calls saveRequestFiles(), so the
   // only bytes that exist are the ones a route reads out of the stream — and
@@ -693,6 +726,50 @@ export function createSessionCookie({ secret, secure, ttlHours }) {
 }
 
 // ---------------------------------------------------------------------------
+
+function createDevelopmentAdminSession(db, sessionCookie, ttlHours) {
+  const now = new Date()
+  const createdAt = toCanonicalTimestamp(now)
+  const expiresAt = toCanonicalTimestamp(new Date(now.getTime() + ttlHours * 60 * 60 * 1000))
+  const submitter = db.prepare('SELECT id FROM submitters WHERE open_id = ?').get(DEV_ADMIN_OPEN_ID)
+
+  if (submitter === undefined) {
+    db.prepare(`
+      INSERT INTO submitters (id, open_id, display_name, display_name_seen_at, first_seen_at, last_seen_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      DEV_ADMIN_OPEN_ID,
+      DEV_ADMIN_OPEN_ID,
+      DEV_ADMIN_DISPLAY_NAME,
+      createdAt,
+      createdAt,
+      createdAt,
+    )
+  }
+
+  const token = sessionCookie.mint()
+  db.prepare(`
+    INSERT INTO sessions (id, token_sha256, submitter_id, bound_at, created_at, last_seen_at, expires_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    randomUUID(),
+    sessionCookie.hash(token),
+    DEV_ADMIN_OPEN_ID,
+    createdAt,
+    createdAt,
+    createdAt,
+    expiresAt,
+  )
+
+  return Object.freeze({ token })
+}
+
+function replaceCookie(header, name, value) {
+  const kept = typeof header === 'string'
+    ? header.split(';').map((part) => part.trim()).filter((part) => part !== '' && part.split('=', 1)[0] !== name)
+    : []
+  return [`${name}=${value}`, ...kept].join('; ')
+}
 
 function describeRefusal(error, config) {
   const build = typeof error?.code === 'string' ? REFUSALS[error.code] : undefined

@@ -72,6 +72,7 @@ import { join } from 'node:path'
 
 import { createApp } from '../../app.mjs'
 import { createDanmakuSource } from '../../lib/danmaku-source.mjs'
+import { DEV_ADMIN_OPEN_ID } from '../../lib/dev-admin.mjs'
 import { createLoudnessNormalizer } from '../../lib/loudness.mjs'
 import { createTurnstile } from '../../lib/turnstile.mjs'
 import adminRoutes from '../../routes/admin.mjs'
@@ -228,6 +229,7 @@ export async function boot(t, {
   maxFileBytes,
   maxClipsPerBatch,
   adminOpenIds = [OWNER.openId],
+  devAdminBypass = false,
 } = {}) {
   // 1. the database, stamped 'development' — the mark the guard reads and the
   //    mark schema.sql's bypass triggers consult. It is a one-way ratchet, so a
@@ -308,12 +310,15 @@ export async function boot(t, {
   // createApp asks for two sections env-guard's roster does not cover. Spread
   // rather than mutate: assertSafeConfig deep-froze what it cleared, and the
   // section objects below are the same references the sources were cleared for.
+  const effectiveAdminOpenIds = devAdminBypass
+    ? [...new Set([...adminOpenIds, DEV_ADMIN_OPEN_ID])]
+    : [...adminOpenIds]
   const whole = Object.freeze({
     ...config,
     nodeEnv: 'development',
     server: { trustProxy: false, logLevel: 'silent' },
     session: { secret: 'test-session-secret-'.padEnd(48, 'x'), ttlHours: 336, allowPlainHttp: true },
-    admin: { openIds: [...adminOpenIds] },
+    admin: { openIds: effectiveAdminOpenIds },
   })
 
   // 3. the sources. ONE turnstile for the whole process: its single-use token map
@@ -333,17 +338,27 @@ export async function boot(t, {
     turnstile,
     logger: false,
     report,
+    devAdminBypass,
     routes: [
       {
         plugin: publicRoutes,
-        options: { db, config: whole, danmakuSource: danmaku, turnstile, normalizer, now: clock.now },
+        options: {
+          db,
+          config: whole,
+          adminOpenIds: effectiveAdminOpenIds,
+          devAdminBypass,
+          danmakuSource: danmaku,
+          turnstile,
+          normalizer,
+          now: clock.now,
+        },
       },
       {
         // No cookieName, deliberately — see the header.
         plugin: adminRoutes,
         options: {
           db,
-          adminOpenIds: [...adminOpenIds],
+          adminOpenIds: effectiveAdminOpenIds,
           // All four keys, the way server.mjs passes them. It used to be two,
           // and routes/admin.mjs would then DERIVE the theme paths from
           // dirname(catalogFile) — which in this harness's layout lands on the

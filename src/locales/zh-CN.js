@@ -12,10 +12,11 @@ const zh_CN = {
         clipInfo: "音声信息",
         clipSource: "来源",
         clipDate: "日期",
-        clipDuration: "时间",
+        clipDuration: "时间点",
+        clipOriginal: "原视频",
         clipSubmitter: "投稿人",
         clipJump: "去原视频这一刻",
-        clipType: { label: "类型", video: "视频", stream: "直播" },
+        clipType: { label: "类型", video: "视频", stream: "直播切片" },
         yt_channel: "轴伊的频道",
         lang: "语言: "
     },

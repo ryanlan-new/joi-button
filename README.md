@@ -140,8 +140,14 @@ git tag v1.0.0 && git push origin v1.0.0   # 自动构建 + 自动部署
 
 ```bash
 npm install && npm run serve      # 前端，热更新
-cd server && npm install && npm run dev   # API 服务
+cd server && npm install
+LOCAL_SESSION_SECRET="$(node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))")"
+NODE_ENV=development DANMAKU_MODE=development TURNSTILE_MODE=development \
+TURNSTILE_SWITCH=off DEV_PLAIN_HTTP=1 HOST=127.0.0.1 PORT=8081 \
+SESSION_SECRET="$LOCAL_SESSION_SECRET" npm run dev   # API 服务；后台免登录
 ```
+
+`NODE_ENV=development` 时，API 会注入一个仅本机开发使用的管理员会话，打开 `/admin` 即可验收后台；该路径不会在生产环境启用。
 
 测试与质量门：`cd server && npm test`（服务端 450+ 用例）· `npm test`（前端）· `npm run contrast`（后台配色对比度门）。
 

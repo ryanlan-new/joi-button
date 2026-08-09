@@ -2,38 +2,23 @@
     <div class="clip-info-layer" @keydown.esc="close">
         <button class="clip-info-scrim" type="button" :aria-label="$t('action.close')" @click="close"></button>
         <aside ref="panel" class="clip-info-card" :class="{ 'is-dragging': dragging, 'is-closing': closing }" :style="panelStyle" role="dialog" aria-modal="true" :aria-label="$t('info.clipInfo')" :aria-describedby="'clip-info-title-' + clip.id" tabindex="-1">
-            <div class="clip-info-head" @pointerdown="startDrag" @pointermove="drag" @pointerup="releaseDrag" @pointercancel="cancelDrag">
-                <span class="clip-info-grip" aria-hidden="true"></span>
-                <h2 :id="'clip-info-title-' + clip.id" :lang="captionLang || undefined">{{ caption || $t('info.clipInfo') }}</h2>
-                <span class="clip-info-kicker">{{ $t('info.clipInfo') }}</span>
-                <button class="clip-info-close" type="button" @click="close">×</button>
+            <span class="clip-info-arrow" aria-hidden="true"></span>
+            <div class="clip-info-scroll">
+                <div class="clip-info-head" @pointerdown="startDrag" @pointermove="drag" @pointerup="releaseDrag" @pointercancel="cancelDrag">
+                    <span class="clip-info-grip" aria-hidden="true"></span>
+                    <h2 :id="'clip-info-title-' + clip.id" :lang="captionLang || undefined">{{ caption || $t('info.clipInfo') }}</h2>
+                    <button class="clip-info-close" type="button" @click="close">×</button>
+                </div>
+                <dl>
+                    <template v-for="row in infoRows">
+                        <dt :key="'label-' + row.key">{{ row.label }}</dt>
+                        <dd :key="'value-' + row.key">
+                            <a v-if="row.href" :href="row.href" target="_blank" rel="noopener noreferrer">{{ row.linkText }}</a>
+                            <span v-else>{{ row.value }}</span>
+                        </dd>
+                    </template>
+                </dl>
             </div>
-            <dl>
-                <template v-if="clip.source && clip.source.kind">
-                    <dt>{{ $t('info.clipType.label') }}</dt>
-                    <dd>{{ $t('info.clipType.' + clip.source.kind) }}</dd>
-                </template>
-                <template v-if="clip.source && clip.source.title">
-                    <dt>{{ $t('info.clipSource') }}</dt>
-                    <dd>{{ clip.source.title }}</dd>
-                </template>
-                <template v-if="clip.source && clip.source.date">
-                    <dt>{{ $t('info.clipDate') }}</dt>
-                    <dd>{{ clip.source.date }}</dd>
-                </template>
-                <template v-if="clip.source && clip.source.seconds !== undefined">
-                    <dt>{{ $t('info.clipDuration') }}</dt>
-                    <dd>{{ formatSeconds(clip.source.seconds) }}</dd>
-                </template>
-                <template v-if="sourceHref">
-                    <dt>{{ $t('info.clipSource') }}</dt>
-                    <dd><a :href="sourceHref" target="_blank" rel="noopener noreferrer">{{ sourceHasMoment ? $t('info.clipJump') : clip.source.url }}</a></dd>
-                </template>
-                <template v-if="clip.submitter && clip.submitter.name">
-                    <dt>{{ $t('info.clipSubmitter') }}</dt>
-                    <dd>{{ clip.submitter.name }}</dd>
-                </template>
-            </dl>
         </aside>
     </div>
 </template>
@@ -41,6 +26,8 @@
 <script>
 import Vue from 'vue'
 import Component from 'vue-class-component'
+import { buildInfoRows, desktopPanelStyle, formatSeconds } from './clip-info-behavior.mjs'
+import { sampleVelocity, shouldDismissOffset } from './interaction.mjs'
 
 @Component({
     props: {
@@ -84,9 +71,22 @@ class ClipInfoCard extends Vue {
     get panelStyle() {
         if (this.isMobile) return { transform: 'translateY(' + this.offsetY + 'px)' }
         if (!this.anchor) return {}
-        const left = Math.max(16, Math.min(this.anchor.left, window.innerWidth - 464))
-        const top = Math.max(88, Math.min(this.anchor.bottom + 10, window.innerHeight - 240))
-        return { left: left + 'px', top: top + 'px', right: 'auto', transformOrigin: 'top left' }
+        return desktopPanelStyle(this.anchor, { width: window.innerWidth, height: window.innerHeight })
+    }
+    get infoRows() {
+        return buildInfoRows(this.clip, {
+            typeLabel: this.$t('info.clipType.label'),
+            types: {
+                video: this.$t('info.clipType.video'),
+                stream: this.$t('info.clipType.stream'),
+            },
+            source: this.$t('info.clipSource'),
+            original: this.$t('info.clipOriginal'),
+            date: this.$t('info.clipDate'),
+            timePoint: this.$t('info.clipDuration'),
+            submitter: this.$t('info.clipSubmitter'),
+            jump: this.$t('info.clipJump'),
+        })
     }
     startDrag(event) {
         const target = event.target
@@ -113,21 +113,8 @@ class ClipInfoCard extends Vue {
     releaseDrag(event) {
         if (!this.dragging || this._pointerId !== event.pointerId) return
         this.dragging = false
-        const latest = this._samples[this._samples.length - 1]
-        let earlier = null
-        for (let index = this._samples.length - 2; index >= 0; index -= 1) {
-            if (latest.time - this._samples[index].time >= 12) { earlier = this._samples[index]; break }
-        }
-        let velocity = 0
-        if (earlier !== null) {
-            const elapsed = latest.time - earlier.time
-            velocity = elapsed > 120 ? 0 : (latest.y - earlier.y) / elapsed * 1000
-        }
-        velocity = Math.max(-1800, Math.min(1800, velocity))
-        const decay = .998
-        const projected = this.offsetY + (velocity / 1000) * 240 / (1 - decay)
-        const threshold = (this.$refs.panel.offsetHeight || 320) * .6
-        const dismiss = projected > threshold || velocity > 800
+        const velocity = sampleVelocity(this._samples)
+        const dismiss = shouldDismissOffset(this.offsetY, velocity, this.$refs.panel.offsetHeight || 320)
         this.animateOffset(dismiss ? (this.$refs.panel.offsetHeight || 320) : 0, dismiss)
         this._pointerId = null
     }
@@ -181,26 +168,8 @@ class ClipInfoCard extends Vue {
         this._dismissTimer = setTimeout(finish, duration + 80)
         tick()
     }
-    get sourceHref() {
-        const source = this.clip.source
-        if (!source || typeof source.url !== 'string' || source.url === '') return ''
-        if (!Number.isInteger(source.seconds) || source.seconds < 0) return source.url
-        const hashAt = source.url.indexOf('#')
-        const base = hashAt === -1 ? source.url : source.url.slice(0, hashAt)
-        const hash = hashAt === -1 ? '' : source.url.slice(hashAt)
-        const separator = base.indexOf('?') === -1 ? '?' : '&'
-        return base + separator + 't=' + encodeURIComponent(source.seconds) + hash
-    }
-    get sourceHasMoment() {
-        return Boolean(this.clip.source && Number.isInteger(this.clip.source.seconds) && this.clip.source.seconds >= 0)
-    }
     formatSeconds(value) {
-        if (!Number.isInteger(value) || value < 0) return ''
-        const hours = Math.floor(value / 3600)
-        const minutes = Math.floor((value % 3600) / 60)
-        const seconds = value % 60
-        const tail = (seconds < 10 ? '0' : '') + seconds
-        return hours > 0 ? hours + ':' + (minutes < 10 ? '0' : '') + minutes + ':' + tail : minutes + ':' + tail
+        return formatSeconds(value)
     }
     close() {
         if (this.isMobile) this.animateOffset(this.$refs.panel.offsetHeight || 320, true)
@@ -231,14 +200,32 @@ export default ClipInfoCard
     right: 1.5rem;
     width: min(28rem, calc(100vw - 3rem));
     max-height: calc(100vh - 8rem);
-    overflow: auto;
-    padding: 1rem 1.25rem;
-    background: var(--surface);
+    overflow: visible;
+    padding: 0;
+    background: rgba(255, 255, 255, .82);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    backdrop-filter: blur(24px) saturate(180%);
     color: var(--plum-700);
     border: 3px solid var(--candy-red);
     border-radius: 1rem;
     box-shadow: 0 .75rem 2rem var(--plum-900);
-    animation: clip-info-in .18s ease-out both;
+    animation: clip-info-in .24s cubic-bezier(.2, .8, .2, 1) both;
+}
+.clip-info-arrow {
+    position: absolute;
+    top: -9px;
+    left: var(--clip-info-arrow-left, 2rem);
+    width: 16px;
+    height: 16px;
+    background: rgba(255, 255, 255, .82);
+    border-top: 2px solid var(--candy-red);
+    border-left: 2px solid var(--candy-red);
+    transform: translateX(-50%) rotate(45deg);
+}
+.clip-info-scroll {
+    max-height: calc(100vh - 8rem);
+    overflow: auto;
+    padding: 1rem 1.25rem;
 }
 .clip-info-card.is-dragging { transition: none; }
 .clip-info-grip { display: none; }
@@ -251,12 +238,6 @@ export default ClipInfoCard
 .clip-info-head h2 {
     margin: 0;
     font-size: 1.2rem;
-}
-.clip-info-kicker {
-    margin-left: auto;
-    color: var(--plum-700);
-    font-size: .8rem;
-    font-weight: 700;
 }
 .clip-info-close {
     border: 0;
@@ -273,12 +254,22 @@ export default ClipInfoCard
 }
 .clip-info-card dt {
     font-weight: 700;
+    color: var(--plum-700);
+    font-size: .72rem;
+    letter-spacing: .08em;
+    text-transform: uppercase;
 }
 .clip-info-card dd {
     margin: 0;
     overflow-wrap: anywhere;
 }
 .clip-info-card a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 2rem;
+    padding: .2rem .7rem;
+    border: 2px solid var(--candy-red);
+    border-radius: 999px;
     color: var(--plum-700);
     text-decoration: underline;
 }
@@ -289,6 +280,7 @@ export default ClipInfoCard
         bottom: 0;
         width: 100%;
         max-height: 70vh;
+        overflow: visible;
         border-radius: 1rem 1rem 0 0;
         border-bottom: 0;
         animation: none;
@@ -296,20 +288,26 @@ export default ClipInfoCard
     }
     .clip-info-head { cursor: grab; flex-wrap: wrap; }
     .clip-info-head h2,
-    .clip-info-kicker,
     .clip-info-close { flex: 0 1 auto; }
     .clip-info-grip { flex: 0 0 100%; }
     .clip-info-grip { display: block; width: 2.5rem; height: .25rem; margin: -.25rem auto .5rem; border-radius: .25rem; background: var(--plum-700); }
+    .clip-info-scroll { max-height: 70vh; }
+    .clip-info-arrow { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
     .clip-info-card { scroll-behavior: auto; animation: clip-info-fade .12s ease-out both; transition: none; }
 }
 @media (prefers-reduced-transparency: reduce) {
     .clip-info-scrim { background: var(--surface-alt); opacity: 1; }
-    .clip-info-card { filter: none; }
+    .clip-info-card {
+        background: var(--surface);
+        -webkit-backdrop-filter: none;
+        backdrop-filter: none;
+        filter: none;
+    }
 }
 @keyframes clip-info-in {
-    from { opacity: 0; transform: scale(.96); filter: blur(8px); }
+    from { opacity: 0; transform: scale(.94); filter: blur(12px); }
     to { opacity: 1; transform: scale(1); filter: blur(0); }
 }
 @media (prefers-reduced-motion: reduce) {

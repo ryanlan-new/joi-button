@@ -59,6 +59,7 @@ import { assertSafeConfig } from './lib/env-guard.mjs'
 import { createDanmakuSource } from './lib/danmaku-source.mjs'
 import { createLoudnessNormalizer } from './lib/loudness.mjs'
 import { createTurnstile } from './lib/turnstile.mjs'
+import { DEV_ADMIN_OPEN_ID } from './lib/dev-admin.mjs'
 
 /**
  * A refusal this file composes itself.
@@ -121,6 +122,11 @@ async function main() {
     extraRequirements: CONFIG_EXTRA_REQUIREMENTS,
   })
 
+  const devAdminBypass = report.nodeEnv === 'development'
+  const adminOpenIds = devAdminBypass
+    ? [...new Set([...config.admin.openIds, DEV_ADMIN_OPEN_ID])]
+    : config.admin.openIds
+
   // --- 6. the sources ------------------------------------------------------
   // After the guard, and only after it: in development mode both of these check
   // that this exact config was cleared, and that it still holds the values it
@@ -146,6 +152,7 @@ async function main() {
     turnstile,
     logger: { level: config.server.logLevel },
     report,
+    devAdminBypass,
     // The routes, actually registered. createApp defaults this to [], which is
     // the correct default for a seam but was a trap for the one caller that has
     // to fill it: the process bound a socket, served its health checks and 404'd
@@ -155,13 +162,21 @@ async function main() {
     routes: [
       {
         plugin: publicRoutes,
-        options: { db, config, danmakuSource: danmaku, turnstile, normalizer },
+        options: {
+          db,
+          config,
+          adminOpenIds,
+          devAdminBypass,
+          danmakuSource: danmaku,
+          turnstile,
+          normalizer,
+        },
       },
       {
         plugin: adminRoutes,
         options: {
           db,
-          adminOpenIds: config.admin.openIds,
+          adminOpenIds,
           // ALL FOUR, from the plugin's own mapping. This line used to name
           // catalogFile and mediaDir only, which meant THEME_CSS_FILE and
           // WALLPAPER_DIR — both read by config.mjs and both REQUIRED absolute
@@ -195,7 +210,7 @@ async function main() {
       danmaku: danmaku.mode,
       turnstile: turnstile.mode,
       envFile: envFile.present ? envFile.path : null,
-      admins: config.admin.openIds.length,
+      admins: adminOpenIds.length,
       // Paths, not values: this line goes to the cluster log.
       database: config.database.file,
       mediaDir: config.storage.mediaDir,

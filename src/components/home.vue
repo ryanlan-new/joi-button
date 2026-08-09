@@ -111,6 +111,7 @@
     cursor: default;
 }
 .voice-row {
+    position: relative;
     display: inline-flex;
     align-items: center;
     max-width: 100%;
@@ -138,9 +139,16 @@
     pointer-events: none;
 }
 .clip-info-badge {
+    position: absolute;
+    top: 50%;
+    /* Float from the row's edge. It is not part of the row's flex sizing, so
+       the hidden state never reserves a phantom trailing slot in the copy. */
+    left: calc(100% + .5rem);
+    right: auto;
+    z-index: 2;
     width: 1.75rem;
     height: 1.75rem;
-    margin: 5px 5px 5px -2px;
+    margin: 0;
     padding: 0;
     border: 2px solid var(--candy-red);
     border-radius: 50%;
@@ -149,16 +157,23 @@
     font-weight: 700;
     line-height: 1.35rem;
     touch-action: manipulation;
-    opacity: .65;
-    transform: scale(.92);
+    opacity: 0;
+    transform: translateY(-50%) scale(.7);
     transition: opacity .16s ease, transform .16s ease;
-    pointer-events: auto;
+    pointer-events: none;
 }
-.voice-row:hover .clip-info-badge,
+@media (hover: hover) {
+    .voice-row:hover .clip-info-badge,
+    .voice-row:focus-within .clip-info-badge {
+        opacity: 1;
+        transform: translateY(-50%) scale(1);
+        pointer-events: auto;
+    }
+}
 .clip-info-badge:focus-visible,
 .clip-info-badge.is-persistent {
     opacity: 1;
-    transform: scale(1);
+    transform: translateY(-50%) scale(1);
     pointer-events: auto;
 }
 .clip-info-badge:focus-visible {
@@ -212,12 +227,6 @@
     background: var(--plum-700);
     cursor: pointer; /* Cursor on hover */
 }
-@media (hover: none) and (pointer: coarse) {
-    .clip-info-badge:not(.is-persistent) {
-        opacity: .65;
-        pointer-events: auto;
-    }
-}
 @media (prefers-reduced-motion: reduce) {
     .clip-info-badge { transition: none; }
 }
@@ -237,49 +246,14 @@ import Component from 'vue-class-component'
 // single owner now; this page reads what it installed.
 import { captionFor, catalog } from '../catalog.mjs'
 import ClipInfoCard from './ClipInfoCard.vue'
-
-function springValue(from, to, { duration = .34, bounce = 0, onUpdate, onComplete }) {
-    const damping = Math.max(.05, 1 - bounce)
-    const response = Math.max(.08, duration)
-    const omega = 12 / response
-    let value = from
-    let velocity = 0
-    let last = typeof performance === 'object' && performance.now ? performance.now() : Date.now()
-    let stopped = false
-    let frameId = null
-    const requestFrame = typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function'
-        ? (callback) => window.requestAnimationFrame(callback)
-        : (callback) => setTimeout(() => callback(Date.now()), 16)
-    const cancelFrame = typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function'
-        ? (id) => window.cancelAnimationFrame(id)
-        : (id) => clearTimeout(id)
-
-    const finish = () => {
-        if (stopped) return
-        stopped = true
-        if (frameId !== null) cancelFrame(frameId)
-        onUpdate(to)
-        onComplete()
-    }
-    const tick = (now) => {
-        if (stopped) return
-        const delta = Math.min(.032, Math.max(.001, (now - last) / 1000))
-        last = now
-        const displacement = value - to
-        const acceleration = -omega * omega * displacement - 2 * damping * omega * velocity
-        velocity += acceleration * delta
-        value += velocity * delta
-        onUpdate(value)
-        if (Math.abs(value - to) < .001 && Math.abs(velocity) < .01) return finish()
-        frameId = requestFrame(tick)
-    }
-    if (Math.abs(from - to) < .001) return finish()
-    frameId = requestFrame(tick)
-    return () => {
-        stopped = true
-        if (frameId !== null) cancelFrame(frameId)
-    }
-}
+import {
+    HOLD_THRESHOLD_MS,
+    MOVE_CANCEL_DISTANCE_PX,
+    movedBeyondThreshold,
+    scheduleHold,
+    shouldPlayAfterPress,
+    springValue,
+} from './interaction.mjs'
 
 @Component({
     components: { ClipInfoCard },
@@ -376,21 +350,29 @@ class HomePage extends Vue {
         if (event.currentTarget && event.currentTarget.setPointerCapture) event.currentTarget.setPointerCapture(event.pointerId);
         // The hold threshold is a timer, not an rAF: background tabs and a
         // renderer that stops painting must still cancel the click/submit path.
-        this._press.timer = setTimeout(() => {
-            if (!this._press.moved && this._press.clip === item) {
+        this._press.timer = scheduleHold({
+            threshold: HOLD_THRESHOLD_MS,
+            isActive: () => !this._press.moved && this._press.clip === item,
+            onHold: () => {
                 this._press.held = true;
                 this.stopHoldProgress();
                 this.holdProgress = 100;
                 this.openInfo(item, this._press.anchor);
             }
-        }, 420);
+        });
     }
     movePress(event, item) {
         if (!this._press || this._press.clip !== item || this._press.pointerId !== event.pointerId) return;
-        const distance = Math.hypot(event.clientX - this._press.startX, event.clientY - this._press.startY);
-        if (distance <= 10 || this._press.moved) return;
+        const moved = movedBeyondThreshold(
+            this._press.startX,
+            this._press.startY,
+            event.clientX,
+            event.clientY,
+            MOVE_CANCEL_DISTANCE_PX,
+        );
+        if (!moved || this._press.moved) return;
         this._press.moved = true;
-        if (this._press.timer !== null) clearTimeout(this._press.timer);
+        if (this._press.timer !== null) this._press.timer();
         this._press.timer = null;
         this.stopHoldProgress();
         this.holdProgress = 0;
@@ -399,8 +381,8 @@ class HomePage extends Vue {
     }
     endPress(event, item) {
         if (!this._press || this._press.clip !== item || this._press.pointerId !== event.pointerId) return;
-        const cancelled = this._press.moved || this._press.held;
-        if (this._press.timer !== null) clearTimeout(this._press.timer);
+        const cancelled = !shouldPlayAfterPress(this._press);
+        if (this._press.timer !== null) this._press.timer();
         this._press.timer = null;
         this.stopHoldProgress();
         this.holdProgress = 0;
@@ -411,7 +393,7 @@ class HomePage extends Vue {
     }
     cancelPress() {
         if (!this._press) return;
-        if (this._press.timer !== null) clearTimeout(this._press.timer);
+        if (this._press.timer !== null) this._press.timer();
         this.stopHoldProgress();
         this.holdProgress = 0;
         if (this._press.clip) this.springPress(this._press.clip.id, 1, { duration: .34, bounce: .2 });

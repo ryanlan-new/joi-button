@@ -197,6 +197,7 @@ import { readInstanceMode, toCanonicalTimestamp } from '../db/migrate.mjs'
 import { record as recordAudit } from '../lib/audit.mjs'
 import { danmakuCarriesPhrase, generateChallengePhrase } from '../lib/challenge-phrase.mjs'
 import { VISITOR_VERDICTS } from '../lib/danmaku-source.mjs'
+import { DEV_ADMIN_OPEN_ID } from '../lib/dev-admin.mjs'
 import { DEFAULT_POLICY } from '../lib/turnstile.mjs'
 import {
   CAPTION_MAX_LENGTH,
@@ -395,6 +396,8 @@ const AUDIO_WAV = Object.freeze({ contentType: 'audio/wav', ext: 'wav' })
  *   turnstile       createTurnstile(config.turnstile)          (required)
  *   now             () => Date, for a test that drives time
  *   cookieName, sessionTtlMinutes, maxPendingCodes             overrides
+ *   adminOpenIds    optional runtime allow-list override
+ *   devAdminBypass  assembled local-development session is active
  *
  * The source and the verifier are INJECTED rather than constructed here. The room
  * socket is reference-counted per process, so a second source would be a second
@@ -449,7 +452,8 @@ export default async function publicRoutes(fastify, options = {}) {
   // fresh deployment has no open_id for anyone, because an open_id is obtained
   // by logging in once through the danmaku flow. Nobody is an admin until the
   // owner puts their own value in ADMIN_OPEN_IDS.
-  const adminOpenIds = new Set(config.admin?.openIds ?? [])
+  const adminOpenIds = new Set(options.adminOpenIds ?? config.admin?.openIds ?? [])
+  if (options.devAdminBypass) adminOpenIds.add(DEV_ADMIN_OPEN_ID)
   const roomId = Number.isInteger(config.danmaku?.roomId) && config.danmaku.roomId > 0
     ? config.danmaku.roomId
     : null
@@ -1015,7 +1019,10 @@ export default async function publicRoutes(fastify, options = {}) {
     const session = currentSession(request)
     if (session !== null) {
       cancelVerification(session.id)
-      q.revokeSession.run({ id: session.id, revoked_at: stamp() })
+      // The local acceptance session is re-injected by app.mjs on the next
+      // request. Keep its row live so logout does not turn a no-login server
+      // into a login-required server until the next restart.
+      if (!options.devAdminBypass) q.revokeSession.run({ id: session.id, revoked_at: stamp() })
     }
     // Cleared unconditionally: a cookie naming a session this server has never
     // heard of should still stop being sent.

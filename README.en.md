@@ -40,29 +40,18 @@ Unlike the classic "static button page + edit a JSON + send a PR" approach, this
 
 The original Joi Button runs on exactly this code: **<https://joi-button.tcrn-tms.com>** — every button, wallpaper, and caption you see there grew out of the features below.
 
-## 📦 Latest release: v2.7.0 (2026-08-10)
-
-This release completes the INIT-002 frontend and admin overhaul and closes the interaction issues found during acceptance:
-
-- **Login-free local admin acceptance**: development mode injects a local admin session, so `/admin` opens directly; this path is never enabled in production;
-- **Stable clip-info interaction**: the ⓘ badge stays inside the button with a reserved lane and equal inner spacing, hover never moves the button, and clicking it still lets the badge disappear when the pointer leaves;
-- **Clearer submission fields**: source information is always visible, required fields use an asterisk, and optional fields no longer rely on “optional” filler labels;
-- **Completed quality gates**: frontend UI-contract tests, the server suite, admin contrast checks, and the production build were all verified for this release;
-- **Repository cleanup**: the historical `docs/` directory is removed from version control and remains ignored locally by `.gitignore`.
-
-Full notes: [v2.7.0 release](https://github.com/ryanlan-new/joi-button/releases/tag/v2.7.0).
-
 ## ✨ Feature tour
 
 ### 🎧 For visitors
 
-- **A wall of buttons**: voice clips arranged by group, click to play, with continuous playback;
+- **A wall of buttons**: voice clips arranged by group, click to play, with continuous playback; each button keeps its ⓘ info control fixed on the right with a reserved lane and equal inner spacing, so hover never changes the button layout, and the control hides again when the pointer leaves after viewing details;
 - **Trilingual site**: Simplified Chinese / English / Japanese — from button captions to the submission page to the admin desk, switchable in one click;
 - **Themes and wallpaper**: colors and wallpaper tuned in the admin desk go live on the next page load — no rebuild, no redeploy.
 
 ### 📮 Frictionless submission (kindness to fans)
 
 - **Upload right on the page**: MP3 / M4A / OGG / WAV, up to 5 MB per clip, up to 10 clips per batch (tunable);
+- **Explicit submission fields**: source information is always visible; required fields carry an asterisk, while optional fields are left unstarred;
 - **Identity in a single danmaku**: no accounts, no passwords — the site hands the submitter a one-time phrase, they post it as a danmaku in the streamer's Bilibili live room, and identity is verified. A passing fan really can submit on a whim;
 - **Automatic loudness normalization**: clips are normalized at intake, so nobody has to run MP3Gain and every button on the site plays at the same level;
 - **Duplicate interception**: a submission byte-identical to a published clip is politely refused on the spot, naming the button that already plays it;
@@ -108,13 +97,13 @@ A few details worth bragging about:
 | --- | --- | --- |
 | `BILI_APP_ID` | Project id (not secret) | The project page in the Open Platform console, after you create a project |
 | `BILI_ROOM_ID` | Live-room number (not secret) | The number in the room's URL, `live.bilibili.com/<number>` |
-| `BILI_ACCESS_KEY_ID`<br/>`BILI_ACCESS_KEY_SECRET` | Developer key pair (🔒 secret) | The console's **profile page** — note: not the project page |
+| `BILI_ACCESS_KEY_ID`<br/>`BILI_ACCESS_KEY_SECRET` | Developer key pair (🔒 secret) | Sent by official email after the application is approved |
 | `BILI_ROOM_OWNER_AUTH_CODE` | Streamer identity code, 身份码 (🔒 secret) | [play-live.bilibili.com](https://play-live.bilibili.com/) (the streamer-side "幻星" portal) |
 
 How to apply:
 
-1. Sign in at [open-live.bilibili.com](https://open-live.bilibili.com/) with a Bilibili account, enter the **creator service center**, complete the identity verification it asks for and submit an **individual developer** application (no company required; review takes ~2 business days);
-2. Once approved, copy `access_key_id` / `access_key_secret` from the console's **profile page**;
+1. Sign in at [open-live.bilibili.com](https://open-live.bilibili.com/) with a Bilibili account, enter the **creator service center**, complete the identity verification it asks for and submit an **individual developer** application (no company required);
+2. Once officially approved, the `access_key_id` / `access_key_secret` pair is sent by email;
 3. **Create a project** in the console; the **project ID** shown on its page is your `BILI_APP_ID`;
 4. Have **the streamer themselves** visit [play-live.bilibili.com](https://play-live.bilibili.com/) and fetch their **identity code** — it is what authorises this project for their room;
 5. Read the room number off the live room's URL.

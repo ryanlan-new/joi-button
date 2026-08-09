@@ -82,7 +82,9 @@
 
                     <div class="panel-block">
                         <div class="form-group">
-                            <label for="caption-locale">{{ $t('submit.editor.captionLangLabel') }}</label>
+                            <label for="caption-locale">
+                                {{ $t('submit.editor.captionLangLabel') }}<span class="required-mark" aria-hidden="true">*</span>
+                            </label>
                             <select id="caption-locale" v-model="captionLocale" class="form-control locale-select" :disabled="sending">
                                 <option v-for="loc in localeOptions" :key="loc.code" :value="loc.code">{{ loc.label }}</option>
                             </select>
@@ -106,7 +108,7 @@
                         <div class="row">
                             <div class="col-md-4 form-group">
                                 <label :for="row.key + '-name'">
-                                    {{ $t('submit.field.name') }}
+                                    {{ $t('submit.field.name') }}<span class="required-mark" aria-hidden="true">*</span>
                                     <span class="muted">{{ $t('submit.field.counter', { n: row.name.length, max: nameMax }) }}</span>
                                 </label>
                                 <input :id="row.key + '-name'"
@@ -121,7 +123,7 @@
 
                             <div class="col-md-4 form-group">
                                 <label :for="row.key + '-caption'">
-                                    {{ $t('submit.field.caption') }}
+                                    {{ $t('submit.field.caption') }}<span class="required-mark" aria-hidden="true">*</span>
                                     <span class="muted">{{ $t('submit.field.counter', { n: row.caption.length, max: captionMax }) }}</span>
                                 </label>
                                 <input :id="row.key + '-caption'"
@@ -135,14 +137,14 @@
                             </div>
 
                             <div class="col-md-4 form-group">
-                                <label :for="row.key + '-group'">{{ $t('submit.field.group') }}</label>
+                                <label :for="row.key + '-group'">{{ $t('submit.field.group') }}<span class="required-mark" aria-hidden="true">*</span></label>
                                 <select :id="row.key + '-group'" v-model="row.groupId" class="form-control" :disabled="sending">
                                     <option value="">{{ $t('submit.field.chooseGroup') }}</option>
                                     <option v-for="group in groupOptions" :key="group.id" :value="group.id">{{ group.label }}</option>
                                     <option :value="newGroupChoice">{{ $t('submit.field.groupNew') }}</option>
                                 </select>
                                 <template v-if="row.groupId === newGroupChoice">
-                                    <label :for="row.key + '-newgroup'" class="stacked-label">{{ $t('submit.field.newGroup') }}</label>
+                                    <label :for="row.key + '-newgroup'" class="stacked-label">{{ $t('submit.field.newGroup') }}<span class="required-mark" aria-hidden="true">*</span></label>
                                     <input :id="row.key + '-newgroup'"
                                            v-model.trim="row.newGroup"
                                            class="form-control"
@@ -156,9 +158,7 @@
                         </div>
 
                         <div class="form-group">
-                            <label :for="row.key + '-note'">
-                                {{ $t('submit.field.note') }} <span class="muted">{{ $t('submit.field.optional') }}</span>
-                            </label>
+                            <label :for="row.key + '-note'">{{ $t('submit.field.note') }}</label>
                             <input :id="row.key + '-note'"
                                    v-model.trim="row.note"
                                    class="form-control"
@@ -167,8 +167,8 @@
                                    :disabled="sending">
                         </div>
 
-                        <details class="source-block">
-                            <summary>{{ $t('submit.field.source') }} <span class="muted">{{ $t('submit.field.optional') }}</span></summary>
+                        <div class="source-block" role="group" :aria-labelledby="row.key + '-source-heading'">
+                            <p :id="row.key + '-source-heading'" class="source-heading">{{ $t('submit.field.source') }}</p>
                             <div class="row source-fields">
                                 <div class="col-md-3 form-group">
                                     <label :for="row.key + '-source-kind'">{{ $t('submit.field.sourceKind') }}</label>
@@ -195,7 +195,7 @@
                                     <input :id="row.key + '-source-url'" v-model.trim="row.source.url" class="form-control" type="url" :disabled="sending">
                                 </div>
                             </div>
-                        </details>
+                        </div>
 
                         <div v-if="sending || row.progress > 0" class="progress-line">
                             <span class="progress-track"
@@ -424,6 +424,11 @@
     display: block;
     margin-top: 6px;
 }
+.required-mark {
+    margin-left: .2rem;
+    color: var(--candy-red);
+    font-weight: 700;
+}
 .field-hint {
     display: block;
     color: var(--cocoa-700);
@@ -531,9 +536,9 @@
     padding-top: .5rem;
     border-top: 1px solid var(--candy-red);
 }
-.source-block summary {
+.source-heading {
+    margin: 0;
     color: var(--plum-700);
-    cursor: pointer;
     font-weight: 700;
 }
 .source-fields {

@@ -27,6 +27,7 @@ const {
 } = await import('../src/components/interaction.mjs')
 
 const homeSource = readFileSync(new URL('../src/components/home.vue', import.meta.url), 'utf8')
+const submitSource = readFileSync(new URL('../src/components/submit.vue', import.meta.url), 'utf8')
 const infoCardSource = readFileSync(new URL('../src/components/ClipInfoCard.vue', import.meta.url), 'utf8')
 const appSource = readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8')
 const locales = {
@@ -183,4 +184,16 @@ test('INC-010/011: the badge overlays the pill without reserving hidden space', 
   assert.match(infoCardSource, /clip-info-arrow/)
   assert.match(infoCardSource, /@media \(max-width: 640px\)/)
   assert.match(infoCardSource, /bottom:\s*0/)
+})
+
+test('submit editor: source information is visible and required fields use stars', () => {
+  assert.match(submitSource, /class="source-block"[\s\S]*?class="source-heading"/)
+  assert.doesNotMatch(submitSource, /<details class="source-block"|<summary>/)
+  assert.doesNotMatch(submitSource, /submit\.field\.optional|可不填|optional|任意/)
+  assert.equal((submitSource.match(/class="required-mark"/g) || []).length, 5)
+  assert.match(submitSource, /submit\.field\.name[\s\S]*?class="required-mark"/)
+  assert.match(submitSource, /submit\.field\.caption[\s\S]*?class="required-mark"/)
+  assert.match(submitSource, /submit\.field\.group[\s\S]*?class="required-mark"/)
+  assert.match(submitSource, /submit\.field\.newGroup[\s\S]*?class="required-mark"/)
+  assert.match(submitSource, /submit\.editor\.captionLangLabel[\s\S]*?class="required-mark"/)
 })

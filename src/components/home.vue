@@ -49,7 +49,7 @@
         <div v-for="category in voices" v-bind:key="category.id">
             <div class="cate-header" :lang="captionLang(category)">{{ $t("voicecategory." + category.id) }}</div>
             <div class="cate-body">
-                <div class="voice-row" v-for="clip in category.clips" v-bind:key="clip.id">
+                <div class="voice-row" :class="{ 'is-info-visible': detailsEnabled }" v-for="clip in category.clips" v-bind:key="clip.id">
                     <button class="btn btn-new voice-play"
                             :class="{ 'is-playing': voice.id === clip.id }"
                             :style="pressStyle(clip)"
@@ -124,6 +124,18 @@
     -webkit-user-select: none;
     -webkit-touch-callout: none;
 }
+/* Only the visible state gets a protected trailing lane. The default keeps
+   the badge out of layout entirely, so a hover-only detail affordance cannot
+   leave blank copy space behind when it is hidden. */
+@media (hover: hover) {
+    .voice-row:hover .voice-play,
+    .voice-row:focus-within .voice-play {
+        padding-right: 30px;
+    }
+}
+.voice-row.is-info-visible .voice-play {
+    padding-right: 30px;
+}
 .voice-label,
 .hold-sweep {
     position: relative;
@@ -141,10 +153,11 @@
 .clip-info-badge {
     position: absolute;
     top: 50%;
-    /* Float from the row's edge. It is not part of the row's flex sizing, so
-       the hidden state never reserves a phantom trailing slot in the copy. */
-    left: calc(100% + .5rem);
-    right: auto;
+    /* The row is the pill-sized containing block. This keeps the badge
+       visually inside the trailing edge while absolute positioning keeps the
+       hidden state out of the row's flex sizing. */
+    right: 8px;
+    left: auto;
     z-index: 2;
     width: 1.75rem;
     height: 1.75rem;

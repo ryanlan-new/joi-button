@@ -60,7 +60,7 @@ function* strings(value, path = '$') {
 
 /** One submitted item, waiting for a decision, plus the owner's cookie. */
 async function oneWaitingItem(t) {
-  const ctx = await boot(t, { turnstileSwitch: 'off' })
+  const ctx = await boot(t)
   seedGroup(ctx.db, { id: 'voices-core', displayName: 'Core' })
   const owner = await login(ctx, OWNER)
   const visitor = await login(ctx, VISITOR)

@@ -45,7 +45,7 @@
                 </div>
                 <div class="adm-sub">
                     <div>{{ $t("admin.queue.submittedAt") }} <span class="adm-num">{{ batch.submittedAt }}</span></div>
-                    <div>{{ turnstileText(batch) }}</div>
+                    <div>{{ sourceText(batch) }}</div>
                 </div>
             </div>
 
@@ -187,10 +187,10 @@ class ReviewQueue extends Vue {
         return Math.round(bytes / 1024)
     }
 
-    turnstileText(batch) {
-        if (!batch.turnstile.required) return this.$t('admin.queue.turnstileNotRequired')
-        return this.$t('admin.queue.turnstileRequired', {
-            verdict: batch.turnstile.verdict === null ? '-' : batch.turnstile.verdict,
+    sourceText(batch) {
+        if (!batch.source || batch.source.channel === 'web') return this.$t('admin.queue.sourceWeb')
+        return this.$t('admin.queue.sourceApi', {
+            label: batch.source.clientClaim || this.$t('admin.queue.sourceUnnamed'),
         })
     }
 }

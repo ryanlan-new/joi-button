@@ -10,7 +10,7 @@
 import { readFileSync } from 'node:fs';
 
 /** Version this code writes.  Bump on every schema change. */
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 /**
  * Oldest catalogue parser that can still read a document produced at
@@ -161,6 +161,23 @@ export const POST_BASELINE_STEPS = [
               AND length(source_url) > 7));
           ALTER TABLE clips ADD COLUMN credit_hidden INTEGER NOT NULL DEFAULT 0
             CHECK (credit_hidden IN (0, 1));
+        `,
+    },
+    {
+        version: 7,
+        // API credentials share the sessions table so batches.session_id and
+        // verify_codes.session_id remain one continuous audit chain. Existing
+        // rows are browser sessions by default; the API-only fields are nullable
+        // and do not change their meaning.
+        sql: `
+          ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'cookie'
+            CHECK (kind IN ('cookie', 'api'));
+          ALTER TABLE sessions ADD COLUMN client_label TEXT
+            CHECK (client_label IS NULL OR kind = 'api');
+          ALTER TABLE sessions ADD COLUMN last_used_at TEXT
+            CHECK (last_used_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z');
+          ALTER TABLE sessions ADD COLUMN token_issued_at TEXT
+            CHECK (token_issued_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z');
         `,
     },
 ];

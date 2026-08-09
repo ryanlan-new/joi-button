@@ -157,18 +157,6 @@ export default {
         seeMy: '去「我投过的」看它们的状态',
       },
 
-      turnstile: {
-        heading: '先过一下人机验证',
-        why: '这个站偶尔会要一次验证，尤其是第一次投稿的时候。',
-        loading: '正在加载验证组件…',
-        unavailable:
-          '验证组件没加载出来（它是 Cloudflare 的，有的网络到不了）。你可以直接点发出去试试：如果服务器坚持要验证，会明明白白告诉你，你写的东西一个字都不会丢。',
-        retryLoad: '再试着加载一次',
-        solveFirst: '请先完成上面的验证，然后再点一次发出去。',
-        expired: '验证过期了，再点一次上面的方框。',
-        failedAgain: '这次验证没通过，重新做一次再发。',
-      },
-
       my: {
         heading: '我投过的',
         empty: '你还没投过东西。',
@@ -230,8 +218,8 @@ export default {
         malformed_multipart: '上传还没传完就断了，请再试一次。',
         no_items: '这次提交里一条都没有。',
         no_valid_items: '这次提交里没有一条能收下，什么都没保存。',
-        challenge_required: '这次提交需要过一次人机验证，做完再发一次。',
-        challenge_failed: '人机验证没通过，请重新做一次。',
+        rate_limited: '一分钟内只能收下一批投稿，请在 {seconds} 秒后再试。',
+        storage_exhausted: '站点存储空间不足，暂时不能接收投稿，请稍后再试。',
 
         // Per item
         metadata_missing: '这个文件在 metadata 里没有对应的条目。',
@@ -412,18 +400,6 @@ export default {
         seeMy: 'See how they are doing',
       },
 
-      turnstile: {
-        heading: 'A quick human check first',
-        why: 'This site asks for one occasionally, and nearly always on a first submission.',
-        loading: 'Loading the check…',
-        unavailable:
-          "The check did not load. It is Cloudflare's, and some networks cannot reach it. Press send anyway: if the server insists on a check it will say so plainly, and not one word you typed is lost.",
-        retryLoad: 'Try loading it again',
-        solveFirst: 'Finish the check above, then press send once more.',
-        expired: 'The check expired. Tick the box again.',
-        failedAgain: 'That check was not accepted. Do it once more and send again.',
-      },
-
       my: {
         heading: 'What I sent',
         empty: 'You have not sent anything yet.',
@@ -484,9 +460,8 @@ export default {
         malformed_multipart: 'The upload ended before it was complete. Please try again.',
         no_items: 'That submission carried no clips at all.',
         no_valid_items: 'None of the clips in that submission could be accepted; nothing was saved.',
-        challenge_required:
-          'A verification challenge is needed for this submission. Solve it and send the submission again.',
-        challenge_failed: 'The verification challenge was not accepted. Please solve it again.',
+        rate_limited: 'Only one batch may be accepted per minute. Try again in {seconds} seconds.',
+        storage_exhausted: 'The site is low on storage and cannot accept submissions right now. Try again later.',
 
         metadata_missing: 'This file has no matching entry in the metadata.',
         missing_file: 'This item has metadata but no file.',
@@ -665,18 +640,6 @@ export default {
         seeMy: '状態を見にいく',
       },
 
-      turnstile: {
-        heading: '先に人間かどうかの確認を',
-        why: 'ときどき、とくに初回の投稿では確認をお願いしています。',
-        loading: '確認ウィジェットを読み込み中…',
-        unavailable:
-          '確認ウィジェットが読み込めませんでした。Cloudflare のもので、届かない回線があります。そのまま送信を押して大丈夫です。サーバーが確認を求めるなら、はっきりそう返ってきますし、書いた内容はひとつも失われません。',
-        retryLoad: 'もう一度読み込む',
-        solveFirst: '上の確認を終えてから、もう一度送信を押してください。',
-        expired: '確認の有効期限が切れました。もう一度チェックしてください。',
-        failedAgain: '確認が通りませんでした。やり直してから送ってください。',
-      },
-
       my: {
         heading: '送ったもの',
         empty: 'まだ何も送っていません。',
@@ -737,8 +700,8 @@ export default {
         malformed_multipart: 'アップロードが完了する前に切れました。もう一度お試しください。',
         no_items: 'この送信には一本も入っていませんでした。',
         no_valid_items: '受け取れる一本がありませんでした。何も保存していません。',
-        challenge_required: 'この送信には確認が必要です。確認を終えてからもう一度送ってください。',
-        challenge_failed: '確認が受理されませんでした。もう一度お願いします。',
+        rate_limited: '1 分間に受け付けられる投稿は 1 批だけです。{seconds} 秒後にもう一度お試しください。',
+        storage_exhausted: 'サイトの空き容量が不足しているため、いまは投稿を受け付けられません。後でもう一度お試しください。',
 
         metadata_missing: 'このファイルに対応する metadata の項目がありません。',
         missing_file: 'この項目には説明はありますが、ファイルがありません。',

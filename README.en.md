@@ -55,7 +55,8 @@ The original Joi Button runs on exactly this code: **<https://joi-button.tcrn-tm
 - **Identity in a single danmaku**: no accounts, no passwords — the site hands the submitter a one-time phrase, they post it as a danmaku in the streamer's Bilibili live room, and identity is verified. A passing fan really can submit on a whim;
 - **Automatic loudness normalization**: clips are normalized at intake, so nobody has to run MP3Gain and every button on the site plays at the same level;
 - **Duplicate interception**: a submission byte-identical to a published clip is politely refused on the spot, naming the button that already plays it;
-- **Optional human check**: Cloudflare Turnstile behind a switch; running with it off is fully supported.
+- **Shared abuse and storage gates**: web and third-party API submissions share a one-batch-per-minute limit; low disk space refuses submissions and admin uploads before they write.
+- **Third-party API**: tokens, the machine-readable submission contract, and a dependency-free example live in [docs/api.md](docs/api.md).
 
 ### 🛡️ The review desk (kindness to the owner)
 
@@ -143,8 +144,7 @@ git tag v1.0.0 && git push origin v1.0.0   # auto-build + auto-deploy
 npm install && npm run serve      # frontend with hot reload
 cd server && npm install
 LOCAL_SESSION_SECRET="$(node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))")"
-NODE_ENV=development DANMAKU_MODE=development TURNSTILE_MODE=development \
-TURNSTILE_SWITCH=off DEV_PLAIN_HTTP=1 HOST=127.0.0.1 PORT=8081 \
+NODE_ENV=development DANMAKU_MODE=development DEV_PLAIN_HTTP=1 HOST=127.0.0.1 PORT=8081 \
 SESSION_SECRET="$LOCAL_SESSION_SECRET" npm run dev   # API; local admin is login-free
 ```
 

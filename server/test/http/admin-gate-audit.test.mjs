@@ -47,7 +47,7 @@ const ABSENT_ID = '00000000-0000-0000-0000-000000000000'
  * itself an assertion that the surface composes.
  */
 async function reviewDesk(t) {
-  const ctx = await boot(t, { turnstileSwitch: 'off' })
+  const ctx = await boot(t)
   seedGroup(ctx.db, { id: 'voices-core', displayName: 'Core' })
   const owner = await login(ctx, OWNER)
   const visitor = await login(ctx, VISITOR)
@@ -106,7 +106,7 @@ test('/api/me tells a session whether IT is an admin, and never anything about a
 test('with no ADMIN_OPEN_IDS configured, nobody is an admin — including the owner', async (t) => {
   // The safe reading of "not configured": an open_id is only obtainable by
   // logging in once through the danmaku flow, so a fresh deployment has none.
-  const ctx = await boot(t, { turnstileSwitch: 'off', adminOpenIds: [] })
+  const ctx = await boot(t, { adminOpenIds: [] })
   const owner = await login(ctx, OWNER)
 
   assert.equal((await get(ctx.app, '/api/me', { cookie: owner })).json().submitter.admin, false)

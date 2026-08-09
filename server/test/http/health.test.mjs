@@ -129,9 +129,16 @@ test('health carries the limits and the bypass banner, and the room session is r
 
   assert.equal(body.limits.maxClipsPerBatch, 10)
   assert.equal(body.limits.maxFileBytes, 5 * 1024 * 1024)
+  assert.equal(typeof body.storage.totalBytes, 'number')
+  assert.equal(typeof body.storage.usedBytes, 'number')
+  assert.equal(typeof body.storage.availableBytes, 'number')
+  assert.equal(body.storage.reserveBytes, 256 * 1024 * 1024)
+  assert.equal(typeof body.storage.inflightBytes, 'number')
+  assert.equal(typeof body.storage.refusing, 'boolean')
+  assert.equal(body.readiness.includes('storage'), false)
 
-  // This harness runs both bypasses (development danmaku, development
-  // Turnstile), so the banner MUST be present here. A null banner in this
+  // This harness runs the development danmaku bypass, so the banner MUST be
+  // present here. A null banner in this
   // fixture would mean the banner is not being produced at all, and the
   // production-side guarantee — env-guard refuses to start with a bypass in
   // production — would be the only thing left holding, with nothing observable

@@ -27,11 +27,10 @@
 // stdout is KEY=VALUE lines, one per key, no comments and no blanks — ready to
 // pipe into `kubectl create secret generic --from-env-file=/dev/stdin`.
 // stderr carries the human summary: how many keys, and which ones are EMPTY.
-// Empty is reported rather than refused: an empty value is a legitimate state
-// for TURNSTILE_SITE_KEY on a deployment that has not registered a widget yet,
-// and the authority on what this deployment requires is server/lib/env-guard.mjs,
-// which refuses at boot with a message naming the variable. Duplicating that
-// policy here would give it two homes and let them drift.
+// Empty is reported rather than refused. The authority on what this deployment
+// requires is server/lib/env-guard.mjs, which refuses at boot with a message
+// naming the variable. Duplicating that policy here would give it two homes and
+// let them drift.
 
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'

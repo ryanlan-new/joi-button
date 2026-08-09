@@ -564,13 +564,10 @@ export function createBiliTransport(config = {}) {
     )
   }
 
-  // The one seam, and it is a bypass in exactly the sense env-guard uses the
-  // word: whoever sets it decides which host answers "is this the owner's room",
-  // and therefore who gets to be anybody. It is shaped like turnstile.mjs's
-  // verifyUrl for that reason, config.mjs must never populate it, and
-  // env-guard's BYPASS_FLAGS roster should carry it at refuse severity beside
-  // turnstile.verifyUrl. Everything else the tests need is reachable without a
-  // seam, because the wss URL arrives in the gateway's own answer.
+  // The gateway URL is the only transport seam: it is useful to tests, but
+  // production configuration must never populate it from a verification
+  // shortcut. Everything else the tests need is reachable without a seam,
+  // because the wss URL arrives in the gateway's own answer.
   const baseUrl = config.gatewayBaseUrl ?? OPEN_LIVE_BASE_URL
 
   const opts = Object.freeze({

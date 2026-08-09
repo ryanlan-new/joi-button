@@ -83,7 +83,7 @@ spec:
               env:
                 # NOT envFrom the runtime Secret. This process opens the database
                 # read-only and binds no socket, so it needs no session key, no
-                # Bilibili credential and no Turnstile secret — and a backup that
+                # Bilibili credential — and a backup that
                 # mounted them would put every secret in the site into a pod
                 # whose whole job is to copy data somewhere else.
                 - name: NODE_ENV

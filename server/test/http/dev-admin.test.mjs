@@ -21,13 +21,13 @@ test('an assembled development server admits the local admin without a login coo
 })
 
 test('the local admin bypass is rejected when the guard reports production', async (t) => {
-  const { config, db, danmaku, turnstile, report } = await boot(t)
+  const { config, db, danmaku, storageGuard, report } = await boot(t)
 
   assert.throws(() => createApp({
     config,
     db,
     danmaku,
-    turnstile,
+    storageGuard,
     logger: false,
     report: { ...report, nodeEnv: 'production', production: true },
     devAdminBypass: true,

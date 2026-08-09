@@ -57,7 +57,7 @@ function del(app, url, { cookie } = {}) {
 
 /** The owner, signed in, plus the palette their form would open pre-filled with. */
 async function desk(t) {
-  const ctx = await boot(t, { turnstileSwitch: 'off' })
+  const ctx = await boot(t)
   const cookie = await login(ctx, OWNER)
   const opened = await get(ctx.app, THEME_URL, { cookie })
   assert.equal(opened.statusCode, 200, opened.payload)
@@ -83,7 +83,7 @@ const SVG_CALLED_PNG = Buffer.from(
 // the gate
 
 test('a stranger gets 404 from all four theme routes, and it is the missing-route answer', async (t) => {
-  const ctx = await boot(t, { turnstileSwitch: 'off' })
+  const ctx = await boot(t)
   const visitor = await login(ctx, VISITOR)
   const picture = await png()
 

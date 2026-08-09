@@ -94,6 +94,24 @@ function schemaAtV1() {
   assert.equal(v1.includes('source_kind'), false, 'the v1 fixture still mentions source_kind')
   assert.equal(v1.includes('credit_hidden'), false, 'the v1 fixture still mentions credit_hidden')
 
+  // v7: API sessions. Remove the four added declarations and the cross-column
+  // check so an old sessions table can climb through the real ALTER statements.
+  const beforeSessions = v1
+  v1 = v1
+    .split('\n')
+    .filter((line) => {
+      const trimmed = line.trimStart()
+      return !trimmed.startsWith('kind          TEXT')
+        && !trimmed.startsWith('client_label  TEXT')
+        && !line.includes('last_used_at')
+        && !line.includes('token_issued_at')
+        && !trimmed.startsWith('CHECK (kind = \'api\' OR client_label IS NULL)')
+    })
+    .join('\n')
+  assert.notEqual(v1, beforeSessions, 'the v7 session fixture strip changed nothing')
+  assert.equal(v1.includes('last_used_at'), false, 'the v1 fixture still mentions last_used_at')
+  assert.equal(v1.includes('token_issued_at'), false, 'the v1 fixture still mentions token_issued_at')
+
   assert.ok(v1.includes('CREATE TABLE IF NOT EXISTS themes'), 'the strip removed more than it should have')
   assert.ok(v1.includes('CREATE TABLE IF NOT EXISTS clips'), 'the strip removed more than it should have')
   assert.ok(v1.includes('CREATE TABLE IF NOT EXISTS verify_codes'), 'the strip removed more than it should have')
@@ -114,6 +132,10 @@ function openV1(t) {
     INSERT INTO schema_version (id, version, min_compatible_version, applied_at)
     VALUES (1, 1, 1, '2026-07-31T00:00:00Z')
   `).run()
+  db.prepare(`
+    INSERT INTO sessions (id, token_sha256, created_at, last_seen_at, expires_at)
+    VALUES ('ses-legacy', ?, '2026-07-31T00:00:00Z', '2026-07-31T00:00:00Z', '2026-08-01T00:00:00Z')
+  `).run('d'.repeat(64))
 
   assert.equal(
     db.prepare("SELECT count(*) n FROM pragma_table_info('themes') WHERE name='wallpaper_path'").get().n,
@@ -124,14 +146,14 @@ function openV1(t) {
 }
 
 test('the version roster is self-consistent', () => {
-  assert.equal(SCHEMA_VERSION, 6)
+  assert.equal(SCHEMA_VERSION, 7)
   // MIN_COMPATIBLE stays 1 on purpose: the theme/verify_codes columns and the
   // two admin tables are all invisible to a catalogue reader, and src/catalog.mjs
   // only refuses a document whose minCompatibleVersion EXCEEDS what it knows.
   // Bumping it would make every tab holding a year-cached chunk refuse a
   // catalogue it can read perfectly well.
   assert.equal(MIN_COMPATIBLE_SCHEMA_VERSION, 1)
-  assert.deepEqual(POST_BASELINE_STEPS.map((step) => step.version), [2, 3, 4, 5, 6])
+  assert.deepEqual(POST_BASELINE_STEPS.map((step) => step.version), [2, 3, 4, 5, 6, 7])
 })
 
 test('a v1 database gains themes.wallpaper_path from the post-baseline step', (t) => {
@@ -152,6 +174,21 @@ test('a v1 database gains themes.wallpaper_path from the post-baseline step', (t
   assert.equal(
     db.prepare("SELECT count(*) n FROM pragma_table_info('verify_codes') WHERE name='challenge_text'").get().n,
     1,
+  )
+  for (const column of ['kind', 'client_label', 'last_used_at', 'token_issued_at']) {
+    assert.equal(
+      db.prepare("SELECT count(*) n FROM pragma_table_info('sessions') WHERE name = ?").get(column).n,
+      1,
+    )
+  }
+  assert.deepEqual(
+    db.prepare('SELECT kind, client_label, last_used_at, token_issued_at FROM sessions WHERE id = ?').get('ses-legacy'),
+    { kind: 'cookie', client_label: null, last_used_at: null, token_issued_at: null },
+  )
+  assert.throws(
+    () => db.prepare('UPDATE sessions SET client_label = ? WHERE id = ?').run('not-api', 'ses-legacy'),
+    /CHECK/,
+    'a migrated cookie session must not acquire an API client label',
   )
 })
 

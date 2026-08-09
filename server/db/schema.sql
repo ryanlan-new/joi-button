@@ -382,7 +382,8 @@ CREATE TABLE IF NOT EXISTS submitters (
 
 
 -- ---------------------------------------------------------------------------
--- sessions — the browser session, which may or may not yet know who it is.
+-- sessions — browser cookies and API credentials, which may or may not yet
+-- know who they belong to.
 --
 -- The cookie value is never stored, only its sha256: a leaked database backup
 -- should not hand over live sessions.  Lookup is by hash, hence the UNIQUE.
@@ -391,14 +392,23 @@ CREATE TABLE IF NOT EXISTS submitters (
 -- — the visitor needs a session to be issued a verification code in the first
 -- place.  The paired CHECK stops the half-bound state where a session points at
 -- a submitter but nothing records when that happened.
+--
+-- kind = 'cookie' rows hash the browser cookie. kind = 'api' rows hash the
+-- signed Bearer token and retain the client label and last-use time for the API
+-- audit. token_issued_at separates an API challenge session from a credential
+-- that has actually been handed to a client.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS sessions (
     id            TEXT NOT NULL PRIMARY KEY,
     token_sha256  TEXT NOT NULL UNIQUE,
+    kind          TEXT NOT NULL DEFAULT 'cookie' CHECK (kind IN ('cookie', 'api')),
+    client_label  TEXT CHECK (client_label IS NULL OR kind = 'api'),
     submitter_id  TEXT REFERENCES submitters (id) ON DELETE CASCADE,
     bound_at      TEXT,
     created_at    TEXT NOT NULL,
     last_seen_at  TEXT NOT NULL,
+    last_used_at  TEXT,
+    token_issued_at TEXT,
     expires_at    TEXT NOT NULL,
     revoked_at    TEXT,
 
@@ -406,10 +416,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     CHECK (length(token_sha256) = 64 AND token_sha256 NOT GLOB '*[^0-9a-f]*'),
     CHECK (created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z'),
     CHECK (last_seen_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z'),
+    CHECK (last_used_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z'),
+    CHECK (token_issued_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z'),
     CHECK (expires_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z'),
     CHECK (bound_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z'),
     CHECK (revoked_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z'),
     CHECK (expires_at > created_at),
+    CHECK (kind = 'api' OR client_label IS NULL),
     CHECK ((submitter_id IS NULL) = (bound_at IS NULL))
 ) STRICT;
 
@@ -627,8 +640,10 @@ END;
 -- submitter_id is NOT NULL from creation: submission requires identity, so a
 -- batch that does not know whose it is has no legitimate state to be in.
 --
--- Turnstile is decided at submit time, not at page load, so the verdict lives
--- on the batch and not on the session.
+-- The three columns below are retained as historical evidence after the 2026-08
+-- identity-policy retirement. They are not a live gate: new writes always use
+-- required = 0 and verdict/decided_at = NULL. Existing rows and their triggers
+-- remain queryable so the old audit history is not rewritten or erased.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS batches (
     id                    TEXT NOT NULL PRIMARY KEY,
@@ -653,7 +668,7 @@ CREATE TABLE IF NOT EXISTS batches (
     CHECK (state NOT IN ('submitted', 'resolved') OR submitted_at IS NOT NULL),
     CHECK ((state = 'resolved') = (resolved_at IS NOT NULL)),
     CHECK ((turnstile_verdict IS NULL) = (turnstile_decided_at IS NULL)),
-    -- No challenge asked for, no verdict to record.
+    -- Retired policy: no new gate, no verdict to record.
     CHECK (turnstile_required = 1 OR turnstile_verdict IS NULL)
 ) STRICT;
 

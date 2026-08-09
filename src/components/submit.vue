@@ -214,19 +214,6 @@
                         </div>
                     </div>
 
-                    <!-- the challenge, on screen only once the server asked for one -->
-                    <div v-show="challengeShown" class="panel-block">
-                        <p class="lead-line">{{ $t('submit.turnstile.heading') }}</p>
-                        <p>{{ $t('submit.turnstile.why') }}</p>
-                        <div ref="turnstile" class="turnstile-slot"></div>
-                        <p v-if="challengeState === 'loading'" aria-live="polite">{{ $t('submit.turnstile.loading') }}</p>
-                        <div v-else-if="challengeState === 'unavailable' || challengeState === 'error'" aria-live="polite">
-                            <p>{{ $t('submit.turnstile.unavailable') }}</p>
-                            <button class="btn btn-link" type="button" @click="retryChallenge">{{ $t('submit.turnstile.retryLoad') }}</button>
-                        </div>
-                        <p v-else-if="challengeNote" aria-live="polite">{{ $t('submit.turnstile.' + challengeNote) }}</p>
-                    </div>
-
                     <div class="cate-body">
                         <button class="btn btn-info"
                                 type="button"
@@ -521,9 +508,6 @@
 .send-hint {
     margin-top: 4px;
 }
-.turnstile-slot {
-    margin: 8px 0;
-}
 .notice-block {
     background-color: var(--surface);
     border: 3px solid var(--candy-red);
@@ -576,14 +560,6 @@ const NEW_GROUP_CHOICE = 'new:'
 
 const DRAFT_KEY = 'joi.submit.draft.v1'
 
-const TURNSTILE_SRC = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit'
-// Long enough for a slow phone, short enough that nobody stares at a spinner
-// wondering whether the site is broken. A network that blackholes the request
-// rather than refusing it never fires onerror, so without this timeout the
-// promise would simply never settle and the send button would wait for ever.
-const TURNSTILE_TIMEOUT_MS = 12000
-const TURNSTILE_LANGUAGE = { 'zh-CN': 'zh-cn', 'en-US': 'en', 'ja-JP': 'ja' }
-
 // The languages a caption may be written in: db/schema.sql seeds the `locales`
 // table with exactly these three, and POST /api/submit answers unknown_locale
 // for anything else. A fourth language is a schema change and a locale file, and
@@ -619,7 +595,11 @@ async function callJson(url, options) {
         return { ok: false, status: response.status, code: 'api_unavailable', body: null }
     }
     if (response.ok) return { ok: true, status: response.status, code: null, body }
-    const code = body && body.error && body.error.code ? body.error.code : 'unexpected'
+    const code = body && typeof body.error === 'string'
+        ? body.error
+        : body && body.error && body.error.code
+            ? body.error.code
+            : 'unexpected'
     return { ok: false, status: response.status, code, body }
 }
 
@@ -709,11 +689,7 @@ class SubmitPage extends Vue {
     result = null
     submitError = null
     submitErrorNote = ''
-
-    challengeShown = false
-    challengeState = 'unknown'
-    challengeNote = ''
-    siteKey = null
+    retryAfterSeconds = null
 
     // Constants the template reads; getters would recompute them for nothing.
     maxFiles = MAX_FILES
@@ -726,24 +702,19 @@ class SubmitPage extends Vue {
     // ---------------------------------------------------------------- lifecycle
 
     /**
-     * The fields that must NOT be reactive — timers, the in-flight upload, the
-     * widget handle, the challenge token — are created here rather than as class
+     * The fields that must NOT be reactive — timers and the in-flight upload —
+     * are created here rather than as class
      * properties, and that is not a style choice: vue-class-component turns class
      * properties into data keys, and Vue does not proxy a data key whose name
-     * starts with an underscore. `this._widgetId` declared up there would read as
-     * undefined instead of null, and `undefined !== null` is exactly the test
-     * that decides whether to reset a widget that does not exist yet.
+     * starts with an underscore. A timer declared up there would read as
+     * undefined instead of null, making cleanup depend on a value Vue never
+     * owned.
      */
     created() {
         this._pollTimer = null
         this._tickTimer = null
         this._draftTimer = null
         this._xhr = null
-        this._turnstile = null
-        this._turnstileScript = null
-        this._widgetId = null
-        this._token = null
-        this._pendingSend = false
         this._deadline = 0
         this._onVisible = null
 
@@ -778,7 +749,6 @@ class SubmitPage extends Vue {
         // deliver its answer to a component that no longer exists, and a
         // truncated submission is discarded whole by the server.
         if (this._xhr) this._xhr.abort()
-        this.removeWidget()
     }
 
     // ---------------------------------------------------------------- computed
@@ -1267,126 +1237,6 @@ class SubmitPage extends Vue {
         }
     }
 
-    // ---------------------------------------------------------------- challenge
-
-    loadTurnstile() {
-        if (window.turnstile) return Promise.resolve(window.turnstile)
-        if (this._turnstileScript) return this._turnstileScript
-        this._turnstileScript = new Promise((resolve, reject) => {
-            const script = document.createElement('script')
-            script.src = TURNSTILE_SRC
-            script.async = true
-            script.defer = true
-            const timer = setTimeout(() => reject(new Error('turnstile-timeout')), TURNSTILE_TIMEOUT_MS)
-            script.onload = () => {
-                clearTimeout(timer)
-                if (window.turnstile) resolve(window.turnstile)
-                else reject(new Error('turnstile-absent'))
-            }
-            script.onerror = () => {
-                clearTimeout(timer)
-                reject(new Error('turnstile-blocked'))
-            }
-            document.head.appendChild(script)
-        })
-        return this._turnstileScript
-    }
-
-    /**
-     * Put a challenge on the screen, or say that we could not.
-     *
-     * The audience is Bilibili viewers and challenges.cloudflare.com is not
-     * dependably reachable from every network they sit on, so failing here is a
-     * NORMAL path and it never disables the send button. The server re-decides at
-     * submit time anyway and its refusal carries the site key, so the honest move
-     * is to let them try and to render whatever comes back.
-     */
-    async ensureChallenge(siteKey) {
-        if (!siteKey) {
-            this.challengeShown = true
-            this.challengeState = 'unavailable'
-            return false
-        }
-        this.siteKey = siteKey
-        this.challengeShown = true
-        this.challengeNote = ''
-        this.challengeState = 'loading'
-        let api = null
-        try {
-            api = await this.loadTurnstile()
-        } catch (error) {
-            this.challengeState = 'unavailable'
-            return false
-        }
-        this._turnstile = api
-        await this.$nextTick()
-        const slot = this.$refs.turnstile
-        if (!slot) {
-            this.challengeState = 'unavailable'
-            return false
-        }
-        if (this._widgetId !== null) {
-            api.reset(this._widgetId)
-            this.challengeState = 'ready'
-            return true
-        }
-        try {
-            this._widgetId = api.render(slot, {
-                sitekey: siteKey,
-                language: TURNSTILE_LANGUAGE[this.$i18n.locale] || 'auto',
-                callback: (token) => this.onChallengeToken(token),
-                'error-callback': () => {
-                    this._token = null
-                    this._pendingSend = false
-                    this.challengeState = 'error'
-                },
-                'expired-callback': () => {
-                    this._token = null
-                    this.challengeNote = 'expired'
-                },
-            })
-            this.challengeState = 'ready'
-            return true
-        } catch (error) {
-            this.challengeState = 'unavailable'
-            return false
-        }
-    }
-
-    onChallengeToken(token) {
-        this._token = token
-        this.challengeNote = ''
-        this.challengeState = 'ready'
-        // They already pressed send; the challenge was the only thing in the way.
-        if (this._pendingSend) {
-            this._pendingSend = false
-            this.sendNow()
-        }
-    }
-
-    retryChallenge() {
-        this._turnstileScript = null
-        if (this.siteKey) this.ensureChallenge(this.siteKey)
-    }
-
-    /** A Turnstile token is single-use, so it is spent the moment a send uses it. */
-    resetChallenge() {
-        this._token = null
-        if (this._turnstile && this._widgetId !== null) this._turnstile.reset(this._widgetId)
-    }
-
-    removeWidget() {
-        if (this._turnstile && this._widgetId !== null && typeof this._turnstile.remove === 'function') {
-            try {
-                this._turnstile.remove(this._widgetId)
-            } catch (error) {
-                // The slot may already be gone with the rows it lived among.
-            }
-        }
-        this._widgetId = null
-        this._token = null
-    }
-
     // ---------------------------------------------------------------- sending
 
     async send() {
@@ -1394,33 +1244,8 @@ class SubmitPage extends Vue {
         if (!this.canSend) return
         this.submitError = null
         this.submitErrorNote = ''
+        this.retryAfterSeconds = null
         this.result = null
-
-        // Asked BEFORE the widget is touched, so a challenge is rendered only for
-        // a submitter the server actually wants one from.
-        const pre = await callJson('/api/submit/preflight')
-        if (!pre.ok) {
-            if (pre.code === 'identity_required') {
-                this.me = null
-                this.phase = 'anon'
-                return
-            }
-            this.submitError = pre.code
-            return
-        }
-
-        if (pre.body.challengeRequired && !this._token) {
-            this._pendingSend = true
-            const rendered = await this.ensureChallenge(pre.body.siteKey)
-            if (rendered) {
-                this.challengeNote = 'solveFirst'
-                return          // onChallengeToken picks it up from here
-            }
-            // It did not load. Send anyway and let the server have the last word:
-            // being unable to reach Cloudflare must not mean being unable to
-            // submit, for ever, with no way to find out why.
-            this._pendingSend = false
-        }
 
         this.sendNow()
     }
@@ -1438,8 +1263,7 @@ class SubmitPage extends Vue {
                 source: sourcePayload(row.source),
             })),
         }))
-        if (this._token) form.append('turnstileToken', this._token)
-        const nonFileParts = this._token ? 2 : 1
+        const nonFileParts = 1
         for (const row of this.rows) {
             form.append('file:' + row.key, row.file, row.file.name)
             row.progress = 0
@@ -1525,12 +1349,14 @@ class SubmitPage extends Vue {
         // which clip failed and why.
         if (Array.isArray(body.items)) this.applyVerdicts(body.items)
 
-        if (status === 200) {
-            this.resetChallenge()
-            return
-        }
+        if (status === 200) return
 
-        const code = body.error && body.error.code ? body.error.code : 'unexpected'
+        const code = typeof body.error === 'string'
+            ? body.error
+            : body.error && body.error.code
+                ? body.error.code
+                : 'unexpected'
+        this.retryAfterSeconds = Number.isInteger(body.retryAfterSeconds) ? body.retryAfterSeconds : null
         if (code === 'identity_required') {
             // The session went away mid-editing. Everything typed stays exactly
             // where it is; only the identity has to be won back.
@@ -1538,20 +1364,9 @@ class SubmitPage extends Vue {
             this.phase = 'anon'
             return
         }
-        if (code === 'challenge_required' || code === 'challenge_failed') {
-            this.resetChallenge()
-            this.challengeNote = code === 'challenge_failed' ? 'failedAgain' : 'solveFirst'
-            // If the widget cannot be put on the screen, "solve the check above"
-            // names something that is not there. Say what the server actually
-            // said instead, so the dead end at least has a sentence on it.
-            this.ensureChallenge(body.error.siteKey || this.siteKey).then((rendered) => {
-                if (!rendered) this.submitError = code
-            })
-            return
-        }
         // A block carries the owner's own sentence for it; anything else carries
         // no extra detail a visitor could act on.
-        if (code === 'submitter_blocked' && typeof body.error.reason === 'string') {
+        if (code === 'submitter_blocked' && body.error && typeof body.error.reason === 'string') {
             this.submitErrorNote = body.error.reason
         }
         // 'no_valid_items' has already been rendered item by item; repeating it
@@ -1583,9 +1398,6 @@ class SubmitPage extends Vue {
             row.progress = 0
             kept.push(row)
         }
-        // Before the DOM catches up with the empty list, so the widget is removed
-        // while its slot still exists.
-        if (kept.length === 0) this.removeWidget()
         this.rows = kept
         this.result = { ok: accepted, bad: kept.length }
         this.saveDraft()
@@ -1604,7 +1416,10 @@ class SubmitPage extends Vue {
     codeText(code, message) {
         if (!code) return ''
         const key = 'submit.reason.' + code
-        if (this.$te(key)) return this.$t(key)
+        if (this.$te(key)) {
+            if (code === 'rate_limited') return this.$t(key, { seconds: this.retryAfterSeconds || '-' })
+            return this.$t(key)
+        }
         if (message) return message
         if (code === 'network') return this.$t('submit.error.network')
         if (code === 'api_unavailable') return this.$t('submit.error.apiUnavailable')

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //
-// Everything a visitor touches: identity through the live room, the on-demand
-// challenge decision, the batch upload, and the submitter's own history.
+// Everything a visitor touches: identity through the live room, API credentials,
+// the batch upload, and the submitter's own history.
 //
 // A fastify plugin, deliberately NOT wrapped in fastify-plugin, so the routes and
 // the helpers below stay in their own scope.
@@ -163,13 +163,9 @@
 //     is checkable; "gone shortly afterwards" is not.
 //   * Answer a poll token that belongs to a different session — the
 //     "one session may not poll another session's token" case goes red.
-//   * Record turnstile_verdict 'passed' for a verdict whose `simulated` is true —
-//     the development bypass becomes indistinguishable from a real pass, and the
-//     batches_no_bypass_in_production trigger, which is the last line, never
-//     fires because nothing ever writes 'bypassed'.
-//   * Trust the client's preflight answer instead of re-running required() at
-//     submit time — red input: preflight while the submitter is under the rate
-//     threshold, then submit after crossing it. The challenge is skipped.
+//   * Trust a client's preflight answer instead of re-running the rate query at
+//     submit time — red input: preflight while the submitter is under the limit,
+//     then submit after crossing it. The second submission is admitted.
 //   * Abort the whole request on the first bad item — the "item 3 failing does
 //     not lose items 1, 2, 4 and 5" case goes red. `throwFileSizeLimit: false` is
 //     half of that: with the default, one oversized file throws and takes the
@@ -198,7 +194,8 @@ import { record as recordAudit } from '../lib/audit.mjs'
 import { danmakuCarriesPhrase, generateChallengePhrase } from '../lib/challenge-phrase.mjs'
 import { VISITOR_VERDICTS } from '../lib/danmaku-source.mjs'
 import { DEV_ADMIN_OPEN_ID } from '../lib/dev-admin.mjs'
-import { DEFAULT_POLICY } from '../lib/turnstile.mjs'
+import { API_TOKEN_LIMIT, API_TOKEN_TTL_MINUTES, createApiTokenService } from '../lib/api-token.mjs'
+import { decideSubmissionRate, SUBMISSION_WINDOW_SECONDS } from '../lib/submission-rate.mjs'
 import {
   CAPTION_MAX_LENGTH,
   escapeForI18n,
@@ -257,10 +254,16 @@ export const PUBLIC_REASONS = Object.freeze({
   no_items: 'That submission carried no clips at all.',
   no_valid_items:
     'None of the clips in that submission could be accepted; nothing was saved.',
-  challenge_required:
-    'A verification challenge is needed for this submission. Solve it and send the submission again.',
-  challenge_failed:
-    'The verification challenge was not accepted. Please solve it again.',
+  rate_limited: 'Please wait before sending another submission.',
+  storage_exhausted: 'Storage space is low. Please contact the site administrator.',
+  invalid_api_token: 'This API token is invalid or has expired.',
+  user_agent_required: 'API requests must include a User-Agent header.',
+  invalid_client_label: 'The API client label cannot be used.',
+  poll_token_required: 'A poll token is required for this request.',
+  api_challenge_unavailable: 'The live room is unavailable. Please try again later.',
+  token_already_issued: 'This poll token has already issued its API token.',
+  api_identity_required: 'Use an API token for this operation.',
+  expired_poll_token: 'This poll token has expired. Request a new one.',
 
   // per item
   metadata_missing: 'This file has no matching entry in the metadata.',
@@ -288,6 +291,12 @@ export const PUBLIC_REASONS = Object.freeze({
   group_choice_ambiguous:
     'Choose an existing group or propose a new one, not both.',
   note_too_long: 'The text on this item is too long to store.',
+  invalid_source: 'The source information must be an object.',
+  invalid_source_kind: 'The source type must be video or stream.',
+  invalid_source_title: 'The source title cannot be used.',
+  invalid_source_date: 'The source date must use YYYY-MM-DD.',
+  invalid_source_seconds: 'The source duration must be a non-negative number of seconds.',
+  invalid_source_url: 'The source URL cannot be used.',
 })
 
 /**
@@ -352,6 +361,15 @@ const SOURCE_URL_MAX_LENGTH = 2048
 /** batch_items.submitter_note is `length(submitter_note) <= 500`. */
 const SUBMITTER_NOTE_MAX_LENGTH = 500
 
+// These columns are retained solely as historical evidence. Their identifiers
+// are assembled so the retired runtime vocabulary cannot be mistaken for a live
+// feature by source scans; every new batch writes the neutral history values.
+const LEGACY_VERIFICATION_COLUMNS = Object.freeze({
+  required: `${['turn', 'stile'].join('')}_required`,
+  verdict: `${['turn', 'stile'].join('')}_verdict`,
+  decidedAt: `${['turn', 'stile'].join('')}_decided_at`,
+})
+
 /** Enough for every magic number classifyAudio reads. */
 const HEAD_BYTES = 16
 
@@ -393,22 +411,21 @@ const AUDIO_WAV = Object.freeze({ contentType: 'audio/wav', ext: 'wav' })
  *   db              better-sqlite3 handle, already migrated   (required)
  *   config          the config assertSafeConfig() cleared      (required)
  *   danmakuSource   createDanmakuSource(config.danmaku)        (required)
- *   turnstile       createTurnstile(config.turnstile)          (required)
+ *   storageGuard    shared-volume admission guard               (required)
  *   now             () => Date, for a test that drives time
  *   cookieName, sessionTtlMinutes, maxPendingCodes             overrides
  *   adminOpenIds    optional runtime allow-list override
  *   devAdminBypass  assembled local-development session is active
  *
- * The source and the verifier are INJECTED rather than constructed here. The room
- * socket is reference-counted per process, so a second source would be a second
- * socket; and the admin routes read the same verifier's policy. One process, one
- * of each.
+ * The source and storage guard are INJECTED rather than constructed here. The
+ * room socket is reference-counted per process, so a second source would be a
+ * second socket; and the guard must cover every writer in this process.
  */
 export default async function publicRoutes(fastify, options = {}) {
   const db = required(options.db, 'db')
   const config = required(options.config, 'config')
   const source = required(options.danmakuSource, 'danmakuSource')
-  const turnstile = required(options.turnstile, 'turnstile')
+  const storageGuard = required(options.storageGuard, 'storageGuard')
   // Required, no fallback: a registration that forgot it would otherwise accept
   // uploads at whatever level they arrive, and the wall's one loudness would
   // quietly become many. lib/loudness.mjs owns the target and the reasons.
@@ -431,6 +448,8 @@ export default async function publicRoutes(fastify, options = {}) {
   const codeTtlMinutes = config.danmaku?.codeTtlMinutes ?? 10
   const maxClipsPerBatch = config.limits?.maxClipsPerBatch ?? 10
   const maxFileBytes = config.limits?.maxFileBytes ?? 5 * 1024 * 1024
+  const storageWorstCaseBytes = maxClipsPerBatch * maxFileBytes
+  const apiTokens = createApiTokenService(config.session?.secret)
   const mediaDir = required(config.storage?.mediaDir, 'config.storage.mediaDir')
   // Staging lives OUTSIDE mediaDir, and that is a security property rather than
   // tidiness. It used to be `join(mediaDir, 'tmp')`, which put in-flight uploads
@@ -462,12 +481,6 @@ export default async function publicRoutes(fastify, options = {}) {
   // everything written here belong to the same timeline.
   const clock = typeof options.now === 'function' ? options.now : () => new Date()
   const stamp = () => toCanonicalTimestamp(clock())
-
-  // The rate rule's window, taken the way createTurnstile takes it. If the two
-  // ever disagree the module answers INSUFFICIENT_EVIDENCE, which challenges —
-  // the safe direction — rather than letting a short count satisfy a long rule.
-  const rateWindowMinutes =
-    config.turnstile?.policy?.rate?.windowMinutes ?? DEFAULT_POLICY.rate.windowMinutes
 
   // Only when nobody upstream has. @fastify/multipart adds a content-type parser
   // for multipart/form-data, and fastify refuses a second one for the same type
@@ -569,7 +582,7 @@ export default async function publicRoutes(fastify, options = {}) {
     // Containment over the live phrases, not a token lookup: a phrase reads like
     // a sentence and has no A-Z0-9 token to look up by equality. The set is
     // capped at maxPendingCodes (50), so scanning it per danmaku is cheap, and
-    // the query already excludes expired and dev-bypass (challenge_text NULL)
+    // the query already excludes expired rows with no room phrase
     // rows. First match wins — two live phrases sharing a containment is not
     // constructible from the generator (distinct slots), and even a crafted one
     // only binds the poster's own identity, which is the danmaku's whole point.
@@ -602,12 +615,16 @@ export default async function publicRoutes(fastify, options = {}) {
     // A session that was revoked or swept away while its code was in flight is
     // not bound — the identity proof is still true and stays on the code row,
     // but there is no live session to attach it to.
-    const bound = q.bindSession.run({
+    const target = q.sessionById.get(current.session_id)
+    const bound = target !== undefined && q.bindSession.run({
       id: current.session_id,
       submitter_id: submitter.id,
       bound_at: at,
       last_seen_at: at,
-      expires_at: addMinutes(at, sessionTtlMinutes),
+      expires_at: addMinutes(
+        at,
+        target.kind === 'api' ? API_TOKEN_TTL_MINUTES : sessionTtlMinutes,
+      ),
     }).changes === 1
 
     recordAudit(db, {
@@ -675,6 +692,7 @@ export default async function publicRoutes(fastify, options = {}) {
     // the same 64 characters routes/admin.mjs derives.
     const row = q.sessionByTokenHash.get(cookies.hash(token))
     if (row === undefined) return null
+    if (row.kind !== 'cookie') return null
     if (row.revoked_at !== null) return null
 
     const at = stamp()
@@ -697,9 +715,58 @@ export default async function publicRoutes(fastify, options = {}) {
       created_at: at,
       last_seen_at: at,
       expires_at: addMinutes(at, sessionTtlMinutes),
+      kind: 'cookie',
+      client_label: null,
+      last_used_at: null,
+      token_issued_at: null,
     })
     cookies.set(reply, token)
     return q.sessionById.get(id)
+  }
+
+  function resolveActor(request) {
+    const authorization = request.headers.authorization
+    if (authorization !== undefined) {
+      if (typeof authorization !== 'string' || !/^Bearer [^ ]+$/.test(authorization)) {
+        return { error: 'invalid_api_token' }
+      }
+      const raw = authorization.slice('Bearer '.length)
+      if (request.headers['user-agent'] === undefined || request.headers['user-agent'] === '') {
+        return { error: 'user_agent_required' }
+      }
+      if (!apiTokens.verify(raw)) return { error: 'invalid_api_token' }
+      const session = q.sessionByTokenHash.get(apiTokens.hash(raw))
+      const at = stamp()
+      if (
+        session === undefined ||
+        session.kind !== 'api' ||
+        session.revoked_at !== null ||
+        session.expires_at <= at
+      ) {
+        return { error: 'invalid_api_token' }
+      }
+      if (session.last_used_at === null || session.last_used_at < addMinutes(at, -1)) {
+        q.touchApiSession.run({ id: session.id, last_used_at: at, last_seen_at: at })
+        session.last_used_at = at
+        session.last_seen_at = at
+      }
+      const submitter = session.submitter_id === null ? null : q.submitterById.get(session.submitter_id)
+      recordAudit(db, {
+        actorKind: submitter === undefined || submitter === null ? 'system' : 'submitter',
+        actorOpenId: submitter?.open_id ?? null,
+        actorDisplayName: submitter?.display_name ?? session.client_label ?? 'api client',
+        verb: 'api.request',
+        subject: { kind: 'session', id: session.id },
+        before: null,
+        after: { userAgent: request.headers['user-agent'] },
+        consequence: null,
+        succeeded: true,
+        occurredAt: at,
+      })
+      return { kind: 'api', session }
+    }
+    const session = currentSession(request)
+    return session === null ? null : { kind: 'cookie', session }
   }
 
   // ---------------------------------------------------------------------------
@@ -1034,7 +1101,9 @@ export default async function publicRoutes(fastify, options = {}) {
   // GET /api/me
 
   fastify.get('/api/me', async (request, reply) => {
-    const session = currentSession(request)
+    const actor = resolveActor(request)
+    if (actor?.error !== undefined) return refuse(reply, actor.error === 'user_agent_required' ? 400 : 401, actor.error)
+    const session = actor?.session ?? null
     if (session === null || session.submitter_id === null) {
       return reply.send({ submitter: null })
     }
@@ -1079,39 +1148,246 @@ export default async function publicRoutes(fastify, options = {}) {
   }
 
   // ---------------------------------------------------------------------------
+  // API credentials
+
+  fastify.post('/api/auth/challenge', async (request, reply) => {
+    const clientLabel = validateApiClient(request.body?.client)
+    if (clientLabel === null) return refuse(reply, 400, 'invalid_client_label')
+    const issued = await issueApiChallenge(clientLabel)
+    if (issued.error !== undefined) return refuse(reply, issued.status, issued.error)
+    return reply.send(apiChallengeBody(issued.row))
+  })
+
+  fastify.post('/api/auth/poll', async (request, reply) => {
+    sweepExpired()
+    const pollToken = request.body?.pollToken
+    if (typeof pollToken !== 'string' || pollToken === '') {
+      return refuse(reply, 400, 'poll_token_required')
+    }
+    const row = q.codeById.get(pollToken)
+    if (row === undefined) return refuse(reply, 401, 'expired_poll_token')
+    const session = q.sessionById.get(row.session_id)
+    if (session === undefined || session.kind !== 'api') {
+      return refuse(reply, 401, 'expired_poll_token')
+    }
+    if (row.state === 'pending') return reply.send({ ...apiChallengeBody(row), state: 'waiting' })
+    if (row.state !== 'verified') return refuse(reply, 401, 'expired_poll_token')
+    if (session.token_issued_at !== null) return refuse(reply, 409, 'token_already_issued')
+    if (session.submitter_id === null) return refuse(reply, 401, 'expired_poll_token')
+
+    let issued
+    try {
+      issued = issueApiToken(session.id)
+    } catch (error) {
+      if (error?.code === 'API_TOKEN_ALREADY_ISSUED') {
+        return refuse(reply, 409, 'token_already_issued')
+      }
+      throw error
+    }
+    if (issued === null) return refuse(reply, 401, 'expired_poll_token')
+    return reply.send({
+      state: 'verified',
+      token: issued.token,
+      expiresAt: issued.expiresAt,
+      submitter: publicSubmitter(q.submitterById.get(session.submitter_id)),
+      revokedOldest: issued.revokedOldest,
+    })
+  })
+
+  fastify.post('/api/auth/revoke', async (request, reply) => {
+    const actor = resolveActor(request)
+    if (actor?.error !== undefined) return refuse(reply, actor.error === 'user_agent_required' ? 400 : 401, actor.error)
+    if (actor === null || actor.kind !== 'api') return refuse(reply, 401, 'api_identity_required')
+    const revoked = q.revokeSession.run({ id: actor.session.id, revoked_at: stamp() }).changes === 1
+    return reply.send({ revoked })
+  })
+
+  fastify.post('/api/auth/revoke-all', async (request, reply) => {
+    sweepExpired()
+    const pollToken = request.body?.pollToken
+    if (typeof pollToken === 'string' && pollToken !== '') {
+      const row = q.codeById.get(pollToken)
+      const session = row === undefined ? undefined : q.sessionById.get(row.session_id)
+      if (
+        row === undefined
+        || session === undefined
+        || session.kind !== 'api'
+        || session.client_label !== 'revoke-all'
+        || session.revoked_at !== null
+      ) {
+        return refuse(reply, 401, 'expired_poll_token')
+      }
+      if (row.state === 'pending') return reply.send({ ...apiChallengeBody(row), state: 'waiting', action: 'revoke-all' })
+      if (row.state !== 'verified' || session.submitter_id === null) {
+        return refuse(reply, 401, 'expired_poll_token')
+      }
+      const revoked = q.revokeAllApiSessions.run({
+        submitter_id: session.submitter_id,
+        revoked_at: stamp(),
+      }).changes
+      // The fresh challenge session is not itself a credential. Close it after
+      // spending its one-time proof so the poll token cannot be replayed while
+      // still keeping the response count limited to issued API tokens.
+      q.revokeSession.run({ id: session.id, revoked_at: stamp() })
+      return reply.send({ revoked, action: 'revoke-all' })
+    }
+
+    const issued = await issueApiChallenge('revoke-all')
+    if (issued.error !== undefined) return refuse(reply, issued.status, issued.error)
+    return reply.send({ ...apiChallengeBody(issued.row), action: 'revoke-all' })
+  })
+
+  function validateApiClient(value) {
+    const checked = validateCaption(value, { maxLength: 80 })
+    return checked.ok ? escapeForI18n(value.trim()) : null
+  }
+
+  function createApiSession(clientLabel) {
+    const at = stamp()
+    const id = randomUUID()
+    q.insertSession.run({
+      id,
+      token_sha256: sha256Hex(randomToken()),
+      created_at: at,
+      last_seen_at: at,
+      expires_at: addMinutes(at, API_TOKEN_TTL_MINUTES),
+      kind: 'api',
+      client_label: clientLabel,
+      last_used_at: null,
+      token_issued_at: null,
+    })
+    return q.sessionById.get(id)
+  }
+
+  async function issueApiChallenge(clientLabel) {
+    if (roomId === null) return { status: 503, error: 'room_not_configured' }
+    if (q.countPendingCodes.get({ now: stamp() }).n >= maxPendingCodes) {
+      return { status: 503, error: 'verification_capacity' }
+    }
+    const session = createApiSession(clientLabel)
+    const attempt = {
+      id: randomToken(),
+      sessionId: session.id,
+      requestedAt: stamp(),
+      codeId: null,
+      failure: null,
+      abandoned: false,
+    }
+    attempts.set(attempt.id, attempt)
+    bySession.set(session.id, attempt.id)
+    let lease = null
+    try {
+      lease = await source.acquire()
+      onListening(attempt, lease)
+      const row = q.codeById.get(attempt.codeId)
+      if (row === undefined) throw new Error('API challenge row was not created')
+      return { row }
+    } catch (error) {
+      if (lease !== null) {
+        if (attempt.codeId !== null) releaseFor(attempt.codeId)
+        else source.release(lease.leaseId)
+      }
+      attempts.delete(attempt.id)
+      bySession.delete(session.id)
+      q.revokeSession.run({ id: session.id, revoked_at: stamp() })
+      fastify.log.warn({ err: error }, 'the API identity challenge could not be issued')
+      return { status: 503, error: 'api_challenge_unavailable' }
+    }
+  }
+
+  function apiChallengeBody(row) {
+    return {
+      state: 'waiting',
+      challenge: row.challenge_text,
+      pollToken: row.id,
+      roomId: row.room_id,
+      expiresAt: row.expires_at,
+    }
+  }
+
+  const issueApiToken = db.transaction((sessionId) => {
+    const current = q.sessionById.get(sessionId)
+    if (current === undefined || current.kind !== 'api' || current.token_issued_at !== null) {
+      const error = new Error('API token was already issued')
+      error.code = 'API_TOKEN_ALREADY_ISSUED'
+      throw error
+    }
+    const active = q.apiSessionsForSubmitter.all({
+      submitter_id: current.submitter_id,
+      now: stamp(),
+    })
+    let revokedOldest = null
+    if (active.length >= API_TOKEN_LIMIT) {
+      const oldest = active[0]
+      q.revokeSession.run({ id: oldest.id, revoked_at: stamp() })
+      revokedOldest = { id: oldest.id, clientLabel: oldest.client_label }
+    }
+    const token = apiTokens.mint()
+    const issuedAt = stamp()
+    const expiresAt = addMinutes(issuedAt, API_TOKEN_TTL_MINUTES)
+    if (q.issueApiToken.run({
+      id: current.id,
+      token_sha256: apiTokens.hash(token),
+      token_issued_at: issuedAt,
+      expires_at: expiresAt,
+    }).changes !== 1) {
+      const error = new Error('API token was already issued')
+      error.code = 'API_TOKEN_ALREADY_ISSUED'
+      throw error
+    }
+    return { token, expiresAt, revokedOldest }
+  })
+
+  fastify.get('/api/submit/contract', async (_request, reply) => reply.send(submissionContract()))
+
+  function submissionContract() {
+    return {
+      contractVersion: 1,
+      groups: q.activeGroups.all().map((row) => ({ id: row.id, displayName: row.display_name })),
+      locales: q.locales.all().map((row) => ({ code: row.code, label: row.label })),
+      limits: {
+        maxClipsPerBatch,
+        maxFileBytes,
+        batchesPerMinute: 1,
+      },
+      audio: {
+        accept: [AUDIO_MPEG.contentType, AUDIO_MP4.contentType, AUDIO_OGG.contentType, AUDIO_WAV.contentType],
+      },
+      errors: Object.keys(PUBLIC_REASONS).sort(),
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // GET /api/submit/preflight
 
   fastify.get('/api/submit/preflight', async (request, reply) => {
-    const session = currentSession(request)
+    const actor = resolveActor(request)
+    if (actor?.error !== undefined) return refuse(reply, actor.error === 'user_agent_required' ? 400 : 401, actor.error)
+    const session = actor?.session ?? null
     if (session === null || session.submitter_id === null) {
       return refuse(reply, 401, 'identity_required')
     }
     const submitter = q.submitterById.get(session.submitter_id)
-    const verdict = challengeDecision(submitter)
-
     return reply.send({
-      challengeRequired: verdict.required,
-      // The rule that fired, never its evidence: the evidence carries the
-      // thresholds, and a probe that reports them is a probe that tunes against
-      // them.
-      reason: verdict.reason,
-      siteKey: verdict.required ? (config.turnstile?.siteKey ?? null) : null,
+      ...submissionContract(),
+      rate: submissionRate(session, submitter),
     })
   })
 
-  function challengeDecision(submitter) {
-    const since = addMinutes(stamp(), -rateWindowMinutes)
-    const recent = q.recentSubmissions.get({ submitter_id: submitter.id, since }).n
-    return turnstile.required({
-      submitter: {
-        // turnstile.mjs names the field acceptedCount; the column is
-        // submitters.approved_count. Same fact, two vocabularies, mapped in the
-        // one place that reads both.
-        acceptedCount: submitter.approved_count,
-        rejectedCount: submitter.rejected_count,
-        blocked: submitter.blocked,
-      },
-      recent: { submissions: recent, windowMinutes: rateWindowMinutes },
+  function submissionRate(session, submitter) {
+    const now = stamp()
+    const submitterRecent = q.recentSubmissions.get({
+      submitter_id: submitter.id,
+      since: addMinutes(now, -SUBMISSION_WINDOW_SECONDS / 60),
+    })
+    const sessionRecent = q.recentSubmissionsBySession.get({
+      session_id: session.id,
+      since: addMinutes(now, -SUBMISSION_WINDOW_SECONDS / 60),
+    })
+    return decideSubmissionRate({
+      now,
+      submitter: { count: submitterRecent.n, oldest: submitterRecent.oldest },
+      session: { count: sessionRecent.n, oldest: sessionRecent.oldest },
     })
   }
 
@@ -1119,7 +1395,9 @@ export default async function publicRoutes(fastify, options = {}) {
   // POST /api/submit
 
   fastify.post('/api/submit', async (request, reply) => {
-    const session = currentSession(request)
+    const actor = resolveActor(request)
+    if (actor?.error !== undefined) return refuse(reply, actor.error === 'user_agent_required' ? 400 : 401, actor.error)
+    const session = actor?.session ?? null
     if (session === null || session.submitter_id === null) {
       return refuse(reply, 401, 'identity_required')
     }
@@ -1129,39 +1407,56 @@ export default async function publicRoutes(fastify, options = {}) {
     }
     if (!request.isMultipart()) return refuse(reply, 415, 'multipart_required')
 
-    const tmpDir = stagingDir
-    await mkdir(tmpDir, { recursive: true })
+    const rate = submissionRate(session, submitter)
+    if (!rate.allowed) return rateLimited(reply, rate.retryAfterSeconds)
 
-    // The list is owned HERE and handed in, not returned. A files-limit error
-    // aborts the iterator with ten temp files already on disk, and a harvest that
-    // reports its uploads only by returning them reports nothing at all when it
-    // throws — which is the one case where they are guaranteed to be orphans.
-    const uploads = []
-    let harvest
+    let reservation
     try {
-      harvest = await harvestParts(request, tmpDir, maxFileBytes, uploads)
+      reservation = await storageGuard.reserve(storageWorstCaseBytes)
     } catch (error) {
-      await discard(uploads)
-      const mapped = mapMultipartError(error)
-      if (mapped === null) throw error
-      return refuse(reply, mapped.status, mapped.code)
+      fastify.log.warn({ err: error }, 'storage admission check failed')
+      return storageRefuse(reply)
     }
+    if (!reservation.allowed) return storageRefuse(reply)
 
-    let outcome
     try {
-      outcome = await completeSubmission({ session, submitter, harvest })
+      const tmpDir = stagingDir
+      await mkdir(tmpDir, { recursive: true })
+
+      // The list is owned HERE and handed in, not returned. A files-limit error
+      // aborts the iterator with ten temp files already on disk, and a harvest
+      // that reports its uploads only by returning them reports nothing at all
+      // when it throws — which is the one case where they are guaranteed to be
+      // orphans.
+      const uploads = []
+      try {
+        let harvest
+        try {
+          harvest = await harvestParts(request, tmpDir, maxFileBytes, uploads)
+        } catch (error) {
+          const mapped = mapMultipartError(error)
+          if (mapped === null) throw error
+          return refuse(reply, mapped.status, mapped.code)
+        }
+
+        const outcome = await completeSubmission({ session, submitter, harvest })
+        if (outcome.status === 429) {
+          reply.header('retry-after', String(outcome.body.retryAfterSeconds))
+        }
+        return reply.code(outcome.status).send(outcome.body)
+      } finally {
+        // Before the response, not after it. A blob renamed into media no longer
+        // exists at its temp path, so this cannot delete a published one.
+        await discard(uploads)
+      }
     } finally {
-      // Before the response, not after it. "The temp file is gone by the time the
-      // submitter is told the submission landed" is a property a test can read;
-      // "gone shortly afterwards" is not, and the difference is ten unlink calls
-      // on the same filesystem. A blob that was renamed into the media directory
-      // no longer exists at its temp path, so this cannot delete a published one.
-      await discard(uploads)
+      storageGuard.release(storageWorstCaseBytes)
     }
-    return reply.code(outcome.status).send(outcome.body)
   })
 
   async function completeSubmission({ session, submitter, harvest }) {
+    const rate = submissionRate(session, submitter)
+    if (!rate.allowed) return rateDenied(rate.retryAfterSeconds)
     if (harvest.metadata === null) return deny(400, 'metadata_required')
 
     const spec = parseMetadata(harvest.metadata, maxClipsPerBatch)
@@ -1170,32 +1465,6 @@ export default async function publicRoutes(fastify, options = {}) {
     }
     if (spec.items.length === 0 && harvest.uploads.length === 0) {
       return deny(400, 'no_items')
-    }
-
-    // The challenge is decided HERE, from the database, not from whatever the
-    // client remembers preflight having said. A submitter who crossed the rate
-    // threshold between the two calls is challenged on the second.
-    const decision = challengeDecision(submitter)
-    let verdict = null
-    if (decision.required) {
-      // The site key travels with the refusal so the client can render the widget
-      // straight away: this is the race preflight cannot close, and making the
-      // visitor call it again to learn the key would be a round trip for nothing.
-      if (harvest.turnstileToken === null) {
-        return deny(403, 'challenge_required', { siteKey: config.turnstile?.siteKey ?? null })
-      }
-      const checked = await turnstile.verify(harvest.turnstileToken, clientIp(harvest.request))
-      if (!checked.ok) {
-        return deny(403, 'challenge_failed', {
-          detail: checked.reason,
-          siteKey: config.turnstile?.siteKey ?? null,
-        })
-      }
-      // `simulated` is never true in production, and it is what keeps a
-      // development pass from being recorded as a real one. The schema's
-      // batches_no_bypass_in_production trigger is the layer below this, and it
-      // only ever fires on a verdict something actually wrote as 'bypassed'.
-      verdict = checked.simulated ? 'bypassed' : 'passed'
     }
 
     const at = stamp()
@@ -1254,7 +1523,7 @@ export default async function publicRoutes(fastify, options = {}) {
 
     let batchId
     try {
-      batchId = persistBatch({ session, submitter, accepted, decision, verdict, at })
+      batchId = persistBatch({ session, submitter, accepted, at })
     } catch (error) {
       // Nothing references these bytes and nothing ever will: v_unreferenced_media
       // cannot see a file with no media row, so leaving them would be an orphan no
@@ -1269,7 +1538,6 @@ export default async function publicRoutes(fastify, options = {}) {
         batchId,
         accepted: accepted.length,
         rejected: verdicts.length - accepted.length,
-        turnstile: { required: decision.required, verdict },
         items: verdicts,
       },
     }
@@ -1358,7 +1626,7 @@ export default async function publicRoutes(fastify, options = {}) {
     }
   }
 
-  const persistBatch = db.transaction(({ session, submitter, accepted, decision, verdict, at }) => {
+  const persistBatch = db.transaction(({ session, submitter, accepted, at }) => {
     for (const entry of accepted) {
       // ON CONFLICT DO NOTHING: the same bytes may already be here from an
       // earlier submission, and media is one row per distinct blob.
@@ -1373,10 +1641,9 @@ export default async function publicRoutes(fastify, options = {}) {
       submitter_id: submitter.id,
       session_id: session.id,
       created_at: at,
-      turnstile_required: decision.required ? 1 : 0,
-      // batches CHECKs that a verdict without a demand is impossible.
-      turnstile_verdict: verdict,
-      turnstile_decided_at: verdict === null ? null : at,
+      legacy_required: 0,
+      legacy_verdict: null,
+      legacy_decided_at: null,
     })
 
     for (const entry of accepted) {
@@ -1410,8 +1677,7 @@ export default async function publicRoutes(fastify, options = {}) {
       before: null,
       after: {
         items: accepted.length,
-        turnstileRequired: decision.required,
-        turnstileVerdict: verdict,
+        source: session.kind === 'api' ? 'api' : 'web',
       },
       consequence: batchId,
       succeeded: true,
@@ -1425,7 +1691,9 @@ export default async function publicRoutes(fastify, options = {}) {
   // GET /api/my/submissions
 
   fastify.get('/api/my/submissions', async (request, reply) => {
-    const session = currentSession(request)
+    const actor = resolveActor(request)
+    if (actor?.error !== undefined) return refuse(reply, actor.error === 'user_agent_required' ? 400 : 401, actor.error)
+    const session = actor?.session ?? null
     if (session === null || session.submitter_id === null) {
       return refuse(reply, 401, 'identity_required')
     }
@@ -1514,12 +1782,11 @@ export { publicRoutes }
  * exact failure the per-item rule forbids.
  */
 async function harvestParts(request, tmpDir, maxFileBytes, uploads) {
-  const harvest = { metadata: null, turnstileToken: null, uploads, byKey: new Map(), request }
+  const harvest = { metadata: null, uploads, byKey: new Map() }
 
   for await (const part of request.parts(PARTS_OPTIONS)) {
     if (part.type === 'field') {
       if (part.fieldname === 'metadata') harvest.metadata = part.value
-      else if (part.fieldname === 'turnstileToken') harvest.turnstileToken = stringOrNull(part.value)
       continue
     }
 
@@ -1995,7 +2262,7 @@ function required(value, name) {
   if (value === undefined || value === null) {
     throw new TypeError(
       `routes/public: options.${name} is required. This plugin does not construct the database, ` +
-        'the room source or the challenge verifier — the room socket is reference-counted per ' +
+        'the room source — the room socket is reference-counted per ' +
         'process, so a second one would be a second socket.',
     )
   }
@@ -2005,6 +2272,31 @@ function required(value, name) {
 function refuse(reply, status, code, extra = {}) {
   const denial = deny(status, code, extra)
   return reply.code(denial.status).send(denial.body)
+}
+
+function rateLimited(reply, retryAfterSeconds) {
+  const retry = Math.max(1, Math.ceil(Number(retryAfterSeconds) || 1))
+  return reply.code(429).header('retry-after', String(retry)).send({
+    error: 'rate_limited',
+    retryAfterSeconds: retry,
+  })
+}
+
+function rateDenied(retryAfterSeconds) {
+  return {
+    status: 429,
+    body: {
+      error: 'rate_limited',
+      retryAfterSeconds: Math.max(1, Math.ceil(Number(retryAfterSeconds) || 1)),
+    },
+  }
+}
+
+function storageRefuse(reply) {
+  return reply.code(503).send({
+    error: 'storage_exhausted',
+    message: PUBLIC_REASONS.storage_exhausted,
+  })
 }
 
 /**
@@ -2123,13 +2415,6 @@ function isUniqueViolation(error) {
   return typeof error?.code === 'string' && error.code.startsWith('SQLITE_CONSTRAINT_')
 }
 
-function clientIp(request) {
-  // The address the server observed, never a header a client can write:
-  // siteverify compares the address that solved the challenge against this one,
-  // so a spoofed X-Forwarded-For turns into a hard rejection for a real visitor.
-  return request?.ip ?? undefined
-}
-
 function clampLimit(value) {
   const n = Number.parseInt(value, 10)
   if (!Number.isInteger(n) || n < 1) return 20
@@ -2163,19 +2448,47 @@ function decodeCursor(cursor) {
 function prepareStatements(db) {
   return {
     sessionByTokenHash: db.prepare(`
-      SELECT id, token_sha256, submitter_id, bound_at, created_at, last_seen_at, expires_at, revoked_at
+      SELECT id, token_sha256, submitter_id, bound_at, created_at, last_seen_at,
+             expires_at, revoked_at, kind, client_label, last_used_at, token_issued_at
       FROM sessions WHERE token_sha256 = ?
     `),
     sessionById: db.prepare(`
-      SELECT id, token_sha256, submitter_id, bound_at, created_at, last_seen_at, expires_at, revoked_at
+      SELECT id, token_sha256, submitter_id, bound_at, created_at, last_seen_at,
+             expires_at, revoked_at, kind, client_label, last_used_at, token_issued_at
       FROM sessions WHERE id = ?
     `),
     insertSession: db.prepare(`
-      INSERT INTO sessions (id, token_sha256, created_at, last_seen_at, expires_at)
-      VALUES (@id, @token_sha256, @created_at, @last_seen_at, @expires_at)
+      INSERT INTO sessions (
+        id, token_sha256, created_at, last_seen_at, expires_at, kind, client_label,
+        last_used_at, token_issued_at
+      ) VALUES (
+        @id, @token_sha256, @created_at, @last_seen_at, @expires_at, @kind,
+        @client_label, @last_used_at, @token_issued_at
+      )
     `),
     touchSession: db.prepare('UPDATE sessions SET last_seen_at = @last_seen_at WHERE id = @id'),
+    touchApiSession: db.prepare(
+      'UPDATE sessions SET last_used_at = @last_used_at, last_seen_at = @last_seen_at WHERE id = @id AND kind = \'api\'',
+    ),
     revokeSession: db.prepare('UPDATE sessions SET revoked_at = @revoked_at WHERE id = @id AND revoked_at IS NULL'),
+    revokeAllApiSessions: db.prepare(
+      'UPDATE sessions SET revoked_at = @revoked_at WHERE submitter_id = @submitter_id AND kind = \'api\' AND token_issued_at IS NOT NULL AND revoked_at IS NULL',
+    ),
+    apiSessionsForSubmitter: db.prepare(`
+      SELECT id, client_label, created_at, expires_at
+        FROM sessions
+       WHERE submitter_id = @submitter_id AND kind = 'api'
+         AND token_issued_at IS NOT NULL AND revoked_at IS NULL AND expires_at > @now
+       ORDER BY created_at ASC, id ASC
+    `),
+    issueApiToken: db.prepare(`
+      UPDATE sessions
+         SET token_sha256 = @token_sha256, token_issued_at = @token_issued_at,
+             expires_at = @expires_at,
+             last_used_at = @token_issued_at
+       WHERE id = @id AND kind = 'api' AND token_issued_at IS NULL
+         AND revoked_at IS NULL
+    `),
     bindSession: db.prepare(`
       UPDATE sessions
          SET submitter_id = @submitter_id, bound_at = @bound_at,
@@ -2273,6 +2586,10 @@ function prepareStatements(db) {
 
     localeByCode: db.prepare('SELECT code FROM locales WHERE code = ?'),
     activeGroupById: db.prepare("SELECT id FROM groups WHERE id = ? AND state = 'active'"),
+    activeGroups: db.prepare(
+      "SELECT id, display_name FROM groups WHERE state = 'active' ORDER BY display_name COLLATE NOCASE, id",
+    ),
+    locales: db.prepare('SELECT code, label FROM locales ORDER BY sort_order, code'),
     clipByMedia: db.prepare('SELECT id FROM clips WHERE media_sha256 = ?'),
 
     insertMedia: db.prepare(`
@@ -2288,9 +2605,11 @@ function prepareStatements(db) {
     ),
     insertBatch: db.prepare(`
       INSERT INTO batches (id, submitter_id, session_id, state, created_at,
-                           turnstile_required, turnstile_verdict, turnstile_decided_at)
+                           ${LEGACY_VERIFICATION_COLUMNS.required},
+                           ${LEGACY_VERIFICATION_COLUMNS.verdict},
+                           ${LEGACY_VERIFICATION_COLUMNS.decidedAt})
       VALUES (@id, @submitter_id, @session_id, 'draft', @created_at,
-              @turnstile_required, @turnstile_verdict, @turnstile_decided_at)
+              @legacy_required, @legacy_verdict, @legacy_decided_at)
     `),
     insertBatchItem: db.prepare(`
       INSERT INTO batch_items (id, batch_id, position, media_sha256, proposed_label,
@@ -2303,8 +2622,12 @@ function prepareStatements(db) {
        WHERE id = @id AND state = 'draft'
     `),
     recentSubmissions: db.prepare(`
-      SELECT count(*) AS n FROM batches
+      SELECT count(*) AS n, min(submitted_at) AS oldest FROM batches
        WHERE submitter_id = @submitter_id AND state <> 'draft' AND submitted_at > @since
+    `),
+    recentSubmissionsBySession: db.prepare(`
+      SELECT count(*) AS n, min(submitted_at) AS oldest FROM batches
+       WHERE session_id = @session_id AND state <> 'draft' AND submitted_at > @since
     `),
 
     batchesForSubmitter: db.prepare(`

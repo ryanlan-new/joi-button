@@ -383,10 +383,9 @@ echo "--- content-security-policy, on EVERY response that can carry markup or co
 # The shape first, then the reach. Both matter and they fail differently: a
 # policy with the wrong sources is a policy that breaks the site, and a policy
 # that is only on some responses is one an attacker routes around.
-check  "script-src has no unsafe-inline"      "script-src 'self' https://challenges.cloudflare.com" "$(hdr /)"
+check  "script-src has no unsafe-inline"      "script-src 'self'"            "$(hdr /)"
 check  "object-src is none"                   "object-src 'none'"               "$(hdr /)"
 check  "base-uri is pinned"                   "base-uri 'self'"                 "$(hdr /)"
-check  "turnstile may render"                 "frame-src https://challenges.cloudflare.com" "$(hdr /)"
 check  "the google font import is allowed"    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com" "$(hdr /)"
 refute "script-src is not wide open"          "script-src 'self' 'unsafe-inline'" "$(hdr /)"
 refute "nothing is allowed from anywhere"     "default-src *"                   "$(hdr /)"

@@ -15,7 +15,6 @@ export function makeConfig({
   storage = {},
   limits = {},
   danmaku = {},
-  turnstile = {},
 } = {}) {
   return {
     database: { file: '/srv/joi/joi.db', ...database },
@@ -30,7 +29,6 @@ export function makeConfig({
     },
     limits: { maxClipsPerBatch: 10, maxFileBytes: 5 * MiB, ...limits },
     danmaku: { mode: 'development', codeTtlMinutes: 10, ...danmaku },
-    turnstile: { mode: 'development', switch: 'auto', ...turnstile },
   }
 }
 
@@ -47,19 +45,12 @@ export function makeProductionConfig(sections = {}) {
       codeTtlMinutes: 10,
       ...(sections.danmaku ?? {}),
     },
-    turnstile: {
-      mode: 'production',
-      siteKey: 'site-key',
-      secretKey: 'secret-key',
-      switch: 'auto',
-      ...(sections.turnstile ?? {}),
-    },
   })
 }
 
 /**
  * A config that has been through the guard, which is the only kind the
- * development danmaku source and the development turnstile will build from.
+ * development danmaku source will build from.
  *
  * `env: {}` rather than the ambient process.env, so a DEV_BYPASS_* left set in
  * a developer's shell cannot change what these tests measure.

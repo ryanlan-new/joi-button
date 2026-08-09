@@ -113,7 +113,7 @@ import { DEV_ADMIN_DISPLAY_NAME, DEV_ADMIN_OPEN_ID } from './lib/dev-admin.mjs'
  * Non-file form fields allowed in one request, and the size of one.
  *
  * A batch carries at most 10 clips and a handful of fields each (label, group,
- * note), plus the turnstile token. 64 is roomy; 8 KiB per field is far above the
+ * note). 64 is roomy; 8 KiB per field is far above the
  * 80 code points text-safety.mjs allows in a caption and the 500 characters
  * batch_items.submitter_note allows, and far below anything that could be used
  * to push memory around.
@@ -235,7 +235,7 @@ const REFUSALS = Object.freeze({
 })
 
 /**
- * createApp({ config, db, danmaku, turnstile, logger, report, routes })
+ * createApp({ config, db, danmaku, storageGuard, logger, report, routes })
  *
  * Returns a fastify instance with everything registered and no socket bound.
  * Plugin registration is queued, as fastify does: await app.ready() (or the
@@ -244,7 +244,7 @@ const REFUSALS = Object.freeze({
  * @param {object}   config    from config.mjs, after assertSafeConfig froze it
  * @param {object}   db        an open better-sqlite3 handle, already migrated
  * @param {object}   danmaku   createDanmakuSource(config.danmaku)
- * @param {object}   turnstile createTurnstile(config.turnstile)
+ * @param {object}   storageGuard shared-volume admission guard
  * @param {object}   [logger]  a pino instance, a pino options object, or false
  * @param {object}   [report]  what assertSafeConfig returned; absent reads as production
  * @param {Array<Function|{plugin: Function, options?: object}>} [routes]
@@ -266,7 +266,7 @@ export function createApp({
   config,
   db,
   danmaku,
-  turnstile,
+  storageGuard,
   logger,
   report = null,
   routes = [],
@@ -275,7 +275,7 @@ export function createApp({
   requireArgument(config, 'config')
   requireArgument(db, 'db')
   requireArgument(danmaku, 'danmaku')
-  requireArgument(turnstile, 'turnstile')
+  requireArgument(storageGuard, 'storageGuard')
   // Named, because the alternative is a TypeError from deep inside a plugin
   // registration that says only "cannot read properties of undefined". The
   // config the entry point builds always has all four; a hand-built one in a
@@ -296,8 +296,8 @@ export function createApp({
     bodyLimit: JSON_BODY_LIMIT,
     // Never `true`. See config.mjs: with trustProxy true, request.ip becomes the
     // leftmost X-Forwarded-For entry, which the client writes — and that address
-    // is what turnstile.verify() would hand to siteverify as the address that
-    // solved the challenge.
+    // is what an external identity verifier would receive as the address that
+    // completed the verification.
     trustProxy: config.server.trustProxy ?? false,
   })
 
@@ -318,7 +318,7 @@ export function createApp({
   app.decorate('config', config)
   app.decorate('db', db)
   app.decorate('danmaku', danmaku)
-  app.decorate('turnstile', turnstile)
+  app.decorate('storageGuard', storageGuard)
   app.decorate('sessionCookie', sessionCookie)
   app.decorate('guardReport', report)
 
@@ -364,7 +364,7 @@ export function createApp({
     return payload
   })
 
-  registerHealthRoutes(app, { config, db, danmaku, banner, startedAt: new Date() })
+  registerHealthRoutes(app, { config, db, danmaku, storageGuard, banner, startedAt: new Date() })
 
   for (const route of routes) {
     if (typeof route === 'function') {
@@ -451,7 +451,7 @@ export function createApp({
 //                     and folding it into readiness would take the pod out of
 //                     service for behaving as designed.
 
-function registerHealthRoutes(app, { config, db, danmaku, banner, startedAt }) {
+function registerHealthRoutes(app, { config, db, danmaku, storageGuard, banner, startedAt }) {
   app.get('/api/healthz', async () => ({
     status: 'ok',
     check: 'process',
@@ -477,6 +477,7 @@ function registerHealthRoutes(app, { config, db, danmaku, banner, startedAt }) {
 
   app.get('/api/health', async (request, reply) => {
     const database = probeDatabase(db, request.log)
+    const storage = await storageGuard.snapshot()
     const ready = database.status === 'ok'
     reply.code(ready ? 200 : 503)
     return {
@@ -491,12 +492,13 @@ function registerHealthRoutes(app, { config, db, danmaku, banner, startedAt }) {
         database,
         roomSession: describeRoomSession(danmaku),
       },
+      storage,
       limits: {
         maxClipsPerBatch: config.limits.maxClipsPerBatch,
         maxFileBytes: config.limits.maxFileBytes,
       },
       // Null on a healthy production instance. When it is not null this build is
-      // running with an identity or challenge bypass, and saying so in the
+      // running with an identity bypass, and saying so in the
       // health document is half of the contract env-guard's buildBanner sets out
       // — the X-Joi-Bypass header on every response is the other half.
       banner,

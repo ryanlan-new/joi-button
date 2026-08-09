@@ -3,7 +3,7 @@
 // The whole server, assembled the way server.mjs assembles it, driven through
 // app.inject(). No socket is bound and no credential exists — which is the point:
 // this is the proof that the composition works BEFORE anyone has a Bilibili
-// access key or a Turnstile secret.
+// access key.
 //
 // ===========================================================================
 // WHAT IS REAL HERE AND WHAT IS A DOUBLE
@@ -23,25 +23,8 @@
 //                        asking — that guard would sit green forever, never
 //                        having been evaluated in a world where it could be
 //                        false.
-//   Turnstile            two shapes, and which one a test picks is load-bearing:
-//                        'stub'        mode 'production' with config.fetchImpl
-//                                      pointed at a recording double. The REAL
-//                                      verify() path runs — including the
-//                                      single-use token map, which the
-//                                      development verifier returns before ever
-//                                      reaching. A test that claims "the token
-//                                      is single-use" and runs against the
-//                                      development verifier is testing nothing.
-//                        'development' the always-passes verifier, whose verdict
-//                                      carries `simulated: true` and is recorded
-//                                      as 'bypassed' rather than 'passed'.
-//
-// Both of those config keys (verifyUrl, fetchImpl) are refuse-severity bypasses
-// in env-guard's roster, so this composition is CONSTRUCTABLE ONLY because the
-// database is stamped 'development' and NODE_ENV is not production. On a
-// production instance assertSafeConfig() throws and no app is built at all —
-// which is why the guard is called here with the real database handle rather
-// than being told an answer.
+// The storage guard is the real filesystem admission path. Tests can replace
+// its statfs seam when they need to drive the low-space leg.
 //
 // ===========================================================================
 // WHY THE COOKIE NAME IS NOT PASSED TO routes/admin.mjs
@@ -74,7 +57,7 @@ import { createApp } from '../../app.mjs'
 import { createDanmakuSource } from '../../lib/danmaku-source.mjs'
 import { DEV_ADMIN_OPEN_ID } from '../../lib/dev-admin.mjs'
 import { createLoudnessNormalizer } from '../../lib/loudness.mjs'
-import { createTurnstile } from '../../lib/turnstile.mjs'
+import { createStorageGuard } from '../../lib/storage-guard.mjs'
 import adminRoutes from '../../routes/admin.mjs'
 import publicRoutes, { LOGIN_STATES } from '../../routes/public.mjs'
 import { createTestClock } from '../helpers/clock.mjs'
@@ -173,21 +156,21 @@ export function multipart(parts) {
  * spreading a multipart result over a `headers` object silently replaces the
  * boundary, which costs a test its session and reports it as identity_required.
  */
-export function postForm(app, url, { cookie, parts }) {
+export function postForm(app, url, { cookie, headers: extraHeaders = {}, parts }) {
   const body = multipart(parts)
-  const headers = { 'content-type': body.contentType }
+  const headers = { ...extraHeaders, 'content-type': body.contentType }
   if (cookie !== undefined) headers.cookie = cookie
   return app.inject({ method: 'POST', url, headers, payload: body.payload })
 }
 
-export function postJson(app, url, { cookie, body = {} } = {}) {
-  const headers = { 'content-type': 'application/json' }
+export function postJson(app, url, { cookie, headers: extraHeaders = {}, body = {} } = {}) {
+  const headers = { ...extraHeaders, 'content-type': 'application/json' }
   if (cookie !== undefined) headers.cookie = cookie
   return app.inject({ method: 'POST', url, headers, payload: JSON.stringify(body) })
 }
 
-export function get(app, url, { cookie } = {}) {
-  const headers = {}
+export function get(app, url, { cookie, headers: extraHeaders = {} } = {}) {
+  const headers = { ...extraHeaders }
   if (cookie !== undefined) headers.cookie = cookie
   return app.inject({ method: 'GET', url, headers })
 }
@@ -213,7 +196,7 @@ export const anItem = (overrides = {}) => ({
 // The server
 
 /**
- * boot(t, options) -> { app, db, clock, danmaku, turnstile, siteverifyCalls, paths, config, report }
+ * boot(t, options) -> { app, db, clock, danmaku, storageGuard, paths, config, report }
  *
  * Every step is in the order server.mjs puts it in, and the order is the whole
  * point of that file: the guard needs the migrated database (it reads
@@ -221,15 +204,12 @@ export const anItem = (overrides = {}) => ({
  * refuse to construct from a config it has not cleared).
  */
 export async function boot(t, {
-  turnstile: turnstileKind = 'stub',
-  turnstileSwitch = 'auto',
-  simulate,
-  siteverify,
   roomId = ROOM_ID,
   maxFileBytes,
   maxClipsPerBatch,
   adminOpenIds = [OWNER.openId],
   devAdminBypass = false,
+  storageGuard: suppliedStorageGuard,
 } = {}) {
   // 1. the database, stamped 'development' — the mark the guard reads and the
   //    mark schema.sql's bypass triggers consult. It is a one-way ratchet, so a
@@ -254,17 +234,6 @@ export async function boot(t, {
 
   const clock = createTestClock(T0)
 
-  // Every call siteverify received, so a test can prove a refusal happened
-  // WITHOUT a network call — which is the difference between "we rejected the
-  // replay" and "Cloudflare did".
-  const siteverifyCalls = []
-  const answer = siteverify ?? (() => ({ success: true, hostname: 'localhost' }))
-  const fetchImpl = async (url, init) => {
-    const body = new URLSearchParams(String(init.body))
-    siteverifyCalls.push({ url, token: body.get('response'), remoteip: body.get('remoteip') })
-    return { ok: true, status: 200, json: async () => answer(body.get('response')) }
-  }
-
   const limits = {}
   if (maxClipsPerBatch !== undefined) limits.maxClipsPerBatch = maxClipsPerBatch
   if (maxFileBytes !== undefined) limits.maxFileBytes = maxFileBytes
@@ -275,6 +244,7 @@ export async function boot(t, {
   const { config, report } = clearedConfig(
     {
       storage: {
+        dataDir: paths.dataDir,
         mediaDir: paths.mediaDir,
         catalogFile: paths.catalogFile,
         stagingDir: paths.stagingDir,
@@ -288,21 +258,6 @@ export async function boot(t, {
         clock,
         ...(roomId === null ? {} : { roomId }),
       },
-      turnstile:
-        turnstileKind === 'stub'
-          ? {
-              mode: 'production',
-              siteKey: 'site-key-for-the-widget',
-              secretKey: 'secret-key',
-              switch: turnstileSwitch,
-              verifyUrl: 'https://siteverify.invalid/turnstile/v0/siteverify',
-              fetchImpl,
-            }
-          : {
-              mode: 'development',
-              switch: turnstileSwitch,
-              ...(simulate === undefined ? {} : { development: { simulate } }),
-            },
     },
     { db, instanceMode: undefined },
   )
@@ -315,16 +270,16 @@ export async function boot(t, {
     : [...adminOpenIds]
   const whole = Object.freeze({
     ...config,
+    storage: { ...config.storage, dataDir: paths.dataDir },
     nodeEnv: 'development',
     server: { trustProxy: false, logLevel: 'silent' },
     session: { secret: 'test-session-secret-'.padEnd(48, 'x'), ttlHours: 336, allowPlainHttp: true },
     admin: { openIds: effectiveAdminOpenIds },
   })
 
-  // 3. the sources. ONE turnstile for the whole process: its single-use token map
-  //    is per instance, so a second one would silently make every replay pass.
+  // 3. the sources and storage guard.
   const danmaku = createDanmakuSource(config.danmaku)
-  const turnstile = createTurnstile(config.turnstile)
+  const storageGuard = suppliedStorageGuard ?? createStorageGuard({ dataDir: paths.dataDir, now: clock.now })
   // The real normalizer, same as production: the http harness exercises the
   // submission route end to end, so a stand-in here would prove less than the
   // process it stands for. ffmpeg is present in the API image and on a dev
@@ -335,7 +290,7 @@ export async function boot(t, {
     config: whole,
     db,
     danmaku,
-    turnstile,
+    storageGuard,
     logger: false,
     report,
     devAdminBypass,
@@ -348,7 +303,7 @@ export async function boot(t, {
           adminOpenIds: effectiveAdminOpenIds,
           devAdminBypass,
           danmakuSource: danmaku,
-          turnstile,
+          storageGuard,
           normalizer,
           now: clock.now,
         },
@@ -372,6 +327,8 @@ export async function boot(t, {
             themeCssFile: paths.themeCssFile,
             wallpaperDir: paths.wallpaperDir,
           },
+          storageGuard,
+          storageWorstCaseBytes: whole.limits.maxFileBytes,
           // The same source the public plugin got, so admin-invite tests through
           // boot() exercise the real room orchestration rather than a stub.
           danmakuSource: danmaku,
@@ -385,7 +342,7 @@ export async function boot(t, {
   await app.ready()
   t.after(() => app.close())
 
-  return { app, db, clock, danmaku, turnstile, siteverifyCalls, paths, config: whole, report }
+  return { app, db, clock, danmaku, storageGuard, paths, config: whole, report }
 }
 
 /**

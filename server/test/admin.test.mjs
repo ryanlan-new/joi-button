@@ -222,6 +222,7 @@ test('the plugin puts ONE gate in front of every route it registers, and registe
       'POST /api/admin/clips/:id/restore',
       // Media reclamation (STORY-077): preview and sweep unreferenced blobs.
       'GET /api/admin/reclaimable',
+      'GET /api/admin/storage',
       'POST /api/admin/reclaim',
       'GET /api/admin/audit',
       'GET /api/admin/theme',

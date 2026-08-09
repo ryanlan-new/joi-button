@@ -20,10 +20,8 @@
 #      carried over WITHOUT ever being displayed.
 #
 # The variable set is the authority in deploy/runtime.env.example: BILI_* (the
-# identity mechanism), SESSION_SECRET, the ruled ceilings, and the dev bypasses
-# (pinned off). Turnstile is written as OFF with empty keys and is NOT prompted
-# for — it is deferred, and off-with-no-keys is a supported posture the API
-# boots on. ADMIN_OPEN_IDS is left empty here and filled by the first-admin step
+# identity mechanism), SESSION_SECRET, the ruled ceilings, and the dev bypass
+# (pinned off). ADMIN_OPEN_IDS is left empty here and filled by the first-admin step
 # after the site is up, because the owner cannot know their own open_id until
 # they have logged in once.
 
@@ -193,17 +191,9 @@ collect_env() {
   # cluster (it mounts the PVC at /srv/shared); kept for a local run.
   DATA_DIR="${DATA_DIR:-./.data}"
 
-  # Turnstile: deferred. Written OFF with empty keys and never prompted — the API
-  # boots on this posture, and the env-guard makes the keys optional while the
-  # switch is off. When it is time, set TURNSTILE_SWITCH and fill the keys.
-  TURNSTILE_SWITCH=off
-  TURNSTILE_SITE_KEY=''
-  TURNSTILE_SECRET_KEY=''
-
-  # Dev bypasses pinned OFF: a production process refuses them anyway, and a
-  # bootstrap offering to turn them on would be offering to break itself.
+  # Dev bypass pinned OFF: a production process refuses it anyway, and a
+  # bootstrap offering to turn it on would be offering to break itself.
   DEV_BYPASS_DANMAKU=0
-  DEV_BYPASS_TURNSTILE=0
 
   # ADMIN_OPEN_IDS: whatever it was (empty on a first run). The first-admin step
   # fills it after login; a re-run must not wipe an already-bootstrapped one.
@@ -239,16 +229,12 @@ write_runtime_env() {
     printf 'BILI_ACCESS_KEY_SECRET=%s\n' "$BILI_ACCESS_KEY_SECRET"
     printf 'BILI_ROOM_OWNER_AUTH_CODE=%s\n' "$BILI_ROOM_OWNER_AUTH_CODE"
     printf 'DANMAKU_LINGER_SECONDS=%s\n' "$DANMAKU_LINGER_SECONDS"
-    printf 'TURNSTILE_SITE_KEY=%s\n' "$TURNSTILE_SITE_KEY"
-    printf 'TURNSTILE_SECRET_KEY=%s\n' "$TURNSTILE_SECRET_KEY"
-    printf 'TURNSTILE_SWITCH=%s\n' "$TURNSTILE_SWITCH"
     printf 'ADMIN_OPEN_IDS=%s\n' "$ADMIN_OPEN_IDS"
     printf 'SESSION_SECRET=%s\n' "$SESSION_SECRET"
     printf 'DATA_DIR=%s\n' "$DATA_DIR"
     printf 'MAX_CLIPS_PER_BATCH=%s\n' "$MAX_CLIPS_PER_BATCH"
     printf 'MAX_FILE_BYTES=%s\n' "$MAX_FILE_BYTES"
     printf 'DEV_BYPASS_DANMAKU=%s\n' "$DEV_BYPASS_DANMAKU"
-    printf 'DEV_BYPASS_TURNSTILE=%s\n' "$DEV_BYPASS_TURNSTILE"
   } >>"$tmp"
   mv "$tmp" "$out"
   chmod 600 "$out"

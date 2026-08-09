@@ -14,11 +14,11 @@
 //      which does not fail open, but does make the development doubles
 //      unconstructable for a reason nobody can see.
 //
-//   2. THE SOURCES NEED THE GUARD. createDanmakuSource() and createTurnstile()
-//      refuse to build their development implementations from a config
-//      assertSafeConfig() has not cleared, and the clearance is re-derived from
-//      the live values at that moment. Constructing them first is not merely out
-//      of order, it does not work.
+//   2. THE SOURCE NEEDS THE GUARD. createDanmakuSource() refuses to build its
+//      development implementation from a config assertSafeConfig() has not
+//      cleared, and the clearance is re-derived from the live values at that
+//      moment. Constructing it first is not merely out of order, it does not
+//      work.
 //
 // NOTHING BINDS A SOCKET UNTIL ALL OF THAT HAS RETURNED. listen() is the last
 // statement in main(), so a refusal from any step above is a process that exits
@@ -59,7 +59,7 @@ import { synchronizeCatalog } from './lib/catalog.mjs'
 import { assertSafeConfig } from './lib/env-guard.mjs'
 import { createDanmakuSource } from './lib/danmaku-source.mjs'
 import { createLoudnessNormalizer } from './lib/loudness.mjs'
-import { createTurnstile } from './lib/turnstile.mjs'
+import { createStorageGuard } from './lib/storage-guard.mjs'
 import { DEV_ADMIN_OPEN_ID } from './lib/dev-admin.mjs'
 
 /**
@@ -137,11 +137,10 @@ async function main() {
   const catalogSync = synchronizeCatalog(db, adminStoragePaths(config.storage))
 
   // --- 6. the sources ------------------------------------------------------
-  // After the guard, and only after it: in development mode both of these check
-  // that this exact config was cleared, and that it still holds the values it
-  // was cleared for.
+  // After the guard, and only after it: the room source checks that this exact
+  // config was cleared, and that it still holds the values it was cleared for.
   const danmaku = createDanmakuSource(config.danmaku)
-  const turnstile = createTurnstile(config.turnstile)
+  const storageGuard = createStorageGuard({ dataDir: config.storage.dataDir })
 
   // --- 6b. the loudness normalizer -----------------------------------------
   // Probed HERE, not at first upload. The probe failing at boot names ffmpeg
@@ -158,7 +157,7 @@ async function main() {
     config,
     db,
     danmaku,
-    turnstile,
+    storageGuard,
     logger: { level: config.server.logLevel },
     report,
     devAdminBypass,
@@ -177,7 +176,7 @@ async function main() {
           adminOpenIds,
           devAdminBypass,
           danmakuSource: danmaku,
-          turnstile,
+          storageGuard,
           normalizer,
         },
       },
@@ -194,6 +193,8 @@ async function main() {
           // catalogue's directory. Setting either variable changed nothing, and
           // the theme was written where the web pod does not serve it.
           paths: adminStoragePaths(config.storage),
+          storageGuard,
+          storageWorstCaseBytes: config.limits.maxFileBytes,
           // The SAME room source the public routes use — one socket per process
           // (it is reference-counted), so admin invitations and logins share it
           // rather than opening a second. This is what lets an invite listen.
@@ -217,7 +218,6 @@ async function main() {
       schemaVersion: migration.to,
       schemaApplied: migration.applied,
       danmaku: danmaku.mode,
-      turnstile: turnstile.mode,
       envFile: envFile.present ? envFile.path : null,
       admins: adminOpenIds.length,
       // Paths, not values: this line goes to the cluster log.

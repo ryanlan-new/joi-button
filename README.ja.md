@@ -55,7 +55,8 @@ VTuber の [Joi_Channel（轴伊）](https://space.bilibili.com/61639371)のた�
 - **弾幕一つで本人確認**：アカウント登録もパスワードも不要——サイトが発行するワンタイムフレーズを配信者の Bilibili 配信ルームに弾幕として送るだけで確認完了。「通りすがりのファンがふらっと投稿できる」を本当に実現；
 - **ラウドネス自動正規化**：受付時に音量を自動で揃えるので、投稿者が MP3Gain を回す必要はなく、サイト上のボタンは常に同じ音量；
 - **重複の自動検出**：公開済み音声とバイト単位で同一の投稿はその場で丁重にお断りし、どのボタンで既に鳴っているかをお知らせ；
-- **人間確認はお好みで**：Cloudflare Turnstile をスイッチ一つで。オフのままでも安全に運用できます。
+- **共通の濫用・容量ゲート**：ウェブと第三者 API は 1 分に 1 バッチの制限を共有し、空き容量が不足すると投稿と管理画面のアップロードを保存前に拒否します。
+- **第三者 API**：トークン、機械可読な投稿契約、依存なしの利用例は [docs/api.md](docs/api.md) にあります。
 
 ### 🛡️ 審査デスク（管理人への誠意）
 
@@ -143,8 +144,7 @@ git tag v1.0.0 && git push origin v1.0.0   # 自動ビルド + 自動デプロ�
 npm install && npm run serve      # フロントエンド（ホットリロード）
 cd server && npm install
 LOCAL_SESSION_SECRET="$(node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))")"
-NODE_ENV=development DANMAKU_MODE=development TURNSTILE_MODE=development \
-TURNSTILE_SWITCH=off DEV_PLAIN_HTTP=1 HOST=127.0.0.1 PORT=8081 \
+NODE_ENV=development DANMAKU_MODE=development DEV_PLAIN_HTTP=1 HOST=127.0.0.1 PORT=8081 \
 SESSION_SECRET="$LOCAL_SESSION_SECRET" npm run dev   # API；ローカル管理画面はログイン不要
 ```
 

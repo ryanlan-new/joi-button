@@ -163,6 +163,8 @@ export class AdminError extends Error {
  *   db: import('better-sqlite3').Database,
  *   adminOpenIds: string[],
  *   paths: { catalogFile: string, mediaDir: string, sourceDir?: string },
+ *   storageGuard?: { reserve: Function, release: Function },
+ *   storageWorstCaseBytes?: number,
  *   cookieName?: string,
  *   mediaBaseUrl?: string,
  *   resolveIdentity?: (request: object) => Promise<object|null>|object|null,
@@ -181,6 +183,10 @@ export default async function adminRoutes(fastify, options = {}) {
 
   const db = requirePresent(options.db, 'options.db')
   const paths = requirePresent(options.paths, 'options.paths')
+  const storageGuard = options.storageGuard ?? null
+  const storageWorstCaseBytes = Number.isFinite(options.storageWorstCaseBytes)
+    ? options.storageWorstCaseBytes
+    : 5 * 1024 * 1024
   const now = options.now ?? (() => new Date())
   const mediaBaseUrl = options.mediaBaseUrl ?? MEDIA_BASE_URL
   const gate = createAdminGate({
@@ -190,6 +196,32 @@ export default async function adminRoutes(fastify, options = {}) {
     resolveIdentity: options.resolveIdentity,
     now,
   })
+
+  async function withStorageReservation(work) {
+    if (storageGuard === null) return work()
+    let reservation
+    try {
+      reservation = await storageGuard.reserve(storageWorstCaseBytes)
+    } catch (error) {
+      throw new AdminError('Storage space is low. Please contact the site administrator.', {
+        code: 'storage_exhausted',
+        status: 503,
+        details: null,
+      })
+    }
+    if (!reservation.allowed) {
+      throw new AdminError('Storage space is low. Please contact the site administrator.', {
+        code: 'storage_exhausted',
+        status: 503,
+        details: null,
+      })
+    }
+    try {
+      return await work()
+    } finally {
+      storageGuard.release(storageWorstCaseBytes)
+    }
+  }
 
   // The env seed, as a set — the floor of admin authority and the thing the
   // management routes below refuse to let anyone remove. Same normalisation the
@@ -347,6 +379,13 @@ export default async function adminRoutes(fastify, options = {}) {
     answered(reply, () => reclaimablePreview(db, { now })),
   )
 
+  fastify.get('/api/admin/storage', async (request, reply) =>
+    answered(reply, async () => ({
+      storage: storageGuard === null ? null : await storageGuard.snapshot(),
+      reclaimable: reclaimablePreview(db, { now }),
+    })),
+  )
+
   fastify.post('/api/admin/reclaim', async (request, reply) =>
     guarded(reply, request.adminIdentity, db, now, () =>
       collectMedia(db, paths.mediaDir, { actor: request.adminIdentity, now }),
@@ -459,7 +498,9 @@ export default async function adminRoutes(fastify, options = {}) {
     themeGuarded(reply, request.adminIdentity, db, now, async () => {
       const actor = request.adminIdentity
       const upload = await readSingleFileUpload(request, 'wallpaper')
-      const stored = await storeWallpaper(upload, { wallpaperDir: themePaths.wallpaperDir })
+      const stored = await withStorageReservation(() =>
+        storeWallpaper(upload, { wallpaperDir: themePaths.wallpaperDir }),
+      )
 
       record(db, {
         actorKind: 'owner',
@@ -538,7 +579,9 @@ export default async function adminRoutes(fastify, options = {}) {
       guarded(reply, request.adminIdentity, db, now, async () => {
         const actor = request.adminIdentity
         const upload = await readSingleFileUpload(request, 'favicon')
-        const stored = await storeFavicon(upload, { faviconDir: brandingPaths.faviconDir })
+        const stored = await withStorageReservation(() =>
+          storeFavicon(upload, { faviconDir: brandingPaths.faviconDir }),
+        )
         // Persist the favicon onto the branding document in the same call, so an
         // upload is live immediately rather than only after a separate save.
         const current = await readBranding(brandingPaths.brandingFile)
@@ -881,7 +924,7 @@ function defaultIdentityResolver(db, cookieName, now) {
     SELECT s.id AS session_id, sub.id AS submitter_id, sub.open_id, sub.display_name
     FROM sessions s
     JOIN submitters sub ON sub.id = s.submitter_id
-    WHERE s.token_sha256 = ? AND s.revoked_at IS NULL AND s.expires_at > ?
+    WHERE s.token_sha256 = ? AND s.kind = 'cookie' AND s.revoked_at IS NULL AND s.expires_at > ?
   `)
 
   return (request) => {
@@ -945,16 +988,18 @@ export function readQueue(db, { limit = QUEUE_DEFAULT_LIMIT, mediaBaseUrl = MEDI
     .prepare(`
       SELECT i.id, i.batch_id, i.position, i.proposed_label, i.proposed_group_id, i.submitter_note,
              i.created_at,
-             b.submitted_at, b.turnstile_required, b.turnstile_verdict,
+             b.submitted_at, b.session_id,
              m.sha256, m.ext, m.content_type, m.bytes, m.duration_seconds, m.storage_path,
              s.id AS submitter_id, s.open_id, s.display_name, s.blocked,
              s.submitted_count, s.approved_count, s.rejected_count,
+             sess.kind AS session_kind, sess.client_label,
              e.submitted_count AS expected_submitted, e.approved_count AS expected_approved,
              e.rejected_count AS expected_rejected
       FROM batch_items i
       JOIN batches b ON b.id = i.batch_id
       JOIN media m ON m.sha256 = i.media_sha256
       JOIN submitters s ON s.id = b.submitter_id
+      LEFT JOIN sessions sess ON sess.id = b.session_id
       JOIN v_submitter_counts_expected e ON e.submitter_id = s.id
       WHERE i.state = 'pending' AND b.state = 'submitted'
       ORDER BY b.submitted_at, b.id, i.position
@@ -972,10 +1017,7 @@ export function readQueue(db, { limit = QUEUE_DEFAULT_LIMIT, mediaBaseUrl = MEDI
       const batch = {
         batchId: row.batch_id,
         submittedAt: row.submitted_at,
-        turnstile: {
-          required: row.turnstile_required === 1,
-          verdict: row.turnstile_verdict,
-        },
+        source: sourceView(row),
         submitter: submitterView(row),
         items: [],
       }
@@ -992,6 +1034,12 @@ export function readQueue(db, { limit = QUEUE_DEFAULT_LIMIT, mediaBaseUrl = MEDI
     truncated,
     limit,
   }
+}
+
+function sourceView(row) {
+  return row.session_kind === 'api'
+    ? { channel: 'api', clientClaim: row.client_label }
+    : { channel: 'web' }
 }
 
 // ---------------------------------------------------------------------------
@@ -1088,8 +1136,8 @@ function submitterView(row) {
     openId: row.open_id,
     displayName: row.display_name,
     blocked: row.blocked === 1,
-    // The stored counters are what the anti-abuse rules read (lib/turnstile.mjs
-    // takes them as numbers), so they are what the desk shows. The view beside
+    // The stored counters are the submitter history, so they are what the desk
+    // shows. The view beside
     // them is the truth; schema.sql repairs neither, on the grounds that a
     // silent repair hides the bug that caused the drift — so the drift is
     // reported instead of fixed here.
@@ -1154,16 +1202,18 @@ export function readItem(db, itemId, { mediaBaseUrl = MEDIA_BASE_URL } = {}) {
     .prepare(`
       SELECT i.id, i.batch_id, i.position, i.proposed_label, i.proposed_group_id, i.submitter_note,
              i.state, i.created_at, i.resolved_at, i.reviewer_note, i.clip_id,
-             b.state AS batch_state, b.submitted_at, b.turnstile_required, b.turnstile_verdict,
+             b.state AS batch_state, b.submitted_at, b.session_id,
              m.sha256, m.ext, m.content_type, m.bytes, m.duration_seconds, m.storage_path,
              s.id AS submitter_id, s.open_id, s.display_name, s.blocked,
              s.submitted_count, s.approved_count, s.rejected_count,
+             sess.kind AS session_kind, sess.client_label,
              e.submitted_count AS expected_submitted, e.approved_count AS expected_approved,
              e.rejected_count AS expected_rejected
       FROM batch_items i
       JOIN batches b ON b.id = i.batch_id
       JOIN media m ON m.sha256 = i.media_sha256
       JOIN submitters s ON s.id = b.submitter_id
+      LEFT JOIN sessions sess ON sess.id = b.session_id
       JOIN v_submitter_counts_expected e ON e.submitter_id = s.id
       WHERE i.id = ?
     `)
@@ -1182,7 +1232,7 @@ export function readItem(db, itemId, { mediaBaseUrl = MEDIA_BASE_URL } = {}) {
       batchId: row.batch_id,
       state: row.batch_state,
       submittedAt: row.submitted_at,
-      turnstile: { required: row.turnstile_required === 1, verdict: row.turnstile_verdict },
+      source: sourceView(row),
       progress: db
         .prepare('SELECT item_count, pending_count, approved_count, rejected_count, failed_count, is_resolvable FROM v_batch_progress WHERE batch_id = ?')
         .get(row.batch_id),

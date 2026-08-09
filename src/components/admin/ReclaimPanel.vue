@@ -16,6 +16,30 @@
             {{ $t("admin.reclaim.resultFailures", { n: result.failures.length }) }}
         </p>
 
+        <div v-if="storage" class="adm-panel adm-storage-card">
+            <h3 class="adm-h">{{ $t("admin.storage.title") }}</h3>
+            <p v-if="storage.storage === null" class="adm-note adm-note-warn">{{ $t("admin.storage.unavailable") }}</p>
+            <dl v-else class="adm-register">
+                <dt>{{ $t("admin.storage.available") }}</dt>
+                <dd class="adm-num">{{ humanBytes(storage.storage.availableBytes) }}</dd>
+                <dt>{{ $t("admin.storage.used") }}</dt>
+                <dd class="adm-num">{{ humanBytes(storage.storage.usedBytes) }} / {{ humanBytes(storage.storage.totalBytes) }}</dd>
+                <dt>{{ $t("admin.storage.reserve") }}</dt>
+                <dd class="adm-num">{{ humanBytes(storage.storage.reserveBytes) }}</dd>
+                <dt>{{ $t("admin.storage.inflight") }}</dt>
+                <dd class="adm-num">{{ humanBytes(storage.storage.inflightBytes) }}</dd>
+                <dt>{{ $t("admin.storage.status") }}</dt>
+                <dd :class="storage.storage.refusing ? 'adm-note-warn' : 'adm-note-ok'">
+                    {{ storage.storage.refusing ? $t("admin.storage.refusing") : $t("admin.storage.accepting") }}
+                </dd>
+                <dt>{{ $t("admin.storage.lastRefusal") }}</dt>
+                <dd class="adm-num">{{ storage.storage.lastRefusalAt || $t("admin.storage.never") }}</dd>
+            </dl>
+            <p class="adm-sub">
+                {{ $t("admin.storage.reclaimable", { count: storage.reclaimable.count, size: humanBytes(storage.reclaimable.totalBytes) }) }}
+            </p>
+        </div>
+
         <template v-if="preview">
             <p class="adm-note" :class="preview.count === 0 ? 'adm-note-ok' : 'adm-note-warn'">
                 {{ preview.count === 0
@@ -71,6 +95,7 @@ import Component from 'vue-class-component'
 })
 class ReclaimPanel extends Vue {
     preview = null
+    storage = null
     busy = false
     collecting = false
     callError = ''
@@ -99,7 +124,12 @@ class ReclaimPanel extends Vue {
         this.busy = true
         this.callError = ''
         try {
-            this.preview = await this.adminApi.get('/api/admin/reclaimable')
+            const [preview, storage] = await Promise.all([
+                this.adminApi.get('/api/admin/reclaimable'),
+                this.adminApi.get('/api/admin/storage'),
+            ])
+            this.preview = preview
+            this.storage = storage
         } catch (error) {
             if (error.code !== 'gone') this.callError = error.message
         } finally {

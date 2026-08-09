@@ -26,17 +26,19 @@ const reachedByFileDiscovery = process.argv[1] === fileURLToPath(import.meta.url
 if (!reachedByFileDiscovery) {
   await Promise.all([
     import('./admin.test.mjs'),
+    import('./api-docs.test.mjs'),
+    import('./api-token.test.mjs'),
     import('./catalog.test.mjs'),
     import('./danmaku-source.test.mjs'),
     import('./env-guard.test.mjs'),
     import('./schema-audit-log.test.mjs'),
     import('./schema-batches.test.mjs'),
     import('./schema-catalogue.test.mjs'),
-    import('./schema-dev-bypass.test.mjs'),
     import('./schema-i18n-text.test.mjs'),
     import('./schema-verify-codes.test.mjs'),
-    import('./timestamps.test.mjs'),
-    import('./turnstile.test.mjs'),
+    import('./storage-guard.test.mjs'),
+    import('./submission-rate.test.mjs'),
     import('./voices-captions.test.mjs'),
+    import('./migrate-v2.test.mjs'),
   ])
 }

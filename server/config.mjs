@@ -42,10 +42,9 @@
 // Published by deploy/runtime.env.example, spelled exactly as it publishes them:
 //
 //   BILI_APP_ID  BILI_ROOM_ID  BILI_ACCESS_KEY_ID  BILI_ACCESS_KEY_SECRET
-//   BILI_ROOM_OWNER_AUTH_CODE  TURNSTILE_SITE_KEY  TURNSTILE_SECRET_KEY
+//   BILI_ROOM_OWNER_AUTH_CODE
 //   ADMIN_OPEN_IDS  SESSION_SECRET  DATA_DIR  DB_FILE  MEDIA_DIR  CATALOG_FILE
-//   MAX_CLIPS_PER_BATCH  MAX_FILE_BYTES  DEV_BYPASS_DANMAKU  DEV_BYPASS_TURNSTILE
-//   DANMAKU_MODE  TURNSTILE_MODE
+//   MAX_CLIPS_PER_BATCH  MAX_FILE_BYTES  DEV_BYPASS_DANMAKU  DANMAKU_MODE
 //
 // NOT published there — the template should grow them, and until it does this
 // comment is the only place they are written down:
@@ -55,9 +54,6 @@
 //   PORT, HOST          the listener. Nothing can start without them.
 //   LOG_LEVEL           pino level.
 //   TRUST_PROXY         hop count or trusted-address list; see readTrustProxy.
-//   TURNSTILE_SWITCH    REQUIRED by env-guard's roster (turnstile.switch), and
-//                       it is the operator's 1am kill switch, so it has to be
-//                       settable without a rebuild.
 //   CODE_TTL_MINUTES    REQUIRED by env-guard's roster (danmaku.codeTtlMinutes).
 //   SESSION_TTL_HOURS   how long a bound session cookie stays valid.
 //   DEV_PLAIN_HTTP      drops Secure from the session cookie. Inert outside a
@@ -96,7 +92,6 @@ const DEFAULTS = Object.freeze({
   maxFileBytes: 5 * MiB,
   codeTtlMinutes: 10,
   sessionTtlHours: 30 * 24,
-  turnstileSwitch: 'auto',
   logLevel: 'info',
 })
 
@@ -158,11 +153,6 @@ export const ENV_SOURCES = Object.freeze({
   'danmaku.roomOwnerAuthCode': Object.freeze(['BILI_ROOM_OWNER_AUTH_CODE']),
   'danmaku.codeTtlMinutes': Object.freeze(['CODE_TTL_MINUTES']),
 
-  'turnstile.mode': Object.freeze(['TURNSTILE_MODE', 'DEV_BYPASS_TURNSTILE']),
-  'turnstile.siteKey': Object.freeze(['TURNSTILE_SITE_KEY']),
-  'turnstile.secretKey': Object.freeze(['TURNSTILE_SECRET_KEY']),
-  'turnstile.switch': Object.freeze(['TURNSTILE_SWITCH']),
-
   'session.secret': Object.freeze(['SESSION_SECRET']),
   'session.ttlHours': Object.freeze(['SESSION_TTL_HOURS']),
   'session.allowPlainHttp': Object.freeze(['DEV_PLAIN_HTTP']),
@@ -199,7 +189,6 @@ const SECRET_ENV = Object.freeze(
     'BILI_ACCESS_KEY_ID',
     'BILI_ACCESS_KEY_SECRET',
     'BILI_ROOM_OWNER_AUTH_CODE',
-    'TURNSTILE_SECRET_KEY',
     'SESSION_SECRET',
   ]),
 )
@@ -312,8 +301,6 @@ export function loadConfig({ env: processEnv = process.env, envFile = DEFAULT_EN
   // Either one alone is enough; the guard refuses either one alone in
   // production.
   const danmakuMode = read.mode('danmaku.mode')
-  const turnstileMode = read.mode('turnstile.mode')
-
   // --- storage -----------------------------------------------------------
   const dataDir = read.string('storage.dataDir') ?? DEFAULTS.dataDir
   const databaseFile = read.string('database.file') ?? join(dataDir, DERIVED_FROM_DATA_DIR.dbFile)
@@ -409,17 +396,6 @@ export function loadConfig({ env: processEnv = process.env, envFile = DEFAULT_EN
       },
     },
 
-    turnstile: {
-      mode: turnstileMode,
-      siteKey: read.string('turnstile.siteKey'),
-      secretKey: read.secret('turnstile.secretKey'),
-      switch: read.string('turnstile.switch') ?? DEFAULTS.turnstileSwitch,
-      // verifyUrl and fetchImpl are deliberately absent and must stay absent:
-      // env-guard lists both as refuse-severity bypasses, because either one
-      // turns the challenge verdict into whatever the injected thing says. They
-      // exist for tests, which build their own config.
-    },
-
     session: {
       secret: sessionSecret,
       ttlHours: read.integer('session.ttlHours') ?? DEFAULTS.sessionTtlHours,
@@ -472,7 +448,7 @@ export function envNamesFor(path) {
  * silently-dropped assignment is the last thing it needs.
  *
  * Handles what the committed template actually contains: comment lines, blank
- * lines, empty assignments (`TURNSTILE_SITE_KEY=`) and trailing comments after a
+ * lines, empty assignments and trailing comments after a
  * value (`BILI_ACCESS_KEY_SECRET=            # ★`). A '#' only starts a comment
  * when it follows whitespace or begins the value, so a '#' inside a password is
  * kept. Quoted values keep everything between the quotes.
@@ -590,8 +566,8 @@ function mergeEnvironment(fileValues, processEnv) {
 function makeReader(env, problems) {
   // Trimmed, and empty reads as absent. Both because a value mounted from a
   // Kubernetes Secret routinely arrives with a trailing newline, and because
-  // `TURNSTILE_SITE_KEY=` in the template means "not set yet" — reporting that
-  // as a present-but-empty string would produce "wrong-type" where the operator
+  // An empty assignment in the template means "not set yet" — reporting that as
+  // a present-but-empty string would produce "wrong-type" where the operator
   // needs to read "missing".
   const raw = (name) => {
     const value = env[name]
@@ -704,10 +680,10 @@ function bypassIsOn(name, value) {
  *
  * This is not pedantry about spelling. fastify's `trustProxy: true` makes
  * request.ip the LEFTMOST X-Forwarded-For entry, which any client can write —
- * and that address is what turnstile.verify() would then send to siteverify as
- * `remoteip`, where it is compared against the address that actually solved the
- * challenge. A spoofed header turns into a hard rejection for a legitimate
- * visitor. turnstile.mjs says it in one line: "Omit it rather than pass a guess."
+ * and that address is what an external identity verifier would send as
+ * `remoteip`, where it is compared against the address that actually completed
+ * the verification. A spoofed header turns into a hard rejection for a
+ * legitimate visitor. Omit it rather than pass a guess.
  *
  * A number takes the nth address from the RIGHT (1 = the address the ingress
  * observed, which is the usual answer behind traefik) and a list takes the

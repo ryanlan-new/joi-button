@@ -55,7 +55,8 @@
 - **一条弹幕完成身份验证**：不注册、不设密码——站点发给投稿人一句一次性口令，到主播的 B 站直播间发一条弹幕，身份即验证完成。真正做到「路过的粉丝顺手就能投」；
 - **响度自动归一化**：收件时自动统一响度，投稿人不必自己跑 MP3Gain，站上的每个按钮音量整齐划一；
 - **重复自动拦截**：与已上线音声字节相同的投稿会被当场婉拒，并告知它已经在哪个按钮上；
-- **人机验证可选**：Cloudflare Turnstile 一键开关，默认关闭也能安全运行。
+- **统一节流与存储闸门**：网页和第三方 API 共用每分钟投稿限制；磁盘低于固定保留线时，投稿和后台上传都会明确拒绝。
+- **第三方 API**：令牌、机读投稿契约和零依赖调用示例见 [docs/api.md](docs/api.md)。
 
 ### 🛡️ 审核台（对站长的诚意）
 
@@ -143,8 +144,7 @@ git tag v1.0.0 && git push origin v1.0.0   # 自动构建 + 自动部署
 npm install && npm run serve      # 前端，热更新
 cd server && npm install
 LOCAL_SESSION_SECRET="$(node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))")"
-NODE_ENV=development DANMAKU_MODE=development TURNSTILE_MODE=development \
-TURNSTILE_SWITCH=off DEV_PLAIN_HTTP=1 HOST=127.0.0.1 PORT=8081 \
+NODE_ENV=development DANMAKU_MODE=development DEV_PLAIN_HTTP=1 HOST=127.0.0.1 PORT=8081 \
 SESSION_SECRET="$LOCAL_SESSION_SECRET" npm run dev   # API 服务；后台免登录
 ```
 

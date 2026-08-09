@@ -126,10 +126,8 @@ spec:
             - name: DATA_DIR
               value: /srv/shared
             # One hop: traefik. With `true`, fastify would take the LEFTMOST
-            # X-Forwarded-For entry, which any client can write — and that
-            # address is what turnstile.verify() sends to siteverify as
-            # `remoteip`, where a spoofed value turns into a hard rejection for a
-            # legitimate visitor. config.mjs refuses `true` outright.
+            # X-Forwarded-For entry, which any client can write. config.mjs
+            # refuses `true` outright.
             - name: TRUST_PROXY
               value: "1"
             # The ruled 10-minute code lifetime. It is ALSO the room session's

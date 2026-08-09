@@ -120,7 +120,7 @@ const CAPTIONS = { 'en-US': 'Ei?', 'zh-CN': '欸？', 'ja-JP': 'え？' }
 // had no `log`, so the optional chaining written to be defensive was the thing
 // doing the hiding. A double that silently absorbs a call it does not model
 // turns a coverage gate into a gate over whatever the double happens to support.
-const UNSUPPORTED_VERBS = ['put', 'patch', 'head', 'options', 'all', 'route']
+const UNSUPPORTED_VERBS = ['put', 'head', 'options', 'all', 'route']
 
 function fakeFastify() {
   const routes = []
@@ -147,6 +147,9 @@ function fakeFastify() {
     },
     post(url, handler) {
       routes.push({ method: 'POST', url, handler })
+    },
+    patch(url, handler) {
+      routes.push({ method: 'PATCH', url, handler })
     },
     delete(url, handler) {
       routes.push({ method: 'DELETE', url, handler })
@@ -213,6 +216,8 @@ test('the plugin puts ONE gate in front of every route it registers, and registe
       'POST /api/admin/publish',
       // The catalogue library: list, and retire/restore a clip (STORY-065).
       'GET /api/admin/clips',
+      'PATCH /api/admin/clips/:id',
+      'POST /api/admin/clips/move',
       'POST /api/admin/clips/:id/retire',
       'POST /api/admin/clips/:id/restore',
       // Media reclamation (STORY-077): preview and sweep unreferenced blobs.
@@ -437,6 +442,7 @@ test('the queue shows only what is actually waiting, and each item with what a r
     caption: { locale: 'zh-CN', text: '他在煎蛋' },
     note: '第一次投稿',
     proposedGroup: '极地煎蛋',
+    source: null,
   })
   // The desk's audition panel plays this url. It has to name the volume the web
   // pod publishes ('/media/'), not the image's own static folder ('voices/',
@@ -815,22 +821,18 @@ test('publishing promotes the drafts, writes the catalogue, and logs the promoti
   assert.equal(again.catalog.catalogChanged, false)
 })
 
-test('publishing refuses to put a clip on the page with a missing translation, and promotes nothing', (t) => {
+test('publishing falls back for a missing translation, warns, and still promotes the clip', (t) => {
   const { db, clipId, paths } = readyToPublish(t)
   db.prepare("DELETE FROM clip_captions WHERE clip_id = ? AND locale = 'ja-JP'").run(clipId)
 
-  assert.throws(
-    () => publishCatalogue(db, paths, { actor: ADMIN, now: at }),
-    (error) => {
-      assert.equal(error.code, 'conflict')
-      assert.deepEqual(error.details.blockingHoles, [{ subject_kind: 'clip', subject_id: clipId, locale: 'ja-JP' }])
-      return true
-    },
-    'with no fallbackLocale a missing translation renders as the raw key path',
-  )
-  assert.equal(db.prepare('SELECT state FROM clips WHERE id = ?').get(clipId).state, 'draft')
-  assert.equal(existsSync(paths.catalogFile), false)
-  assert.equal(db.prepare("SELECT count(*) AS n FROM audit_log WHERE action LIKE 'admin.c%'").get().n, 0)
+  const result = publishCatalogue(db, paths, { actor: ADMIN, now: at })
+  assert.deepEqual(result.warnings, [{ subject_kind: 'clip', subject_id: clipId, locale: 'ja-JP' }])
+  assert.deepEqual(result.plan.promoting, [clipId])
+  assert.equal(result.catalog.catalogChanged, true)
+  assert.equal(db.prepare('SELECT state FROM clips WHERE id = ?').get(clipId).state, 'published')
+  assert.equal(existsSync(paths.catalogFile), true)
+  const document = JSON.parse(readFileSync(paths.catalogFile, 'utf8'))
+  assert.equal(Object.hasOwn(document.clips[0].captions, 'ja-JP'), false)
 })
 
 test('a hole that is already on the page is reported, not used to block the publish that would fix something else', (t) => {

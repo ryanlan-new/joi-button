@@ -83,6 +83,17 @@ function schemaAtV1() {
     .join('\n')
   assert.equal(v1.includes('collected_at'), false, 'the v1 fixture still mentions collected_at')
 
+  // v6: the six optional clip provenance/credit columns and their CHECKs. The
+  // migration owns their exact definitions for an existing database; the
+  // fixture must remove every source_* / credit_hidden line so v6 really runs.
+  assert.ok(v1.includes('source_kind'), 'schema.sql no longer carries source_kind for this fixture to strip')
+  v1 = v1
+    .split('\n')
+    .filter((line) => !line.includes('source_kind') && !line.includes('source_title') && !line.includes('source_date') && !line.includes('source_seconds') && !line.includes('source_url') && !line.includes('credit_hidden'))
+    .join('\n')
+  assert.equal(v1.includes('source_kind'), false, 'the v1 fixture still mentions source_kind')
+  assert.equal(v1.includes('credit_hidden'), false, 'the v1 fixture still mentions credit_hidden')
+
   assert.ok(v1.includes('CREATE TABLE IF NOT EXISTS themes'), 'the strip removed more than it should have')
   assert.ok(v1.includes('CREATE TABLE IF NOT EXISTS clips'), 'the strip removed more than it should have')
   assert.ok(v1.includes('CREATE TABLE IF NOT EXISTS verify_codes'), 'the strip removed more than it should have')
@@ -113,14 +124,14 @@ function openV1(t) {
 }
 
 test('the version roster is self-consistent', () => {
-  assert.equal(SCHEMA_VERSION, 5)
+  assert.equal(SCHEMA_VERSION, 6)
   // MIN_COMPATIBLE stays 1 on purpose: the theme/verify_codes columns and the
   // two admin tables are all invisible to a catalogue reader, and src/catalog.mjs
   // only refuses a document whose minCompatibleVersion EXCEEDS what it knows.
   // Bumping it would make every tab holding a year-cached chunk refuse a
   // catalogue it can read perfectly well.
   assert.equal(MIN_COMPATIBLE_SCHEMA_VERSION, 1)
-  assert.deepEqual(POST_BASELINE_STEPS.map((step) => step.version), [2, 3, 4, 5])
+  assert.deepEqual(POST_BASELINE_STEPS.map((step) => step.version), [2, 3, 4, 5, 6])
 })
 
 test('a v1 database gains themes.wallpaper_path from the post-baseline step', (t) => {
@@ -181,6 +192,13 @@ test('a v1 database gains media.collected_at on the same climb, with its CHECK',
     db.prepare("SELECT count(*) n FROM pragma_table_info('media') WHERE name='collected_at'").get().n,
     1,
   )
+
+  for (const column of ['source_kind', 'source_title', 'source_date', 'source_seconds', 'source_url', 'credit_hidden']) {
+    assert.equal(
+      db.prepare("SELECT count(*) n FROM pragma_table_info('clips') WHERE name = ?").get(column).n,
+      1,
+    )
+  }
 
   const insert = db.prepare(
     'INSERT INTO media (sha256, ext, content_type, bytes, duration_seconds, uploaded_at, collected_at) VALUES (?, ?, ?, ?, ?, ?, ?)',

@@ -558,6 +558,7 @@ function createAdminApi({ onGone }) {
     return {
         get: (path) => call('GET', path),
         post: (path, body) => call('POST', path, body === undefined ? {} : body),
+        patch: (path, body) => call('PATCH', path, body === undefined ? {} : body),
         /**
          * media.audioUrl and the catalogue are RELATIVE ('voices/ab/cd/….mp3'),
          * the convention home.vue already follows. A relative URL resolves

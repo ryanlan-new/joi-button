@@ -844,6 +844,20 @@ CREATE TABLE IF NOT EXISTS clips (
     retired_at    TEXT,
     submitter_id  TEXT REFERENCES submitters (id) ON DELETE RESTRICT,
     submitted_at  TEXT,
+    -- Optional provenance shown in the information card. These are metadata
+    -- fields, not publish gates: a clip may be live with none of them.
+    source_kind   TEXT CHECK (source_kind IS NULL OR source_kind IN ('video', 'stream')),
+    source_title  TEXT CHECK (source_title IS NULL OR (
+                      length(source_title) <= 200
+                  AND instr(source_title, char(10)) = 0
+                  AND instr(source_title, char(13)) = 0)),
+    source_date   TEXT CHECK (source_date IS NULL OR source_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
+    source_seconds INTEGER CHECK (source_seconds IS NULL OR source_seconds >= 0),
+    source_url    TEXT CHECK (source_url IS NULL OR (
+                      length(source_url) <= 2048
+                  AND (source_url GLOB 'http://*' OR source_url GLOB 'https://*')
+                  AND length(source_url) > 7)),
+    credit_hidden INTEGER NOT NULL DEFAULT 0 CHECK (credit_hidden IN (0, 1)),
 
     CHECK (id <> '' AND length(id) <= 64 AND id NOT GLOB '*[^a-z0-9_-]*'),
     CHECK (label <> '' AND length(label) <= 120),

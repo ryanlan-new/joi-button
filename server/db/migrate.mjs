@@ -10,7 +10,7 @@
 import { readFileSync } from 'node:fs';
 
 /** Version this code writes.  Bump on every schema change. */
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 /**
  * Oldest catalogue parser that can still read a document produced at
@@ -133,6 +133,33 @@ export const POST_BASELINE_STEPS = [
         // a catalogue reader never looks at media.collected_at.
         sql: `ALTER TABLE media ADD COLUMN collected_at TEXT
                 CHECK (collected_at IS NULL OR collected_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z');`,
+    },
+    {
+        version: 6,
+        // Clip provenance and the owner's credit preference. All provenance is
+        // nullable because it is descriptive metadata, never a publish gate.
+        // The fresh schema carries the same definitions; these ALTERs are for
+        // databases that were already stamped before INIT-002.
+        sql: `
+          ALTER TABLE clips ADD COLUMN source_kind TEXT
+            CHECK (source_kind IS NULL OR source_kind IN ('video', 'stream'));
+          ALTER TABLE clips ADD COLUMN source_title TEXT
+            CHECK (source_title IS NULL OR (
+              length(source_title) <= 200
+              AND instr(source_title, char(10)) = 0
+              AND instr(source_title, char(13)) = 0));
+          ALTER TABLE clips ADD COLUMN source_date TEXT
+            CHECK (source_date IS NULL OR source_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]');
+          ALTER TABLE clips ADD COLUMN source_seconds INTEGER
+            CHECK (source_seconds IS NULL OR source_seconds >= 0);
+          ALTER TABLE clips ADD COLUMN source_url TEXT
+            CHECK (source_url IS NULL OR (
+              length(source_url) <= 2048
+              AND (source_url GLOB 'http://*' OR source_url GLOB 'https://*')
+              AND length(source_url) > 7));
+          ALTER TABLE clips ADD COLUMN credit_hidden INTEGER NOT NULL DEFAULT 0
+            CHECK (credit_hidden IN (0, 1));
+        `,
     },
 ];
 

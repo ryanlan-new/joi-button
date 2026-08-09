@@ -233,9 +233,10 @@ test('a reader holding the catalogue open across a publish still sees the whole 
   })
   const inodeBefore = fstatSync(held).ino
 
-  await postJson(app, `/api/admin/item/${itemId}`, { cookie: owner, body: { label: 'Take two' } })
+  const edited = await postJson(app, `/api/admin/item/${itemId}`, { cookie: owner, body: { label: 'Take two' } })
+  assert.equal(edited.json().catalogue.catalogChanged, true, 'the edit route must publish its catalogue immediately')
   const republished = await postJson(app, '/api/admin/publish', { cookie: owner })
-  assert.equal(republished.json().catalog.catalogChanged, true, 'nothing was rewritten, so nothing was raced')
+  assert.equal(republished.json().catalog.catalogChanged, false, 'the explicit publish after an edit is already a no-op')
 
   // The held descriptor still points at the OLD inode, and that file is intact.
   // With open(…, 'w') the same descriptor would be looking at a file that was

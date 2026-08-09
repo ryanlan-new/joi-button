@@ -133,6 +133,9 @@ const ID_PATTERN = /^[a-z0-9_-]{1,64}$/
 /** clips.label and groups.display_name both CHECK length <= 120. */
 const LABEL_MAX_LENGTH = 120
 
+const SOURCE_TITLE_MAX_LENGTH = 200
+const SOURCE_URL_MAX_LENGTH = 2048
+
 /** batch_items.reviewer_note has no column limit; this one is a product limit. */
 const NOTE_MAX_LENGTH = 500
 
@@ -264,15 +267,24 @@ export default async function adminRoutes(fastify, options = {}) {
   )
 
   fastify.post('/api/admin/item/:id', async (request, reply) =>
-    guarded(reply, request.adminIdentity, db, now, () =>
-      reviewItem(db, request.params.id, request.body ?? {}, {
+    guarded(reply, request.adminIdentity, db, now, () => {
+      const result = reviewItem(db, request.params.id, request.body ?? {}, {
         actor: request.adminIdentity,
         now,
         // Threaded so revising a rejected item can verify its audio is still on
         // the volume before it re-approves; a plain decision never touches paths.
         paths,
-      }),
-    ),
+      })
+      if (result.outcome !== 'updated') return result
+      return {
+        ...result,
+        catalogue: withoutDocument(publishCatalogue(db, paths, {
+          actor: request.adminIdentity,
+          now,
+          promote: false,
+        }).catalog),
+      }
+    }),
   )
 
   fastify.post('/api/admin/publish', async (request, reply) =>
@@ -291,6 +303,30 @@ export default async function adminRoutes(fastify, options = {}) {
   // No delete route — retire is the removal (see listClips's header).
   fastify.get('/api/admin/clips', async (request, reply) =>
     answered(reply, () => listClips(db, { mediaBaseUrl })),
+  )
+
+  fastify.patch('/api/admin/clips/:id', async (request, reply) =>
+    guarded(reply, request.adminIdentity, db, now, () => {
+      const result = patchClip(db, request.params.id, request.body ?? {}, {
+        actor: request.adminIdentity,
+        now,
+      })
+      return {
+        ...result,
+        catalogue: withoutDocument(publishCatalogue(db, paths, {
+          actor: request.adminIdentity,
+          now,
+          promote: false,
+        }).catalog),
+      }
+    }),
+  )
+
+  fastify.post('/api/admin/clips/move', async (request, reply) =>
+    guarded(reply, request.adminIdentity, db, now, () => moveClips(db, paths, request.body ?? {}, {
+      actor: request.adminIdentity,
+      now,
+    })),
   )
 
   fastify.post('/api/admin/clips/:id/retire', async (request, reply) =>
@@ -1169,9 +1205,18 @@ export function readItem(db, itemId, { mediaBaseUrl = MEDIA_BASE_URL } = {}) {
 
 function readClip(db, clipId) {
   const clip = db
-    .prepare('SELECT id, group_id, media_sha256, label, sort_order, state, created_at, published_at, retired_at FROM clips WHERE id = ?')
+    .prepare(`
+      SELECT c.id, c.group_id, c.media_sha256, c.label, c.sort_order, c.state,
+             c.created_at, c.published_at, c.retired_at,
+             c.source_kind, c.source_title, c.source_date, c.source_seconds,
+             c.source_url, c.credit_hidden, s.display_name AS submitter_name
+        FROM clips c
+        LEFT JOIN submitters s ON s.id = c.submitter_id
+       WHERE c.id = ?
+    `)
     .get(clipId)
   if (!clip) return null
+  const source = sourceOfClipRow(clip)
   return {
     clipId: clip.id,
     groupId: clip.group_id,
@@ -1182,11 +1227,26 @@ function readClip(db, clipId) {
     publishedAt: clip.published_at,
     retiredAt: clip.retired_at,
     captions: captionsOf(db, 'clip_captions', 'clip_id', clipId),
+    ...(source === null ? {} : { source }),
+    creditHidden: clip.credit_hidden === 1,
+    // The admin desk may see the recorded submitter even when public credit is
+    // hidden; creditHidden is the publication decision, not data erasure.
+    submitter: !clip.submitter_name ? null : { name: clip.submitter_name },
     missingLocales: db
       .prepare("SELECT locale FROM v_missing_captions WHERE subject_kind = 'clip' AND subject_id = ? ORDER BY locale")
       .all(clipId)
       .map((r) => r.locale),
   }
+}
+
+function sourceOfClipRow(row) {
+  const source = {}
+  if (row.source_kind !== null && row.source_kind !== undefined) source.kind = row.source_kind
+  if (row.source_title !== null && row.source_title !== undefined) source.title = row.source_title
+  if (row.source_date !== null && row.source_date !== undefined) source.date = row.source_date
+  if (row.source_seconds !== null && row.source_seconds !== undefined) source.seconds = row.source_seconds
+  if (row.source_url !== null && row.source_url !== undefined) source.url = row.source_url
+  return Object.keys(source).length === 0 ? null : source
 }
 
 function listGroups(db) {
@@ -1295,6 +1355,7 @@ function approveItem(db, item, batch, input, { actor, at, revising = false }) {
     })
   }
   const note = input.reason === undefined || input.reason === null ? null : cleanNote(input.reason, 'reason')
+  const source = input.source === undefined ? null : cleanClipSource(input.source, 'source')
 
   const hasGroupId = typeof input.groupId === 'string' && input.groupId !== ''
   const hasNewGroup = input.newGroup !== undefined && input.newGroup !== null
@@ -1330,9 +1391,27 @@ function approveItem(db, item, batch, input, { actor, at, revising = false }) {
     // item 1 of 5 must not put a button on the live site while the reviewer is
     // still looking at item 2 — POST /api/admin/publish is what makes it live.
     db.prepare(`
-      INSERT INTO clips (id, group_id, media_sha256, label, sort_order, state, created_at, submitter_id, submitted_at)
-      VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, ?)
-    `).run(clipId, groupId, item.media_sha256, label, sortOrder, at, batch.submitter_id, batch.submitted_at)
+      INSERT INTO clips (
+        id, group_id, media_sha256, label, sort_order, state, created_at,
+        submitter_id, submitted_at,
+        source_kind, source_title, source_date, source_seconds, source_url
+      )
+      VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      clipId,
+      groupId,
+      item.media_sha256,
+      label,
+      sortOrder,
+      at,
+      batch.submitter_id,
+      batch.submitted_at,
+      source?.kind ?? null,
+      source?.title ?? null,
+      source?.date ?? null,
+      source?.seconds ?? null,
+      source?.url ?? null,
+    )
 
     // A clip now references this blob, so it is present and referenced — clear any
     // stale reclamation mark. Only reachable on a revise whose file removal had
@@ -1370,8 +1449,8 @@ function approveItem(db, item, batch, input, { actor, at, revising = false }) {
         ? { state: item.state, clipId: null, reviewerNote: item.reviewer_note ?? null }
         : { state: item.state, clipId: null },
       after: revising
-        ? { state: 'approved', clipId, groupId, label, captions, reviewerNote: note, revised: true }
-        : { state: 'approved', clipId, groupId, label, captions, reviewerNote: note },
+        ? { state: 'approved', clipId, groupId, label, captions, source, reviewerNote: note, revised: true }
+        : { state: 'approved', clipId, groupId, label, captions, source, reviewerNote: note },
       consequence: `clip:${clipId}`,
       succeeded: true,
       occurredAt: at,
@@ -1457,38 +1536,73 @@ function editApprovedClip(db, item, input, { actor, at }) {
       { code: 'conflict', status: 409, details: { state: item.state } },
     )
   }
-  const before = readClip(db, item.clip_id)
+  return { ...updateClip(db, item.clip_id, input, { actor, at }), itemId: item.id }
+}
 
-  const label = input.label === undefined ? null : cleanText(input.label, 'label', LABEL_MAX_LENGTH)
-  const captions = input.captions === undefined ? null : cleanCaptions(db, input.captions)
-  const groupId = input.groupId === undefined ? null : requireActiveGroup(db, input.groupId)
-  if (label === null && captions === null && groupId === null) {
-    throw new AdminError('nothing to change: pass a label, captions, a groupId, or a decision', {
+/** The direct library PATCH uses the same guarded mutation as an item edit. */
+function patchClip(db, clipId, input, { actor, at }) {
+  return updateClip(db, clipId, input, { actor, at })
+}
+
+function updateClip(db, clipId, input = {}, { actor, at }) {
+  const before = readClip(db, clipId)
+  if (!before) throw new AdminError(`no clip ${clipId}`, { code: 'not_found', status: 404 })
+
+  const patch = cleanClipPatch(db, input)
+  const hasSource = patch.source !== undefined
+  const hasAny = patch.label !== undefined || patch.groupId !== undefined || patch.captions !== undefined ||
+    hasSource || patch.creditHidden !== undefined
+  if (!hasAny) {
+    throw new AdminError('nothing to change: pass a label, captions, a groupId, source fields, or creditHidden', {
       code: 'invalid_request',
       details: { field: 'label' },
     })
   }
 
   const apply = db.transaction(() => {
-    if (label !== null) db.prepare('UPDATE clips SET label = ? WHERE id = ?').run(label, item.clip_id)
-    if (groupId !== null) db.prepare('UPDATE clips SET group_id = ? WHERE id = ?').run(groupId, item.clip_id)
-    if (captions !== null) {
+    const sets = []
+    const values = []
+    if (patch.label !== undefined) {
+      sets.push('label = ?')
+      values.push(patch.label)
+    }
+    if (patch.groupId !== undefined) {
+      sets.push('group_id = ?')
+      values.push(patch.groupId)
+    }
+    if (hasSource) {
+      for (const [column, value] of Object.entries(patch.source)) {
+        sets.push(`${column} = ?`)
+        values.push(value)
+      }
+    }
+    if (patch.creditHidden !== undefined) {
+      sets.push('credit_hidden = ?')
+      values.push(patch.creditHidden ? 1 : 0)
+    }
+    if (sets.length > 0) db.prepare(`UPDATE clips SET ${sets.join(', ')} WHERE id = ?`).run(...values, clipId)
+
+    if (patch.captions !== undefined) {
+      const remove = db.prepare('DELETE FROM clip_captions WHERE clip_id = ? AND locale = ?')
       const upsert = db.prepare(`
         INSERT INTO clip_captions (clip_id, locale, text, updated_at) VALUES (?, ?, ?, ?)
         ON CONFLICT (clip_id, locale) DO UPDATE SET text = excluded.text, updated_at = excluded.updated_at
       `)
-      for (const [locale, text] of Object.entries(captions)) upsert.run(item.clip_id, locale, text, at)
+      for (const [locale, text] of Object.entries(patch.captions)) {
+        if (text === null) remove.run(clipId, locale)
+        else upsert.run(clipId, locale, text, at)
+      }
     }
-    const after = readClip(db, item.clip_id)
 
+    const after = readClip(db, clipId)
     record(db, {
       actorKind: 'owner',
       actorOpenId: actor.openId,
       actorDisplayName: actor.displayName,
       verb: 'admin.clip.edit',
-      subject: { kind: 'clip', id: item.clip_id },
-      before: { label: before.label, groupId: before.groupId, captions: before.captions },
-      after: { label: after.label, groupId: after.groupId, captions: after.captions },
+      subject: { kind: 'clip', id: clipId },
+      before: editableClipView(before),
+      after: editableClipView(after),
       consequence: after.state === 'published' ? 'catalog:stale-until-publish' : null,
       succeeded: true,
       occurredAt: at,
@@ -1496,7 +1610,180 @@ function editApprovedClip(db, item, input, { actor, at }) {
     return after
   })
 
-  return { outcome: 'updated', itemId: item.id, clipId: item.clip_id, clip: apply.immediate() }
+  return { outcome: 'updated', clipId, clip: apply.immediate() }
+}
+
+function editableClipView(clip) {
+  return {
+    label: clip.label,
+    groupId: clip.groupId,
+    captions: clip.captions,
+    source: clip.source ?? null,
+    creditHidden: clip.creditHidden,
+  }
+}
+
+function cleanClipPatch(db, input) {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+    throw new AdminError('clip patch must be an object', { code: 'invalid_request' })
+  }
+  const patch = {}
+  if (Object.prototype.hasOwnProperty.call(input, 'label')) patch.label = cleanText(input.label, 'label', LABEL_MAX_LENGTH)
+  if (Object.prototype.hasOwnProperty.call(input, 'groupId')) patch.groupId = requireActiveGroup(db, input.groupId)
+  if (Object.prototype.hasOwnProperty.call(input, 'captions')) patch.captions = cleanCaptionPatch(db, input.captions)
+  if (Object.prototype.hasOwnProperty.call(input, 'creditHidden')) patch.creditHidden = cleanBoolean(input.creditHidden, 'creditHidden')
+
+  const sourcePatch = sourcePatchFromInput(input)
+  if (sourcePatch !== undefined) patch.source = sourcePatch
+  return patch
+}
+
+function cleanCaptionPatch(db, raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new AdminError('captions must be an object keyed by locale code', {
+      code: 'invalid_request',
+      details: { field: 'captions' },
+    })
+  }
+  const known = new Set(db.prepare('SELECT code FROM locales').all().map((row) => row.code))
+  const out = {}
+  for (const [locale, text] of Object.entries(raw)) {
+    if (!known.has(locale)) {
+      throw new AdminError(`${JSON.stringify(locale)} is not a locale this site publishes`, {
+        code: 'invalid_request',
+        details: { field: `captions.${locale}`, known: [...known].sort() },
+      })
+    }
+    // In the library a blank field means remove this locale row. It is never
+    // stored as an empty caption, because an empty message is an invisible hole.
+    if (text === null || text === undefined || (typeof text === 'string' && text.trim() === '')) {
+      out[locale] = null
+      continue
+    }
+    out[locale] = cleanText(text, `captions.${locale}`, CAPTION_MAX_LENGTH)
+  }
+  return out
+}
+
+function sourcePatchFromInput(input) {
+  const patch = {}
+  let touched = false
+  if (Object.prototype.hasOwnProperty.call(input, 'source')) {
+    touched = true
+    const raw = input.source
+    if (raw === null) {
+      for (const column of SOURCE_COLUMNS) patch[column] = null
+    } else {
+      if (raw === undefined || typeof raw !== 'object' || Array.isArray(raw)) {
+        throw new AdminError('source must be an object or null', { code: 'invalid_request', details: { field: 'source' } })
+      }
+      for (const [key, column] of Object.entries(SOURCE_INPUT_COLUMNS)) {
+        if (Object.prototype.hasOwnProperty.call(raw, key)) {
+          patch[column] = cleanSourceField(SOURCE_INPUT_FIELDS[key], raw[key])
+        }
+      }
+      if (Object.keys(patch).length === 0) touched = false
+    }
+  }
+  for (const [key, column] of Object.entries(SOURCE_INPUT_COLUMNS)) {
+    if (!Object.prototype.hasOwnProperty.call(input, key)) continue
+    touched = true
+    patch[column] = cleanSourceField(SOURCE_INPUT_FIELDS[key], input[key])
+  }
+  return touched ? patch : undefined
+}
+
+const SOURCE_COLUMNS = ['source_kind', 'source_title', 'source_date', 'source_seconds', 'source_url']
+const SOURCE_INPUT_COLUMNS = {
+  kind: 'source_kind',
+  title: 'source_title',
+  date: 'source_date',
+  seconds: 'source_seconds',
+  url: 'source_url',
+  sourceKind: 'source_kind',
+  sourceTitle: 'source_title',
+  sourceDate: 'source_date',
+  sourceSeconds: 'source_seconds',
+  sourceUrl: 'source_url',
+}
+const SOURCE_INPUT_FIELDS = {
+  kind: 'kind',
+  title: 'title',
+  date: 'date',
+  seconds: 'seconds',
+  url: 'url',
+  sourceKind: 'kind',
+  sourceTitle: 'title',
+  sourceDate: 'date',
+  sourceSeconds: 'seconds',
+  sourceUrl: 'url',
+}
+
+function cleanClipSource(raw, field) {
+  if (raw === null || raw === undefined) return null
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new AdminError(`${field} must be an object or null`, { code: 'invalid_request', details: { field } })
+  }
+  const out = {}
+  const aliases = [
+    ['kind', 'kind'], ['sourceKind', 'kind'],
+    ['title', 'title'], ['sourceTitle', 'title'],
+    ['date', 'date'], ['sourceDate', 'date'],
+    ['seconds', 'seconds'], ['sourceSeconds', 'seconds'],
+    ['url', 'url'], ['sourceUrl', 'url'],
+  ]
+  for (const [key, output] of aliases) {
+    if (!Object.prototype.hasOwnProperty.call(raw, key)) continue
+    out[output] = cleanSourceField(output, raw[key])
+  }
+  return Object.keys(out).length === 0 ? null : out
+}
+
+function cleanSourceField(field, value) {
+  if (value === null || value === undefined || value === '') return null
+  if (field === 'kind') {
+    if (value !== 'video' && value !== 'stream') {
+      throw new AdminError('source kind must be video or stream', { code: 'invalid_request', details: { field: 'source.kind' } })
+    }
+    return value
+  }
+  if (field === 'title') return cleanSourceString(value, 'source.title', SOURCE_TITLE_MAX_LENGTH)
+  if (field === 'date') {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      throw new AdminError('source date must be YYYY-MM-DD', { code: 'invalid_request', details: { field: 'source.date' } })
+    }
+    return value
+  }
+  if (field === 'seconds') {
+    if (!Number.isInteger(value) || value < 0) {
+      throw new AdminError('source seconds must be a non-negative integer', { code: 'invalid_request', details: { field: 'source.seconds' } })
+    }
+    return value
+  }
+  if (field === 'url') {
+    if (typeof value !== 'string' || !/^https?:\/\/\S+$/i.test(value) || value.length > SOURCE_URL_MAX_LENGTH) {
+      throw new AdminError('source URL must use http or https', { code: 'invalid_request', details: { field: 'source.url' } })
+    }
+    return value
+  }
+  throw new AdminError(`unknown source field ${field}`, { code: 'invalid_request' })
+}
+
+function cleanSourceString(value, field, maxLength) {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new AdminError(`${field} must be a non-empty string`, { code: 'invalid_request', details: { field } })
+  }
+  const text = value.trim()
+  if ([...text].length > maxLength || /[\r\n]/.test(text) || HAS_LONE_SURROGATE.test(text) || HAS_FORBIDDEN_CONTROL.test(text)) {
+    throw new AdminError(`${field} is not valid source metadata`, { code: 'invalid_text', details: { field, maxLength } })
+  }
+  return text
+}
+
+function cleanBoolean(value, field) {
+  if (value === true || value === 1) return true
+  if (value === false || value === 0) return false
+  throw new AdminError(`${field} must be a boolean`, { code: 'invalid_request', details: { field } })
 }
 
 function resolveBatchIfDone(db, batch, at) {
@@ -1728,10 +2015,24 @@ export function publishCatalogue(db, paths, { actor, now = () => new Date(), dry
   const arrivingGroups = new Set(candidates.map((clip) => clip.group_id).filter((id) => !alreadyLive.has(id)))
 
   const holes = db.prepare('SELECT subject_kind, subject_id, locale FROM v_missing_captions ORDER BY subject_kind, subject_id, locale').all()
+  const clipCaptionCounts = new Map(
+    db.prepare('SELECT clip_id, count(*) AS count FROM clip_captions GROUP BY clip_id')
+      .all()
+      .map((row) => [row.clip_id, row.count]),
+  )
+  const groupCaptionCounts = new Map(
+    db.prepare('SELECT group_id, count(*) AS count FROM group_captions GROUP BY group_id')
+      .all()
+      .map((row) => [row.group_id, row.count]),
+  )
+  const zeroCaptionClips = new Set(candidates.filter((clip) => (clipCaptionCounts.get(clip.id) ?? 0) === 0).map((clip) => clip.id))
+  const zeroCaptionGroups = new Set(
+    [...arrivingGroups].filter((groupId) => (groupCaptionCounts.get(groupId) ?? 0) === 0),
+  )
   const blocking = holes.filter(
     (hole) =>
-      (hole.subject_kind === 'clip' && candidateIds.has(hole.subject_id)) ||
-      (hole.subject_kind === 'group' && arrivingGroups.has(hole.subject_id)),
+      (hole.subject_kind === 'clip' && candidateIds.has(hole.subject_id) && zeroCaptionClips.has(hole.subject_id)) ||
+      (hole.subject_kind === 'group' && arrivingGroups.has(hole.subject_id) && zeroCaptionGroups.has(hole.subject_id)),
   )
   const warnings = holes.filter((hole) => !blocking.includes(hole))
 
@@ -1755,7 +2056,7 @@ export function publishCatalogue(db, paths, { actor, now = () => new Date(), dry
   }
   if (blocking.length > 0) {
     throw new AdminError(
-      `${blocking.length} translation(s) are missing on what this publish would put on the page; with no fallback locale each renders as its own key path`,
+      `${blocking.length} missing caption row(s) include a clip or group with no captions; publishing it would render the management label`,
       { code: 'conflict', status: 409, details: plan },
     )
   }
@@ -1870,10 +2171,14 @@ export function listClips(db, { mediaBaseUrl = MEDIA_BASE_URL } = {}) {
     SELECT c.id, c.label, c.state, c.sort_order, c.created_at, c.published_at, c.retired_at,
            c.group_id, g.display_name AS group_name, g.state AS group_state,
            m.sha256, m.storage_path, m.duration_seconds, m.bytes, m.ext, m.content_type,
-           (SELECT count(*) FROM clip_captions cc WHERE cc.clip_id = c.id) AS caption_count
+           c.source_kind, c.source_title, c.source_date, c.source_seconds, c.source_url,
+           c.credit_hidden, s.display_name AS submitter_name,
+           (SELECT count(*) FROM clip_captions cc WHERE cc.clip_id = c.id) AS caption_count,
+           (SELECT count(*) FROM locales) AS caption_total
     FROM clips c
     JOIN groups g ON g.id = c.group_id
     JOIN media m ON m.sha256 = c.media_sha256
+    LEFT JOIN submitters s ON s.id = c.submitter_id
     ORDER BY g.sort_order, g.id, c.sort_order, c.id
   `).all()
   return {
@@ -1886,6 +2191,13 @@ export function listClips(db, { mediaBaseUrl = MEDIA_BASE_URL } = {}) {
       publishedAt: row.published_at,
       retiredAt: row.retired_at,
       captionCount: row.caption_count,
+      captionTotal: row.caption_total,
+      captions: captionsOf(db, 'clip_captions', 'clip_id', row.id),
+      source: sourceOfClipRow(row),
+      creditHidden: row.credit_hidden === 1,
+      // Keep the admin view honest about who submitted it. buildCatalog() is
+      // the public boundary that applies credit_hidden.
+      submitter: !row.submitter_name ? null : { name: row.submitter_name },
       media: {
         sha256: row.sha256,
         audioUrl: `${mediaBaseUrl}${row.storage_path}`,
@@ -1900,8 +2212,59 @@ export function listClips(db, { mediaBaseUrl = MEDIA_BASE_URL } = {}) {
       published: rows.filter((r) => r.state === 'published').length,
       retired: rows.filter((r) => r.state === 'retired').length,
       draft: rows.filter((r) => r.state === 'draft').length,
+      zeroCaptions: rows.filter((r) => r.caption_count === 0).length,
     },
+    groups: listGroups(db),
   }
+}
+
+export function moveClips(db, paths, input = {}, { actor, now = () => new Date() } = {}) {
+  requireActor(actor)
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+    throw new AdminError('move request must be an object', { code: 'invalid_request' })
+  }
+  const clipIds = input.clipIds
+  if (!Array.isArray(clipIds) || clipIds.length === 0 || clipIds.length > 500 ||
+      clipIds.some((id) => typeof id !== 'string' || id === '') || new Set(clipIds).size !== clipIds.length) {
+    throw new AdminError('clipIds must be a non-empty array of unique clip ids', {
+      code: 'invalid_request',
+      details: { field: 'clipIds' },
+    })
+  }
+  const groupId = requireActiveGroup(db, input.groupId)
+  const rows = clipIds.map((id) => db.prepare(`
+    SELECT id, group_id, label, state, sort_order FROM clips WHERE id = ?
+  `).get(id))
+  const missingIndex = rows.findIndex((row) => !row)
+  if (missingIndex !== -1) {
+    throw new AdminError(`no clip ${clipIds[missingIndex]}`, { code: 'not_found', status: 404 })
+  }
+
+  const at = toCanonicalTimestamp(now())
+  const changed = rows.filter((row) => row.group_id !== groupId)
+  if (changed.length === 0) return { outcome: 'unchanged', clipIds, groupId, clips: rows.map((row) => ({ id: row.id, groupId })) }
+
+  const moved = db.transaction(() => {
+    const update = db.prepare('UPDATE clips SET group_id = ? WHERE id = ?')
+    for (const row of changed) update.run(groupId, row.id)
+    const after = rows.map((row) => ({ id: row.id, groupId }))
+    record(db, {
+      actorKind: 'owner',
+      actorOpenId: actor.openId,
+      actorDisplayName: actor.displayName,
+      verb: 'admin.clip.move',
+      subject: { kind: 'clip', id: null },
+      before: { clips: rows.map((row) => ({ id: row.id, groupId: row.group_id })) },
+      after: { clips: after },
+      consequence: rows.some((row) => row.state === 'published') ? 'catalog:stale-until-publish' : null,
+      succeeded: true,
+      occurredAt: at,
+    })
+    return after
+  })()
+
+  const catalogue = publishCatalogue(db, paths, { actor, now, promote: false })
+  return { outcome: 'moved', clipIds, groupId, clips: moved, catalogue: catalogue.catalog }
 }
 
 export function retireClip(db, paths, clipId, { actor, now = () => new Date() } = {}) {

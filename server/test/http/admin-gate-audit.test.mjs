@@ -252,14 +252,14 @@ test('every admin request appends exactly the entries its events deserve, and re
   const edited = await verbs(() =>
     postJson(app, `/api/admin/item/${one}`, { cookie: owner, body: { label: 'One (retake)' } }),
   )
-  assert.deepEqual(edited.appended.map((row) => row.action), ['admin.clip.edit'])
+  assert.deepEqual(edited.appended.map((row) => row.action), ['admin.clip.edit', 'admin.catalog.write'])
 
-  // A dry run is not a mutation, so it is not logged — and it must not have
-  // written anything either.
+  // A dry run is not a mutation, so it is not logged. The catalogue already
+  // exists because the preceding edit route published it immediately.
   const dry = await verbs(() => postJson(app, '/api/admin/publish', { cookie: owner, body: { dryRun: true } }))
   assert.equal(dry.answer.json().dryRun, true)
   assert.deepEqual(dry.appended.map((row) => row.action), [])
-  assert.equal(existsSync(paths.catalogFile), false)
+  assert.equal(existsSync(paths.catalogFile), true)
 
   // Publishing is two events with different failure modes — the promotion is a
   // committed transaction, the write is a filesystem rename — so it is two
@@ -324,6 +324,7 @@ test('every admin request appends exactly the entries its events deserve, and re
       'admin.catalog.write',
       'admin.catalog.write',
       'admin.clip.publish',
+      'admin.catalog.write',
       'admin.clip.edit',
       'admin.item.reject',
       'admin.item.approve',

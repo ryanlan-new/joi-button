@@ -17,6 +17,10 @@
                     <span class="checkbox-mark" :class="{ 'is-checked': loopCheck }" aria-hidden="true"></span>
                     <span>{{ $t("action.loop") }}</span>
                 </button>
+                <button class="btn btn-info" type="button" :class="{ 'is-on': detailsEnabled }" :aria-pressed="String(detailsEnabled)" @click="detailsEnabled = !detailsEnabled">
+                    <span class="checkbox-mark" :class="{ 'is-checked': detailsEnabled }" aria-hidden="true"></span>
+                    <span>{{ $t("action.details") }}</span>
+                </button>
                 <div class="visible-md visible-lg">
                   <label class="btn btn-info volume-control" for="volSlider">
                     <span>{{ $t("action.volume") }}</span>
@@ -26,7 +30,15 @@
                 </div>
             </div>
             <div class="cate-body">
-                <span>{{ voice.id ? $t("action.playing") + $t("voice." + voice.id ) : $t("action.noplay") }}</span>
+                <div class="now-playing" aria-live="polite">
+                    <span>{{ voice.id ? $t("action.playing") + $t("voice." + voice.id ) : $t("action.noplay") }}</span>
+                    <template v-if="voice.id && voice.source">
+                        <span v-if="voice.source.title" class="now-playing-field">{{ voice.source.title }}</span>
+                        <span v-if="voice.source.date" class="now-playing-field">{{ voice.source.date }}</span>
+                        <span v-if="voice.source.seconds !== undefined" class="now-playing-field">{{ formatSeconds(voice.source.seconds) }}</span>
+                    </template>
+                    <span v-if="voice.id && voice.submitter" class="now-playing-field">{{ voice.submitter.name }}</span>
+                </div>
             </div>
         </div>
         <!-- Keyed and looked up on `id`, never on the caption. An id is the
@@ -35,13 +47,30 @@
              unique. Keying on it made Vue reuse the wrong button when two clips
              happened to be named the same thing. -->
         <div v-for="category in voices" v-bind:key="category.id">
-            <div class="cate-header">{{ $t("voicecategory." + category.id) }}</div>
+            <div class="cate-header" :lang="captionLang(category)">{{ $t("voicecategory." + category.id) }}</div>
             <div class="cate-body">
-                <button class="btn btn-new" :class="{ 'is-playing': voice.id === clip.id }" v-for="clip in category.clips" v-bind:key="clip.id" @click="play(clip)">
-                    {{ $t("voice." + clip.id )}}
-                </button>
+                <div class="voice-row" v-for="clip in category.clips" v-bind:key="clip.id">
+                    <button class="btn btn-new voice-play"
+                            :class="{ 'is-playing': voice.id === clip.id }"
+                            :style="pressStyle(clip)"
+                            :lang="captionLang(clip)"
+                            type="button"
+                            @pointerdown="beginPress($event, clip)"
+                            @pointermove="movePress($event, clip)"
+                            @pointerup="endPress($event, clip)"
+                            @pointercancel="cancelPress($event, clip)"
+                            @contextmenu.prevent
+                            @keydown.enter.space.prevent="play(clip)">
+                        <span class="hold-sweep" :style="{ width: pressedId === clip.id ? holdProgress + '%' : '0%' }" aria-hidden="true"></span>
+                        <span class="voice-label">{{ $t("voice." + clip.id )}}</span>
+                    </button>
+                    <!-- Sibling, never nested: a badge is its own interactive
+                         control and cannot become a button inside a button. -->
+                    <button class="clip-info-badge" :class="{ 'is-persistent': detailsEnabled }" type="button" :aria-label="$t('info.clipInfo')" @click.stop="openInfo(clip, $event)" @keydown.enter.space.prevent="openInfo(clip, $event)">ⓘ</button>
+                </div>
             </div>
         </div>
+        <ClipInfoCard v-if="infoClip" ref="clipInfo" :clip="infoClip" :caption="captionText(infoClip)" :caption-lang="captionLang(infoClip)" :anchor="infoAnchor" @close="closeInfo" />
     </div>
 </template>
 
@@ -81,6 +110,72 @@
 .volume-control {
     cursor: default;
 }
+.voice-row {
+    display: inline-flex;
+    align-items: center;
+    max-width: 100%;
+}
+.voice-play {
+    position: relative;
+    overflow: hidden;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+}
+.voice-label,
+.hold-sweep {
+    position: relative;
+    z-index: 1;
+}
+.hold-sweep {
+    position: absolute;
+    z-index: 0;
+    inset: 0 auto 0 0;
+    width: 0;
+    background: var(--lilac);
+    opacity: .55;
+    pointer-events: none;
+}
+.clip-info-badge {
+    width: 1.75rem;
+    height: 1.75rem;
+    margin: 5px 5px 5px -2px;
+    padding: 0;
+    border: 2px solid var(--candy-red);
+    border-radius: 50%;
+    background: var(--surface);
+    color: var(--plum-700);
+    font-weight: 700;
+    line-height: 1.35rem;
+    touch-action: manipulation;
+    opacity: .65;
+    transform: scale(.92);
+    transition: opacity .16s ease, transform .16s ease;
+    pointer-events: auto;
+}
+.voice-row:hover .clip-info-badge,
+.clip-info-badge:focus-visible,
+.clip-info-badge.is-persistent {
+    opacity: 1;
+    transform: scale(1);
+    pointer-events: auto;
+}
+.clip-info-badge:focus-visible {
+    outline: 3px solid var(--cocoa-900);
+    outline-offset: 2px;
+}
+.now-playing {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: center;
+    gap: .5rem;
+}
+.now-playing-field {
+    color: var(--cocoa-700);
+    font-size: .9rem;
+}
 /*Slider CSS modified from w3schools*/
 .slider {
     -webkit-appearance: none;  /* Override default CSS styles */
@@ -117,6 +212,19 @@
     background: var(--plum-700);
     cursor: pointer; /* Cursor on hover */
 }
+@media (hover: none) and (pointer: coarse) {
+    .clip-info-badge:not(.is-persistent) {
+        opacity: .65;
+        pointer-events: auto;
+    }
+}
+@media (prefers-reduced-motion: reduce) {
+    .clip-info-badge { transition: none; }
+}
+@media (prefers-reduced-transparency: reduce) {
+    .hold-sweep,
+    .clip-info-badge { opacity: 1; }
+}
 </style>
 
 <script>
@@ -127,9 +235,54 @@ import Component from 'vue-class-component'
 // of one catalogue, which is survivable for a build-time constant and is not
 // survivable once the catalogue arrives over the network. src/catalog.mjs is the
 // single owner now; this page reads what it installed.
-import { catalog } from '../catalog.mjs'
+import { captionFor, catalog } from '../catalog.mjs'
+import ClipInfoCard from './ClipInfoCard.vue'
+
+function springValue(from, to, { duration = .34, bounce = 0, onUpdate, onComplete }) {
+    const damping = Math.max(.05, 1 - bounce)
+    const response = Math.max(.08, duration)
+    const omega = 12 / response
+    let value = from
+    let velocity = 0
+    let last = typeof performance === 'object' && performance.now ? performance.now() : Date.now()
+    let stopped = false
+    let frameId = null
+    const requestFrame = typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function'
+        ? (callback) => window.requestAnimationFrame(callback)
+        : (callback) => setTimeout(() => callback(Date.now()), 16)
+    const cancelFrame = typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function'
+        ? (id) => window.cancelAnimationFrame(id)
+        : (id) => clearTimeout(id)
+
+    const finish = () => {
+        if (stopped) return
+        stopped = true
+        if (frameId !== null) cancelFrame(frameId)
+        onUpdate(to)
+        onComplete()
+    }
+    const tick = (now) => {
+        if (stopped) return
+        const delta = Math.min(.032, Math.max(.001, (now - last) / 1000))
+        last = now
+        const displacement = value - to
+        const acceleration = -omega * omega * displacement - 2 * damping * omega * velocity
+        velocity += acceleration * delta
+        value += velocity * delta
+        onUpdate(value)
+        if (Math.abs(value - to) < .001 && Math.abs(velocity) < .01) return finish()
+        frameId = requestFrame(tick)
+    }
+    if (Math.abs(from - to) < .001) return finish()
+    frameId = requestFrame(tick)
+    return () => {
+        stopped = true
+        if (frameId !== null) cancelFrame(frameId)
+    }
+}
 
 @Component({
+    components: { ClipInfoCard },
     watch: {
         currentVolume: function (value) {
             this.$gConst.globalbus.$emit('player:volume', value / 100);
@@ -143,6 +296,12 @@ class HomePage extends Vue {
     currVoice;
     voice = {};
     currentVolume = 80;
+    pressedId = null;
+    infoClip = null;
+    infoAnchor = null;
+    detailsEnabled = false;
+    holdProgress = 0;
+    pressScales = {};
 
     // A computed and not a data property. `catalog.groups` is REPLACED when a
     // document is installed, so a copy taken once at construction would keep
@@ -155,6 +314,8 @@ class HomePage extends Vue {
         return  this.currentVolume / 100
     }
     mounted() {
+        this._press = { clip: null, pointerId: null, startX: 0, startY: 0, moved: false, held: false, timer: null, anchor: null };
+        this._springs = Object.create(null);
         // The media element now lives in App.vue and outlives this route; what
         // this page still owns is what a clip ENDING should mean — chain to a
         // random clip, repeat, or clear the now-playing label.
@@ -162,7 +323,132 @@ class HomePage extends Vue {
         this.$gConst.globalbus.$on('player:ended', this.handleEnded);
     }
     beforeDestroy() {
+        this.cancelPress();
+        Object.keys(this._springs || {}).forEach((id) => this._springs[id]());
         this.$gConst.globalbus.$off('player:ended', this.handleEnded);
+    }
+    captionLang(item) {
+        const resolved = captionFor(item.captions || {}, this.$i18n.locale);
+        return resolved ? resolved.locale : undefined;
+    }
+    captionText(item) {
+        const resolved = captionFor(item.captions || {}, this.$i18n.locale);
+        return resolved ? resolved.text : item.label;
+    }
+    formatSeconds(value) {
+        if (!Number.isInteger(value) || value < 0) return '';
+        const hours = Math.floor(value / 3600);
+        const minutes = Math.floor((value % 3600) / 60);
+        const seconds = value % 60;
+        const tail = (seconds < 10 ? '0' : '') + seconds;
+        return hours > 0 ? hours + ':' + (minutes < 10 ? '0' : '') + minutes + ':' + tail : minutes + ':' + tail;
+    }
+    pressStyle(item) {
+        const scale = this.pressScales && this.pressScales[item.id];
+        return { transform: 'scale(' + (scale === undefined ? 1 : scale) + ')' };
+    }
+    setPressScale(id, value) {
+        this.$set(this.pressScales, id, value);
+    }
+    springPress(id, target, options) {
+        if (this._springs[id]) this._springs[id]();
+        const from = this.pressScales && this.pressScales[id] !== undefined ? this.pressScales[id] : 1;
+        const reduced = typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        if (reduced) {
+            this.setPressScale(id, target);
+            return;
+        }
+        this._springs[id] = springValue(from, target, {
+            duration: options && options.duration,
+            bounce: options && options.bounce,
+            onUpdate: (value) => this.setPressScale(id, value),
+            onComplete: () => { delete this._springs[id]; },
+        });
+    }
+    beginPress(event, item) {
+        if (event.button !== undefined && event.button !== 0) return;
+        this.cancelPress();
+        this._press = { clip: item, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, moved: false, held: false, timer: null, anchor: event.currentTarget && event.currentTarget.getBoundingClientRect ? event.currentTarget.getBoundingClientRect() : null };
+        this.pressedId = item.id;
+        this.holdProgress = 0;
+        this.startHoldProgress(item);
+        this.springPress(item.id, .94, { duration: .34, bounce: 0 });
+        if (event.currentTarget && event.currentTarget.setPointerCapture) event.currentTarget.setPointerCapture(event.pointerId);
+        // The hold threshold is a timer, not an rAF: background tabs and a
+        // renderer that stops painting must still cancel the click/submit path.
+        this._press.timer = setTimeout(() => {
+            if (!this._press.moved && this._press.clip === item) {
+                this._press.held = true;
+                this.stopHoldProgress();
+                this.holdProgress = 100;
+                this.openInfo(item, this._press.anchor);
+            }
+        }, 420);
+    }
+    movePress(event, item) {
+        if (!this._press || this._press.clip !== item || this._press.pointerId !== event.pointerId) return;
+        const distance = Math.hypot(event.clientX - this._press.startX, event.clientY - this._press.startY);
+        if (distance <= 10 || this._press.moved) return;
+        this._press.moved = true;
+        if (this._press.timer !== null) clearTimeout(this._press.timer);
+        this._press.timer = null;
+        this.stopHoldProgress();
+        this.holdProgress = 0;
+        this.springPress(item.id, 1, { duration: .34, bounce: .2 });
+        this.pressedId = null;
+    }
+    endPress(event, item) {
+        if (!this._press || this._press.clip !== item || this._press.pointerId !== event.pointerId) return;
+        const cancelled = this._press.moved || this._press.held;
+        if (this._press.timer !== null) clearTimeout(this._press.timer);
+        this._press.timer = null;
+        this.stopHoldProgress();
+        this.holdProgress = 0;
+        this.springPress(item.id, 1, { duration: .34, bounce: cancelled ? .2 : 0 });
+        this.pressedId = null;
+        if (!cancelled) this.play(item);
+        this._press.clip = null;
+    }
+    cancelPress() {
+        if (!this._press) return;
+        if (this._press.timer !== null) clearTimeout(this._press.timer);
+        this.stopHoldProgress();
+        this.holdProgress = 0;
+        if (this._press.clip) this.springPress(this._press.clip.id, 1, { duration: .34, bounce: .2 });
+        this._press = { clip: null, pointerId: null, startX: 0, startY: 0, moved: false, held: false, timer: null, anchor: null };
+        this.pressedId = null;
+    }
+    startHoldProgress(item) {
+        const started = Date.now();
+        const tick = () => {
+            if (!this._press || this._press.clip !== item || this._press.moved || this._press.held) return;
+            this.holdProgress = Math.min(100, ((Date.now() - started) / 420) * 100);
+            this._holdFrame = typeof window !== 'undefined' && window.requestAnimationFrame
+                ? window.requestAnimationFrame(tick)
+                : setTimeout(tick, 16);
+        };
+        this._holdFrame = typeof window !== 'undefined' && window.requestAnimationFrame
+            ? window.requestAnimationFrame(tick)
+            : setTimeout(tick, 16);
+    }
+    stopHoldProgress() {
+        if (this._holdFrame === null || this._holdFrame === undefined) return;
+        if (typeof window !== 'undefined' && window.cancelAnimationFrame) window.cancelAnimationFrame(this._holdFrame);
+        else clearTimeout(this._holdFrame);
+        this._holdFrame = null;
+    }
+    openInfo(item, eventOrAnchor = null) {
+        this.infoClip = item;
+        this.infoAnchor = eventOrAnchor && eventOrAnchor.currentTarget && eventOrAnchor.currentTarget.getBoundingClientRect
+            ? eventOrAnchor.currentTarget.getBoundingClientRect()
+            : eventOrAnchor;
+        this.$nextTick(() => {
+            if (this.$refs.clipInfo && this.$refs.clipInfo.focus) this.$refs.clipInfo.focus();
+        });
+    }
+    closeInfo() {
+        this.infoClip = null;
+        this.infoAnchor = null;
     }
     play(item){
         // `item.src` rather than "voices/" + item.path: where the audio lives is

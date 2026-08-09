@@ -48,6 +48,10 @@
                         <dt>{{ $t("admin.desk.submitterNote") }}</dt>
                         <dd>{{ detail.item.submitterNote.note }}</dd>
                     </template>
+                    <template v-if="detail.item.submitterNote && detail.item.submitterNote.source">
+                        <dt>{{ $t("admin.desk.submitterSource") }}</dt>
+                        <dd>{{ sourceSummary(detail.item.submitterNote.source) }}</dd>
+                    </template>
                 </dl>
                 <p class="adm-sub adm-num">
                     {{ $t("admin.desk.batchProgress", {
@@ -133,6 +137,24 @@
                     <p v-if="missingLocales.length > 0" class="adm-note adm-note-warn">
                         {{ $t("admin.desk.missingLocales", { locales: missingLocales.join(', ') }) }}
                     </p>
+                </fieldset>
+
+                <fieldset class="adm-fieldset">
+                    <legend class="adm-legend">{{ $t("admin.desk.source") }}</legend>
+                    <p class="adm-hint">{{ $t("admin.desk.sourceHint") }}</p>
+                    <div class="adm-row">
+                        <label class="adm-label">{{ $t("admin.desk.sourceKind") }}
+                            <select class="adm-select" v-model="draft.source.kind">
+                                <option value="">—</option>
+                                <option value="video">{{ $t("info.clipType.video") }}</option>
+                                <option value="stream">{{ $t("info.clipType.stream") }}</option>
+                            </select>
+                        </label>
+                        <label class="adm-label">{{ $t("admin.desk.sourceTitle") }}<input class="adm-input" v-model.trim="draft.source.title"></label>
+                        <label class="adm-label">{{ $t("admin.desk.sourceDate") }}<input class="adm-input" type="date" v-model="draft.source.date"></label>
+                        <label class="adm-label">{{ $t("admin.desk.sourceTime") }}<input class="adm-input" v-model.trim="draft.source.time" placeholder="mm:ss"></label>
+                        <label class="adm-label">{{ $t("admin.desk.sourceUrl") }}<input class="adm-input" type="url" v-model.trim="draft.source.url"></label>
+                    </div>
                 </fieldset>
 
                 <!-- ---------------- the group ---------------- -->
@@ -472,6 +494,33 @@ function judgeNote(raw) {
     return verdict
 }
 
+function secondsToTime(seconds) {
+    if (!Number.isInteger(seconds) || seconds < 0) return ''
+    const minutes = Math.floor(seconds / 60)
+    const rest = seconds % 60
+    return minutes + ':' + (rest < 10 ? '0' : '') + rest
+}
+
+function parseSourceTime(value) {
+    if (value === null || value === undefined || String(value).trim() === '') return null
+    const parts = String(value).trim().split(':').map(Number)
+    if (parts.some((part) => !Number.isInteger(part) || part < 0) || (parts.length !== 2 && parts.length !== 3)) return null
+    if (parts.length === 2 && parts[1] < 60) return parts[0] * 60 + parts[1]
+    if (parts.length === 3 && parts[1] < 60 && parts[2] < 60) return parts[0] * 3600 + parts[1] * 60 + parts[2]
+    return null
+}
+
+function sourcePayload(source) {
+    const out = {}
+    if (source.kind === 'video' || source.kind === 'stream') out.kind = source.kind
+    if (source.title) out.title = source.title
+    if (source.date) out.date = source.date
+    const seconds = parseSourceTime(source.time)
+    if (seconds !== null) out.seconds = seconds
+    if (source.url) out.url = source.url
+    return Object.keys(out).length ? out : null
+}
+
 // ---------------------------------------------------------------------------
 
 @Component({
@@ -504,6 +553,7 @@ class ReviewDeskItem extends Vue {
         groupMode: 'reassign',
         groupId: '',
         newGroup: { id: '', displayName: '', captions: {} },
+        source: { kind: '', title: '', date: '', time: '', url: '' },
         reason: '',
     }
 
@@ -695,6 +745,9 @@ class ReviewDeskItem extends Vue {
         if (this.result.outcome === 'rejected') return this.$t('admin.desk.resultRejected')
         return this.$t('admin.desk.resultSaved')
     }
+    sourceSummary(source) {
+        return [source.kind, source.title, source.date, source.time || secondsToTime(source.seconds), source.url].filter(Boolean).join(' · ')
+    }
 
     // -- lifecycle ------------------------------------------------------------
     created() {
@@ -735,6 +788,11 @@ class ReviewDeskItem extends Vue {
         }
 
         const proposed = this.proposedGroupIdOrNull()
+        const source = clip && clip.source
+            ? { kind: clip.source.kind || '', title: clip.source.title || '', date: clip.source.date || '', time: secondsToTime(clip.source.seconds), url: clip.source.url || '' }
+            : (this.detail.item.submitterNote && this.detail.item.submitterNote.source
+                ? Object.assign({ kind: '', title: '', date: '', time: '', url: '' }, this.detail.item.submitterNote.source, { time: secondsToTime(this.detail.item.submitterNote.source.seconds) })
+                : { kind: '', title: '', date: '', time: '', url: '' })
         const pristine = {
             // The submitter's proposal is where the name starts; proposed_label
             // itself is never overwritten server-side, so this is a copy the
@@ -744,6 +802,7 @@ class ReviewDeskItem extends Vue {
             groupMode: clip !== null ? 'reassign' : (proposed === null ? 'reassign' : 'accept'),
             groupId: clip !== null ? clip.groupId : (proposed === null ? '' : proposed),
             newGroup: { id: '', displayName: '', captions: newGroupCaptions },
+            source,
             reason: '',
         }
         this.pristine = canonical(pristine)
@@ -765,6 +824,7 @@ class ReviewDeskItem extends Vue {
                 displayName: (stored.newGroup && stored.newGroup.displayName) || '',
                 captions: Object.assign({}, newGroupCaptions, (stored.newGroup && stored.newGroup.captions) || {}),
             },
+            source: Object.assign({}, pristine.source, stored.source || {}),
             reason: typeof stored.reason === 'string' ? stored.reason : '',
         }
         if (canonical(merged) === this.pristine) {
@@ -883,6 +943,8 @@ class ReviewDeskItem extends Vue {
     // -- decisions ------------------------------------------------------------
     async approve() {
         const body = { decision: 'approve', label: this.draft.label.trim(), captions: this.filledCaptions }
+        const source = sourcePayload(this.draft.source)
+        if (source !== null) body.source = source
         if (this.draft.groupMode === 'new') {
             const newGroup = { displayName: this.draft.newGroup.displayName.trim(), captions: this.filledNewGroupCaptions }
             // Omitted rather than sent empty: the route mints a uuid when the id
@@ -903,6 +965,8 @@ class ReviewDeskItem extends Vue {
     async save() {
         // No decision: an edit of the clip an approval already produced.
         const body = { label: this.draft.label.trim(), captions: this.filledCaptions }
+        const source = sourcePayload(this.draft.source)
+        body.source = source
         // groupId travels only when it actually moves. Sending the clip's
         // current group back would put it through requireActiveGroup, which
         // refuses a retired one — so editing a caption on a clip in a group that

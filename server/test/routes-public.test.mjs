@@ -1092,6 +1092,6 @@ test('readSubmitterNote answers all-nulls for a row that is not in the envelope 
   // A note written by hand, or by something predating the envelope. The caller
   // wanted a caption, not an outage.
   for (const raw of [null, '', 'just a sentence', '{"caption":"wrong shape"}', '[]']) {
-    assert.deepEqual(readSubmitterNote(raw), { caption: null, note: null, proposedGroup: null })
+    assert.deepEqual(readSubmitterNote(raw), { caption: null, note: null, proposedGroup: null, source: null })
   }
 })

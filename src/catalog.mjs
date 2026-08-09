@@ -21,7 +21,8 @@
 //     locales: [{ code, label, sortOrder, isUiDefault }],
 //     groups:  [{ id, sortOrder, displayName, captions: { <locale>: text } }],
 //     clips:   [{ id, groupId, sortOrder, label, path, sha256, bytes,
-//                 durationSeconds, captions: { <locale>: text } }] }
+//                 durationSeconds, captions: { <locale>: text },
+//                 source?, submitter? }] }
 //
 // Three properties of it are load-bearing here and are asserted by that file's
 // own tests, not assumed by this one:
@@ -406,7 +407,7 @@ function normaliseDocument(raw, source) {
     }
 
     clipIds[clip.id] = true
-    owner.clips.push({
+    const view = {
       id: clip.id,
       label: asText(clip.label),
       captions: isPlainObject(clip.captions) ? clip.captions : {},
@@ -415,7 +416,12 @@ function normaliseDocument(raw, source) {
       // URL of its own, so where the audio lives stays a property of the
       // catalogue rather than a string literal in a template.
       src: mediaBaseUrl + clip.path,
-    })
+    }
+    const source = normaliseSource(clip.source)
+    if (source !== null) view.source = source
+    const submitter = normaliseSubmitter(clip.submitter)
+    if (submitter !== null) view.submitter = submitter
+    owner.clips.push(view)
   }
 
   return { source, mediaBaseUrl, groups }
@@ -468,14 +474,16 @@ function buildMessages(base, document, locales) {
     let missing = 0
 
     for (const group of document.groups) {
-      const caption = pickCaption(group.captions, locale)
-      if (caption === null) missing++
-      voicecategory[group.id] = caption === null ? lastResort(group.displayName, group.id) : caption
+      const exactGroupCaption = pickCaption(group.captions, locale)
+      const groupCaption = captionFor(group.captions, locale)
+      if (exactGroupCaption === null) missing++
+      voicecategory[group.id] = groupCaption === null ? lastResort(group.displayName, group.id) : groupCaption.text
 
       for (const clip of group.clips) {
-        const clipCaption = pickCaption(clip.captions, locale)
-        if (clipCaption === null) missing++
-        voice[clip.id] = clipCaption === null ? lastResort(clip.label, clip.id) : clipCaption
+        const exactClipCaption = pickCaption(clip.captions, locale)
+        const clipCaption = captionFor(clip.captions, locale)
+        if (exactClipCaption === null) missing++
+        voice[clip.id] = clipCaption === null ? lastResort(clip.label, clip.id) : clipCaption.text
       }
     }
 
@@ -501,6 +509,33 @@ function pickCaption(captions, locale) {
   // button with no text on it — a hole nobody can see.
   if (typeof text !== 'string' || text === '') return null
   return text
+}
+
+/** Resolve exact locale first, then the ruled zh-CN -> ja-JP -> en-US chain. */
+export function captionFor(captions, locale) {
+  const exact = pickCaption(captions, locale)
+  if (exact !== null) return { text: exact, locale }
+  for (const fallback of ['zh-CN', 'ja-JP', 'en-US']) {
+    if (fallback === locale) continue
+    const text = pickCaption(captions, fallback)
+    if (text !== null) return { text, locale: fallback }
+  }
+  return null
+}
+
+function normaliseSource(raw) {
+  if (!isPlainObject(raw)) return null
+  const source = {}
+  if (raw.kind === 'video' || raw.kind === 'stream') source.kind = raw.kind
+  if (typeof raw.title === 'string' && raw.title !== '') source.title = raw.title
+  if (typeof raw.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw.date)) source.date = raw.date
+  if (Number.isInteger(raw.seconds) && raw.seconds >= 0) source.seconds = raw.seconds
+  if (typeof raw.url === 'string' && /^https?:\/\/\S+$/i.test(raw.url)) source.url = raw.url
+  return Object.keys(source).length === 0 ? null : source
+}
+
+function normaliseSubmitter(raw) {
+  return isPlainObject(raw) && typeof raw.name === 'string' && raw.name !== '' ? { name: raw.name } : null
 }
 
 function lastResort(label, id) {

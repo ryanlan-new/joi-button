@@ -1,3 +1,9 @@
-> 1%
-last 2 versions
-not ie <= 8
+# The published CSS already depends on CSS custom properties, so IE 10/11 are
+# not runnable targets in the actual bundle. Pointer Events, backdrop-filter
+# and the spring interaction are designed for the browsers this site can ship
+# to and are not promised to Opera Mini or KaiOS.
+last 2 Chrome versions
+last 2 Firefox versions
+last 2 Safari versions
+last 2 Edge versions
+not dead

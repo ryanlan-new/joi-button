@@ -167,6 +167,36 @@
                                    :disabled="sending">
                         </div>
 
+                        <details class="source-block">
+                            <summary>{{ $t('submit.field.source') }} <span class="muted">{{ $t('submit.field.optional') }}</span></summary>
+                            <div class="row source-fields">
+                                <div class="col-md-3 form-group">
+                                    <label :for="row.key + '-source-kind'">{{ $t('submit.field.sourceKind') }}</label>
+                                    <select :id="row.key + '-source-kind'" v-model="row.source.kind" class="form-control" :disabled="sending">
+                                        <option value="">{{ $t('submit.field.sourceNone') }}</option>
+                                        <option value="video">{{ $t('submit.field.sourceVideo') }}</option>
+                                        <option value="stream">{{ $t('submit.field.sourceStream') }}</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-3 form-group">
+                                    <label :for="row.key + '-source-title'">{{ $t('submit.field.sourceTitle') }}</label>
+                                    <input :id="row.key + '-source-title'" v-model.trim="row.source.title" class="form-control" type="text" maxlength="200" :disabled="sending">
+                                </div>
+                                <div class="col-md-2 form-group">
+                                    <label :for="row.key + '-source-date'">{{ $t('submit.field.sourceDate') }}</label>
+                                    <input :id="row.key + '-source-date'" v-model="row.source.date" class="form-control" type="date" :disabled="sending">
+                                </div>
+                                <div class="col-md-2 form-group">
+                                    <label :for="row.key + '-source-time'">{{ $t('submit.field.sourceTime') }}</label>
+                                    <input :id="row.key + '-source-time'" v-model.trim="row.source.time" class="form-control" type="text" placeholder="mm:ss" :disabled="sending">
+                                </div>
+                                <div class="col-md-12 form-group">
+                                    <label :for="row.key + '-source-url'">{{ $t('submit.field.sourceUrl') }}</label>
+                                    <input :id="row.key + '-source-url'" v-model.trim="row.source.url" class="form-control" type="url" :disabled="sending">
+                                </div>
+                            </div>
+                        </details>
+
                         <div v-if="sending || row.progress > 0" class="progress-line">
                             <span class="progress-track"
                                   role="progressbar"
@@ -496,6 +526,19 @@
     padding: 12px;
     margin-bottom: 12px;
 }
+.source-block {
+    margin-top: 1rem;
+    padding-top: .5rem;
+    border-top: 1px solid var(--candy-red);
+}
+.source-block summary {
+    color: var(--plum-700);
+    cursor: pointer;
+    font-weight: 700;
+}
+.source-fields {
+    margin-top: .75rem;
+}
 </style>
 
 <script>
@@ -597,6 +640,29 @@ function fingerprint(file) {
 function clampPercent(value) {
     if (!Number.isFinite(value)) return 0
     return Math.max(0, Math.min(100, Math.round(value)))
+}
+
+function parseSourceTime(value) {
+    if (value === null || value === undefined || String(value).trim() === '') return null
+    const text = String(value).trim()
+    if (/^\d+$/.test(text)) return Number(text)
+    const parts = text.split(':').map(Number)
+    if (parts.some((part) => !Number.isInteger(part) || part < 0) || (parts.length !== 2 && parts.length !== 3)) return null
+    if (parts.length === 2 && parts[1] < 60) return parts[0] * 60 + parts[1]
+    if (parts.length === 3 && parts[1] < 60 && parts[2] < 60) return parts[0] * 3600 + parts[1] * 60 + parts[2]
+    return null
+}
+
+function sourcePayload(source) {
+    if (!source) return null
+    const out = {}
+    if (source.kind === 'video' || source.kind === 'stream') out.kind = source.kind
+    if (source.title) out.title = source.title
+    if (source.date) out.date = source.date
+    const seconds = parseSourceTime(source.time)
+    if (seconds !== null) out.seconds = seconds
+    if (source.url) out.url = source.url
+    return Object.keys(out).length > 0 ? out : null
 }
 
 @Component({
@@ -1086,6 +1152,7 @@ class SubmitPage extends Vue {
             groupId: saved ? saved.groupId : '',
             newGroup: saved ? saved.newGroup : '',
             note: saved ? saved.note : '',
+            source: saved && saved.source ? Object.assign({ kind: '', title: '', date: '', time: '', url: '' }, saved.source) : { kind: '', title: '', date: '', time: '', url: '' },
             // A restored row has been edited once already, so its gaps are shown
             // straight away rather than waiting for a first press of send.
             touched: saved !== null,
@@ -1137,6 +1204,13 @@ class SubmitPage extends Vue {
                 groupId: typeof entry.g === 'string' ? entry.g : '',
                 newGroup: typeof entry.w === 'string' ? entry.w : '',
                 note: typeof entry.t === 'string' ? entry.t : '',
+                source: entry.s && typeof entry.s === 'object' ? {
+                    kind: typeof entry.s.kind === 'string' ? entry.s.kind : '',
+                    title: typeof entry.s.title === 'string' ? entry.s.title : '',
+                    date: typeof entry.s.date === 'string' ? entry.s.date : '',
+                    time: typeof entry.s.time === 'string' ? entry.s.time : '',
+                    url: typeof entry.s.url === 'string' ? entry.s.url : '',
+                } : { kind: '', title: '', date: '', time: '', url: '' },
             }
         }
         return { locale: typeof parsed.l === 'string' ? parsed.l : '', rows }
@@ -1167,6 +1241,7 @@ class SubmitPage extends Vue {
                 g: row.groupId,
                 w: row.newGroup,
                 t: row.note,
+                s: row.source,
             })),
         }
         try {
@@ -1355,6 +1430,7 @@ class SubmitPage extends Vue {
                 groupId: row.groupId === NEW_GROUP_CHOICE ? null : row.groupId,
                 newGroup: row.groupId === NEW_GROUP_CHOICE ? row.newGroup : null,
                 note: row.note ? row.note : null,
+                source: sourcePayload(row.source),
             })),
         }))
         if (this._token) form.append('turnstileToken', this._token)

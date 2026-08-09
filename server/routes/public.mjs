@@ -346,6 +346,8 @@ const GROUP_NAME_MAX_LENGTH = 120
  * silent mangling of text they chose.
  */
 const NOTE_MAX_LENGTH = 200
+const SOURCE_TITLE_MAX_LENGTH = 200
+const SOURCE_URL_MAX_LENGTH = 2048
 /** batch_items.submitter_note is `length(submitter_note) <= 500`. */
 const SUBMITTER_NOTE_MAX_LENGTH = 500
 
@@ -1813,6 +1815,7 @@ function parseMetadata(raw, maxItems) {
       groupId: stringOrNull(raw_.groupId),
       newGroup: stringOrNull(raw_.newGroup),
       note: stringOrNull(raw_.note),
+      source: raw_.source,
     })
   }
 
@@ -1869,12 +1872,20 @@ function validateItemText(item, q) {
     note = checked.value
   }
 
+  const source = validateSourceNote(item.source)
+  if (!source.ok) return source
+
   // Fixed key order, so one submission always serialises to the same bytes.
-  const envelope = JSON.stringify({
+  const envelopeValue = {
     caption: { locale: caption.locale, text: text.value },
     note,
     proposedGroup,
-  })
+  }
+  // Keep the optional block genuinely optional. Existing submitters should not
+  // acquire a `source:null` field merely by using the current form; the admin
+  // reader accepts both the legacy envelope and the expanded one.
+  if (source.value !== null) envelopeValue.source = source.value
+  const envelope = JSON.stringify(envelopeValue)
   // The per-field caps above put this comfortably inside submitter_note's 500,
   // but JSON escaping is not length-preserving and the column counts characters,
   // so the budget is measured rather than argued.
@@ -1883,6 +1894,40 @@ function validateItemText(item, q) {
   }
 
   return { ok: true, value: { label: label.value, note: envelope } }
+}
+
+function validateSourceNote(raw) {
+  if (raw === null || raw === undefined) return { ok: true, value: null }
+  if (typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, code: 'invalid_source' }
+
+  const source = {}
+  if (raw.kind !== undefined && raw.kind !== null && raw.kind !== '') {
+    if (raw.kind !== 'video' && raw.kind !== 'stream') return { ok: false, code: 'invalid_source_kind' }
+    source.kind = raw.kind
+  }
+  if (raw.title !== undefined && raw.title !== null && raw.title !== '') {
+    const title = checkText(raw.title, SOURCE_TITLE_MAX_LENGTH)
+    if (!title.ok) return { ok: false, code: 'invalid_source_title', detail: title.reason }
+    source.title = title.value
+  }
+  if (raw.date !== undefined && raw.date !== null && raw.date !== '') {
+    if (typeof raw.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(raw.date)) return { ok: false, code: 'invalid_source_date' }
+    source.date = raw.date
+  }
+  if (raw.seconds !== undefined && raw.seconds !== null && raw.seconds !== '') {
+    if (!Number.isInteger(raw.seconds) || raw.seconds < 0) return { ok: false, code: 'invalid_source_seconds' }
+    source.seconds = raw.seconds
+  }
+  if (raw.url !== undefined && raw.url !== null && raw.url !== '') {
+    // This is still submitter-proposed text. Keep it bounded and safe to place
+    // in the JSON envelope, but defer the protocol decision to the admin write
+    // into clips: a submitter may suggest a URL the reviewer must correct or
+    // reject, and the optional form must not become a hard gate.
+    const url = checkText(raw.url, SOURCE_URL_MAX_LENGTH)
+    if (!url.ok) return { ok: false, code: 'invalid_source_url', detail: url.reason }
+    source.url = url.value
+  }
+  return { ok: true, value: Object.keys(source).length === 0 ? null : source }
 }
 
 function checkText(value, maxLength) {
@@ -1900,7 +1945,7 @@ function checkText(value, maxLength) {
  * throw: the caller wanted a caption, not an outage.
  */
 export function readSubmitterNote(raw) {
-  const empty = { caption: null, note: null, proposedGroup: null }
+  const empty = { caption: null, note: null, proposedGroup: null, source: null }
   if (typeof raw !== 'string' || raw === '') return empty
   let parsed
   try {
@@ -1916,11 +1961,24 @@ export function readSubmitterNote(raw) {
     typeof parsed.caption.text === 'string'
       ? { locale: parsed.caption.locale, text: parsed.caption.text }
       : null
+  const source = readSourceNote(parsed.source)
   return {
     caption,
     note: typeof parsed.note === 'string' ? parsed.note : null,
     proposedGroup: typeof parsed.proposedGroup === 'string' ? parsed.proposedGroup : null,
+    source,
   }
+}
+
+function readSourceNote(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const source = {}
+  if (raw.kind === 'video' || raw.kind === 'stream') source.kind = raw.kind
+  if (typeof raw.title === 'string' && raw.title !== '') source.title = raw.title
+  if (typeof raw.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw.date)) source.date = raw.date
+  if (Number.isInteger(raw.seconds) && raw.seconds >= 0) source.seconds = raw.seconds
+  if (typeof raw.url === 'string' && raw.url !== '') source.url = raw.url
+  return Object.keys(source).length === 0 ? null : source
 }
 
 // ---------------------------------------------------------------------------

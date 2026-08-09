@@ -360,7 +360,7 @@
     background-size: cover;
     background-position: center;
     background-repeat: no-repeat;
-    font-family: 'Aptos', sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Microsoft YaHei", Arial, sans-serif;
 }
 .adm-theme-preview-nav {
     background-color: var(--amber);

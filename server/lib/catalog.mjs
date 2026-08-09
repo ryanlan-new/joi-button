@@ -192,7 +192,16 @@ export function buildCatalog(db, options = {}) {
   const groupRows = db.prepare('SELECT id, display_name, sort_order FROM v_catalog_groups').all()
   const clipRows = db
     .prepare(
-      'SELECT id, group_id, label, sort_order, sha256, storage_path, bytes, duration_seconds FROM v_catalog_clips',
+      `SELECT c.id, c.group_id, c.label, c.sort_order,
+              m.sha256, m.storage_path, m.bytes, m.duration_seconds,
+              c.source_kind, c.source_title, c.source_date, c.source_seconds,
+              c.source_url, c.credit_hidden,
+              s.display_name AS submitter_name
+         FROM clips c
+         JOIN media m ON m.sha256 = c.media_sha256
+         LEFT JOIN submitters s ON s.id = c.submitter_id
+        WHERE c.state = 'published'
+        ORDER BY c.group_id, c.sort_order, c.id`,
     )
     .all()
 
@@ -254,18 +263,36 @@ export function buildCatalog(db, options = {}) {
       displayName: row.display_name,
       captions: groupCaptions.get(row.id) ?? {},
     })),
-    clips: orderedClips.map((row) => ({
-      id: row.id,
-      groupId: row.group_id,
-      sortOrder: row.sort_order,
-      label: row.label,
-      path: row.storage_path,
-      sha256: row.sha256,
-      bytes: row.bytes,
-      durationSeconds: row.duration_seconds,
-      captions: clipCaptions.get(row.id) ?? {},
-    })),
+    clips: orderedClips.map((row) => {
+      const clip = {
+        id: row.id,
+        groupId: row.group_id,
+        sortOrder: row.sort_order,
+        label: row.label,
+        path: row.storage_path,
+        sha256: row.sha256,
+        bytes: row.bytes,
+        durationSeconds: row.duration_seconds,
+        captions: clipCaptions.get(row.id) ?? {},
+      }
+      const source = sourceOf(row)
+      if (source !== null) clip.source = source
+      if (row.credit_hidden !== 1 && typeof row.submitter_name === 'string' && row.submitter_name !== '') {
+        clip.submitter = { name: row.submitter_name }
+      }
+      return clip
+    }),
   }
+}
+
+function sourceOf(row) {
+  const source = {}
+  if (row.source_kind !== null && row.source_kind !== undefined) source.kind = row.source_kind
+  if (row.source_title !== null && row.source_title !== undefined) source.title = row.source_title
+  if (row.source_date !== null && row.source_date !== undefined) source.date = row.source_date
+  if (row.source_seconds !== null && row.source_seconds !== undefined) source.seconds = row.source_seconds
+  if (row.source_url !== null && row.source_url !== undefined) source.url = row.source_url
+  return Object.keys(source).length === 0 ? null : source
 }
 
 /**

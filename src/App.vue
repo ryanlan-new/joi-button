@@ -164,7 +164,6 @@
 
 <style lang="scss">
 @import "../node_modules/bootstrap/dist/css/bootstrap.css";
-@import url('https://fonts.googleapis.com/css2?family=Mina&family=Open+Sans:wght@600&family=PT+Sans&family=Source+Sans+Pro&family=M+PLUS+Rounded+1c:wght@700&display=swap');
 
 /* Palette. The five hues the site has always had are unchanged; what changed is
    which ROLE each one plays. The pastels used to be text colours on white, where
@@ -207,11 +206,13 @@ body{
        rewritten, and a root-relative url() in a .vue style block is left
        untouched by css-loader. */
     background-image: url('~@/assets/body_bg.svg');
-    font-family: 'Aptos', sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Microsoft YaHei", Arial, sans-serif;
+    line-height: 1.5;
+    letter-spacing: 0;
     background-color: var(--cream);
 }
 .navbar-brand {
-    font-family: 'Aptos', sans-serif;
+    font-family: inherit;
 }
 /* ONE MIDLINE ACROSS THE WHOLE BAR.
    Three separate things were pulling the row apart, and each needed its own fix.
@@ -229,9 +230,8 @@ body{
       and "centred in the bar" the same line.
 
    The spacing below is MARGINS rather than flex `gap`, and that is a browser
-   decision, not a taste one: this project's browserslist still resolves to IE
-   10/11, Opera Mini and KaiOS 2.5. Autoprefixer gives those the -ms- flexbox
-   they need (the built CSS carries `-ms-flexbox`), but nothing can polyfill
+   decision, not a taste one: the supported list is deliberately limited to
+   current evergreen engines, where the same alignment rules are available
    `gap` — so with gap those browsers would lay the row out correctly and then
    render it with NO spacing at all: the icon welded to the wordmark and
    `语言:🇨🇳简体中文`. Margins work wherever flex does.
@@ -415,6 +415,8 @@ body{
     border-radius: 10px;
     text-align: center;
     font-size: 20px;
+    line-height: 1.2;
+    letter-spacing: -.028em;
     margin-bottom: 12px;
 }
 .cate-body{
@@ -429,7 +431,6 @@ body{
     color: var(--plum-700);             /* 8.99:1 on white, was #bf8ac2 at 2.75 */
     border: 3px solid var(--candy-red);
     border-radius: 20px;
-    transition-duration: 0.4s;
     margin: 5px;
 }
 .btn-new {
@@ -497,6 +498,50 @@ body{
 
 .text-right{
     text-align: right;
+}
+.muted,
+.field-hint{
+    letter-spacing: .01em;
+}
+
+@media (prefers-reduced-motion: reduce){
+    *, *::before, *::after{
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+        scroll-behavior: auto !important;
+        transition-duration: .01ms !important;
+    }
+}
+
+@media (prefers-reduced-transparency: reduce){
+    body{
+        background-image: none;
+    }
+    .main-content,
+    .footer,
+    .navbar-inner{
+        background-color: var(--surface);
+    }
+}
+
+@media (prefers-contrast: more){
+    .cate-header,
+    .cate-body button.btn-info,
+    .btn-new,
+    .panel-block{
+        border-width: 3px;
+    }
+    .navbar-inner,
+    .footer{
+        border-bottom: 3px solid var(--cocoa-900);
+    }
+    body,
+    .main-content,
+    .navbar-inner,
+    .footer,
+    .panel-block{
+        background-image: none;
+    }
 }
 </style>
 

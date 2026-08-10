@@ -164,6 +164,12 @@ test('API challenge, Bearer resolution, user-agent binding, one-time polling and
   assert.equal(invalidWithCookie.json().error.message, 'This API token is invalid.')
   assert.equal(invalidWithCookie.json().submitter, undefined)
 
+  const invalidWithoutAgent = await get(ctx.app, '/api/me', {
+    headers: { authorization: 'Bearer not-a-token' },
+  })
+  assert.equal(invalidWithoutAgent.statusCode, 401)
+  assert.equal(invalidWithoutAgent.json().error.code, 'invalid_api_token')
+
   const revoked = await postJson(ctx.app, '/api/auth/revoke', {
     headers: { authorization: `Bearer ${token}`, 'user-agent': 'joi-test/1.0' },
   })

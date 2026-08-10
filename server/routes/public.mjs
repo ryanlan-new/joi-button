@@ -733,10 +733,14 @@ export default async function publicRoutes(fastify, options = {}) {
         return { error: 'invalid_api_token' }
       }
       const raw = authorization.slice('Bearer '.length)
+      // Verify the signature before looking at request metadata or lifecycle
+      // state. A credential we did not mint must stay on the generic invalid
+      // path even when it is also missing a User-Agent or resembles an old
+      // token.
+      if (!apiTokens.verify(raw)) return { error: 'invalid_api_token' }
       if (request.headers['user-agent'] === undefined || request.headers['user-agent'] === '') {
         return { error: 'user_agent_required' }
       }
-      if (!apiTokens.verify(raw)) return { error: 'invalid_api_token' }
       const session = q.sessionByTokenHash.get(apiTokens.hash(raw))
       const at = stamp()
       // The signature and API-session kind are the only facts trusted before

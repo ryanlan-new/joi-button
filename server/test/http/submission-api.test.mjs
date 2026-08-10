@@ -83,6 +83,45 @@ test('the public contract exposes the live limits and the common sixty-second ra
   assert.equal(second.json().error, 'rate_limited')
 })
 
+test('API challenge and pending poll expose the room listener decision', async (t) => {
+  const ctx = await boot(t)
+  const pending = postJson(ctx.app, '/api/auth/challenge', { body: { client: 'state-client' } })
+  await ctx.clock.tick()
+  await ctx.clock.advance(1)
+  const challenge = await pending
+  assert.equal(challenge.statusCode, 200, challenge.payload)
+  assert.equal(challenge.json().state, 'waiting')
+  assert.equal(challenge.json().canAssertNotSeen, true)
+  assert.equal(typeof challenge.json().roomId, 'number')
+
+  const poll = await postJson(ctx.app, '/api/auth/poll', {
+    body: { pollToken: challenge.json().pollToken },
+  })
+  assert.equal(poll.statusCode, 200, poll.payload)
+  assert.equal(poll.json().state, 'waiting')
+  assert.equal(poll.json().canAssertNotSeen, true)
+
+  ctx.danmaku.control.disconnect({ reason: 'simulated' })
+  const down = await postJson(ctx.app, '/api/auth/poll', {
+    body: { pollToken: challenge.json().pollToken },
+  })
+  assert.equal(down.statusCode, 200, down.payload)
+  assert.equal(down.json().state, 'room-unreachable')
+  assert.equal(down.json().detail, 'reconnecting')
+  assert.equal(down.json().canAssertNotSeen, undefined)
+  assert.equal(down.json().challenge, challenge.json().challenge)
+
+  ctx.danmaku.control.setStartBehaviour('ready')
+  await ctx.clock.advance(2000)
+  const recovered = await postJson(ctx.app, '/api/auth/poll', {
+    body: { pollToken: challenge.json().pollToken },
+  })
+  assert.equal(recovered.statusCode, 200, recovered.payload)
+  assert.equal(recovered.json().state, 'waiting')
+  assert.equal(recovered.json().canAssertNotSeen, false)
+  assert.equal(recovered.json().resend, true)
+})
+
 test('API challenge, Bearer resolution, user-agent binding, one-time polling and revoke work end to end', async (t) => {
   const ctx = await boot(t)
   const issued = await issueApiToken(ctx, 'automation-client')
@@ -122,6 +161,7 @@ test('API challenge, Bearer resolution, user-agent binding, one-time polling and
   })
   assert.equal(invalidWithCookie.statusCode, 401)
   assert.equal(invalidWithCookie.json().error.code, 'invalid_api_token')
+  assert.equal(invalidWithCookie.json().error.message, 'This API token is invalid.')
   assert.equal(invalidWithCookie.json().submitter, undefined)
 
   const revoked = await postJson(ctx.app, '/api/auth/revoke', {
@@ -134,7 +174,7 @@ test('API challenge, Bearer resolution, user-agent binding, one-time polling and
     headers: { authorization: `Bearer ${token}`, 'user-agent': 'joi-test/1.0' },
   })
   assert.equal(after.statusCode, 401)
-  assert.equal(after.json().error.code, 'invalid_api_token')
+  assert.equal(after.json().error.code, 'revoked_api_token')
 })
 
 test('an API token is rejected after its fixed thirty-day lifetime', async (t) => {
@@ -146,7 +186,7 @@ test('an API token is rejected after its fixed thirty-day lifetime', async (t) =
     headers: { authorization: `Bearer ${issued.token}`, 'user-agent': 'joi-test/1.0' },
   })
   assert.equal(expired.statusCode, 401)
-  assert.equal(expired.json().error.code, 'invalid_api_token')
+  assert.equal(expired.json().error.code, 'expired_api_token')
 })
 
 test('API submissions keep their source channel and the admin storage card is read-only evidence', async (t) => {

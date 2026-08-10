@@ -236,6 +236,8 @@ export const PUBLIC_REASONS = Object.freeze({
   verification_capacity:
     'Too many verifications are waiting right now. Please try again in a few minutes.',
   submitter_blocked: 'This account cannot submit clips.',
+  expired_api_token: 'This API token has expired. Complete a fresh challenge to continue.',
+  revoked_api_token: 'This API token has been revoked. Complete a fresh challenge to continue.',
 
   // submission envelope
   multipart_required:
@@ -256,7 +258,7 @@ export const PUBLIC_REASONS = Object.freeze({
     'None of the clips in that submission could be accepted; nothing was saved.',
   rate_limited: 'Please wait before sending another submission.',
   storage_exhausted: 'Storage space is low. Please contact the site administrator.',
-  invalid_api_token: 'This API token is invalid or has expired.',
+  invalid_api_token: 'This API token is invalid.',
   user_agent_required: 'API requests must include a User-Agent header.',
   invalid_client_label: 'The API client label cannot be used.',
   poll_token_required: 'A poll token is required for this request.',
@@ -737,14 +739,13 @@ export default async function publicRoutes(fastify, options = {}) {
       if (!apiTokens.verify(raw)) return { error: 'invalid_api_token' }
       const session = q.sessionByTokenHash.get(apiTokens.hash(raw))
       const at = stamp()
-      if (
-        session === undefined ||
-        session.kind !== 'api' ||
-        session.revoked_at !== null ||
-        session.expires_at <= at
-      ) {
-        return { error: 'invalid_api_token' }
-      }
+      // The signature and API-session kind are the only facts trusted before
+      // looking at lifecycle state. This keeps malformed, cookie, and unknown
+      // credentials on the generic invalid path while preserving useful
+      // revoked/expired diagnostics for a real API session.
+      if (session === undefined || session.kind !== 'api') return { error: 'invalid_api_token' }
+      if (session.revoked_at !== null) return { error: 'revoked_api_token' }
+      if (session.expires_at <= at) return { error: 'expired_api_token' }
       if (session.last_used_at === null || session.last_used_at < addMinutes(at, -1)) {
         q.touchApiSession.run({ id: session.id, last_used_at: at, last_seen_at: at })
         session.last_used_at = at
@@ -1170,7 +1171,7 @@ export default async function publicRoutes(fastify, options = {}) {
     if (session === undefined || session.kind !== 'api') {
       return refuse(reply, 401, 'expired_poll_token')
     }
-    if (row.state === 'pending') return reply.send({ ...apiChallengeBody(row), state: 'waiting' })
+    if (row.state === 'pending') return reply.send(apiChallengeBody(row))
     if (row.state !== 'verified') return refuse(reply, 401, 'expired_poll_token')
     if (session.token_issued_at !== null) return refuse(reply, 409, 'token_already_issued')
     if (session.submitter_id === null) return refuse(reply, 401, 'expired_poll_token')
@@ -1217,7 +1218,7 @@ export default async function publicRoutes(fastify, options = {}) {
       ) {
         return refuse(reply, 401, 'expired_poll_token')
       }
-      if (row.state === 'pending') return reply.send({ ...apiChallengeBody(row), state: 'waiting', action: 'revoke-all' })
+      if (row.state === 'pending') return reply.send({ ...apiChallengeBody(row), action: 'revoke-all' })
       if (row.state !== 'verified' || session.submitter_id === null) {
         return refuse(reply, 401, 'expired_poll_token')
       }
@@ -1296,12 +1297,11 @@ export default async function publicRoutes(fastify, options = {}) {
   }
 
   function apiChallengeBody(row) {
+    const { code, ...waiting } = waitingBody(row)
     return {
-      state: 'waiting',
-      challenge: row.challenge_text,
+      ...waiting,
+      challenge: code,
       pollToken: row.id,
-      roomId: row.room_id,
-      expiresAt: row.expires_at,
     }
   }
 

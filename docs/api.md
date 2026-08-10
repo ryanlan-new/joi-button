@@ -96,7 +96,7 @@ curl -sS -X POST "$JOI_BUTTON_URL/api/auth/revoke" \
   -H 'User-Agent: my-importer/1.0'
 ```
 
-Revoke all API tokens for the submitter through `/api/auth/revoke-all`. That endpoint starts a fresh danmaku challenge and accepts the resulting `pollToken`; it never treats possession of an existing API token as sufficient authority. The fresh proof is spent after revocation, so its poll token cannot be replayed.
+Revoke all API tokens for the submitter through a fresh two-step challenge. First send `POST /api/auth/challenge` with the reserved body `{ "client": "revoke-all" }`. Send the returned `challenge` as a danmaku in `roomId`, then send `POST /api/auth/revoke-all` with `{ "pollToken": "…" }`. The `revoke-all` label is reserved for this flow and cannot be used as your own client label. This endpoint never treats possession of an existing API token as sufficient authority. The fresh proof is spent after revocation, so its poll token cannot be replayed.
 
 The contract endpoint is authoritative for the complete list. Standard refusals use `{ "error": { "code", "message" } }`; rate limiting and storage admission use the flat shapes documented above. Item-level failures carry the same code under each rejected item's verdict.
 
@@ -108,12 +108,13 @@ The contract endpoint is authoritative for the complete list. Standard refusals 
 | `audio_processing_failed` | Loudness normalization failed. |
 | `duplicate_in_batch` | The same file appears twice in one batch. |
 | `empty_file` | The uploaded file is empty. |
+| `expired_api_token` | The Bearer token's fixed lifetime has elapsed. |
 | `expired_poll_token` | The API challenge poll token expired or was spent. |
 | `file_too_large` | One file exceeds the configured size limit. |
 | `group_choice_ambiguous` | Both an existing group and a new group were supplied. |
 | `group_choice_required` | Every item needs an existing group or a new-group proposal. |
 | `identity_required` | A verified browser or API identity is required. |
-| `invalid_api_token` | The Bearer token is invalid, revoked, or expired. |
+| `invalid_api_token` | The Bearer token signature, shape, or credential kind is invalid. |
 | `invalid_caption` | The caption cannot be used. |
 | `invalid_client_label` | The API client label cannot be used. |
 | `invalid_group_name` | The proposed group name cannot be used. |
@@ -137,6 +138,7 @@ The contract endpoint is authoritative for the complete list. Standard refusals 
 | `note_too_long` | The encoded item note is too long. |
 | `poll_token_required` | A poll token is required. |
 | `rate_limited` | The submitter or session is inside the 60-second window. |
+| `revoked_api_token` | The Bearer token was explicitly revoked. |
 | `room_not_configured` | No live room is configured for identity verification. |
 | `storage_exhausted` | Storage admission failed because the reserve could not be preserved. |
 | `submitter_blocked` | The verified submitter is blocked from submitting. |

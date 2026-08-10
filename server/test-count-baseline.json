@@ -1,0 +1,123 @@
+{
+  "suite": "server",
+  "baselineCommit": "4a5cc60",
+  "baselineTests": 460,
+  "baselinePass": 459,
+  "baselineSkipped": 1,
+  "baselineDeclarations": 449,
+  "runnerAdjustment": 11,
+  "registeredDeletions": [
+    {
+      "path": "server/test/turnstile.test.mjs",
+      "tests": 19,
+      "class": "authorized",
+      "reason": "STORY-093 explicitly retired the Turnstile core test module with the runtime."
+    },
+    {
+      "path": "server/test/turnstile-verify.test.mjs",
+      "tests": 36,
+      "class": "authorized",
+      "reason": "STORY-093 explicitly retired the Turnstile verification tests with the runtime."
+    },
+    {
+      "path": "server/test/turnstile-optional.test.mjs",
+      "tests": 9,
+      "class": "authorized",
+      "reason": "STORY-093 explicitly retired the optional Turnstile tests with the runtime."
+    },
+    {
+      "path": "server/test/routes-public.test.mjs",
+      "tests": 39,
+      "class": "registered",
+      "reason": "The old monolithic file was removed with its Turnstile-coupled harness; applicable submission, identity, lease, and text guarantees are individually restored in INC-015 coverage, while the remaining Turnstile-only cases are no longer applicable."
+    },
+    {
+      "path": "server/test/http/submit.test.mjs",
+      "tests": 10,
+      "class": "registered",
+      "reason": "The old HTTP file was coupled to the retired Turnstile form contract; its still-applicable multipart and item-isolation guarantees are attributed to INC-015 coverage, and the challenge-only cases are no longer applicable."
+    },
+    {
+      "path": "server/test/http/journey.test.mjs",
+      "tests": 1,
+      "class": "registered",
+      "reason": "The old end-to-end journey posted the retired Turnstile field; the current API journey is covered by the live submission API tests and the INC-015 channel-paired cases."
+    },
+    {
+      "path": "server/test/timestamps.test.mjs",
+      "tests": 10,
+      "class": "registered",
+      "reason": "The removed assertions were tied to Turnstile decision timestamps; the current schema and danmaku timestamp tests remain, and the lease/verification timing guarantee is attributed to INC-015."
+    },
+    {
+      "path": "server/test/schema-dev-bypass.test.mjs",
+      "tests": 9,
+      "class": "registered",
+      "reason": "These assertions exercised the retired Turnstile schema bypass; the live development-mode guard is retained in env-guard and current schema tests."
+    },
+    {
+      "path": "server/test/env-guard.test.mjs",
+      "tests": 31,
+      "class": "registered",
+      "reason": "The roster was reduced to the current API-era configuration surface; the five live guard tests cover the retained contract, and the removed Turnstile-only branches are explicitly retired here."
+    },
+    {
+      "path": "server/test/schema-batches.test.mjs",
+      "tests": 11,
+      "class": "registered",
+      "reason": "The removed batch assertions depended on Turnstile columns and verdicts; the retained batch invariants and current submission persistence are covered by the live schema and HTTP suites."
+    }
+  ],
+  "coverage": [
+    {
+      "id": "item-failure-isolation",
+      "channels": ["cookie", "bearer"],
+      "test": "INC-015: item 3 failure preserves items 1, 2, 4 and 5"
+    },
+    {
+      "id": "batch-duplicate-rejection",
+      "channels": ["cookie", "bearer"],
+      "test": "INC-015: duplicate media in one batch is rejected"
+    },
+    {
+      "id": "already-published-sha",
+      "channels": ["cookie", "bearer"],
+      "test": "INC-015: an already-published input sha is rejected"
+    },
+    {
+      "id": "blocked-submitter",
+      "channels": ["cookie", "bearer"],
+      "test": "INC-015: a blocked submitter receives a classified 403"
+    },
+    {
+      "id": "multipart-classification",
+      "channels": ["cookie", "bearer"],
+      "test": "INC-015: multipart limits retain specific error codes"
+    },
+    {
+      "id": "escaped-submitter-text",
+      "channels": ["cookie", "bearer"],
+      "test": "INC-015: submitter text is stored in escaped form"
+    },
+    {
+      "id": "history-isolation",
+      "channels": ["cookie", "bearer"],
+      "test": "INC-015: one submitter cannot read another submitter history"
+    },
+    {
+      "id": "identity-required",
+      "channels": ["cookie", "bearer"],
+      "test": "INC-015: preflight, submit and history reject without identity"
+    },
+    {
+      "id": "danmaku-ime-timing",
+      "channels": ["cookie", "bearer"],
+      "test": "INC-015: verification waits for listening and folds full-width IME digits"
+    },
+    {
+      "id": "lease-return",
+      "channels": ["cookie", "bearer"],
+      "test": "INC-015: verification leases are returned on success and cancellation"
+    }
+  ]
+}

@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node server.mjs",
     "dev": "node --watch server.mjs",
-    "test": "node --test",
+    "test": "node scripts/run-tests.mjs",
     "import-snapshot": "node scripts/import-snapshot.mjs",
     "backup": "node scripts/backup.mjs",
     "backup:verify": "node scripts/backup.mjs --verify",
